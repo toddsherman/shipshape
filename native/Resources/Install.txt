@@ -1,4 +1,4 @@
-Shipshape 0.3.0 — macOS preview
+Shipshape 0.3.1 — macOS preview
 (formerly Security Monitor)
 
 Requires macOS 13 or later. Includes Apple silicon and Intel binaries.
@@ -22,12 +22,11 @@ easiest way to install the fix: a Terminal command to copy, a download
 page, or the app's own updater. The app never runs commands or changes
 software itself.
 
-A fresh check runs each time the app opens, and daily at 9 a.m. Pacific
-while the app is running. Missed checks catch up after wake. While the app
-is open it also refreshes every minute, reusing recent advisory data, so
-software you update or remove drops off the list within a minute. History
-logs every recommendation and when it was resolved. Closing the dashboard
-leaves the menu bar app running; quitting the app stops monitoring.
+A fresh check runs each time the app opens, daily at 9 a.m. Pacific while
+the app is running, and when you click Check now. Missed checks catch up
+after wake. History logs every recommendation and when it was resolved.
+Closing the dashboard leaves the menu bar app running; quitting the app
+stops monitoring.
 
 Coverage is partial
 Google Chrome and App Store apps are not checked; they update through

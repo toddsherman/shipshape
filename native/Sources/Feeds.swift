@@ -1,70 +1,69 @@
 import Foundation
-import CryptoKit
 
 let appName = "Shipshape"  // also CFBundleName in Info.plist, which the build scripts read
 let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
 
 enum Fetch {
-    static let session: URLSession = {
+    // Tests replace the configuration to serve canned responses; the session follows it.
+    static var configuration: URLSessionConfiguration = defaultConfiguration { didSet { session = URLSession(configuration: configuration) } }
+    private(set) static var session = URLSession(configuration: defaultConfiguration)
+    static let defaultConfiguration: URLSessionConfiguration = {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 30
         c.timeoutIntervalForResource = 120
         c.httpMaximumConnectionsPerHost = 4
         c.httpAdditionalHeaders = ["User-Agent": "\(appName)/\(appVersion) (macOS)", "Accept": "application/json, text/html;q=0.9"]
-        return URLSession(configuration: c)
+        return c
     }()
-    // A body makes the request a JSON POST (OSV batch queries); everything else is a GET. `reuse` is how old a
-    // saved response a minute refresh may use instead of downloading again.
-    static func data(_ address: String, limit: Int = 12_000_000, body: Data? = nil, reuse: TimeInterval = 0) async throws -> Data {
+    // A body makes the request a JSON POST (OSV batch queries); everything else is a GET. The size limit is
+    // enforced while downloading: a declared size over it is refused before the body arrives, and the transfer
+    // is cancelled as soon as it passes the limit, so a misbehaving source can't fill memory.
+    static func data(_ address: String, limit: Int = 12_000_000, body: Data? = nil) async throws -> Data {
         guard let url = URL(string: address), url.scheme == "https" else { throw MonitorError(message: "Invalid source URL") }
-        let key = "fetch|" + address + (body.map { "|" + SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() } ?? "")
-        return try await Reuse.value(key, maxAge: reuse) {
-            var request = URLRequest(url: url)
-            if let body { request.httpMethod = "POST"; request.httpBody = body; request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-            let (data, response) = try await session.data(for: request)
-            guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
-                throw HTTPStatusError(host: url.host ?? "Vendor source", status: (response as? HTTPURLResponse)?.statusCode ?? 0)
-            }
-            guard data.count < limit else { throw MonitorError(message: "Source exceeded response limit") }
-            return data
+        var request = URLRequest(url: url)
+        if let body { request.httpMethod = "POST"; request.httpBody = body; request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        // One shared session keeps connections alive across requests; each request has its own receiver.
+        let receiver = LimitedReceiver(limit: limit)
+        let (data, response) = try await withCheckedThrowingContinuation { continuation in
+            receiver.continuation = continuation
+            let task = session.dataTask(with: request)
+            task.delegate = receiver
+            task.resume()
         }
+        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+            throw HTTPStatusError(host: url.host ?? "Vendor source", status: (response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+        return data
     }
-    static func json(_ url: String, limit: Int = 12_000_000, body: Data? = nil, reuse: TimeInterval = 0) async throws -> Any {
-        try JSONSerialization.jsonObject(with: await data(url, limit: limit, body: body, reuse: reuse))
+    static func json(_ url: String, limit: Int = 12_000_000, body: Data? = nil) async throws -> Any {
+        try JSONSerialization.jsonObject(with: await data(url, limit: limit, body: body))
     }
-    static func string(_ url: String, reuse: TimeInterval = 0) async throws -> String { String(decoding: try await data(url, reuse: reuse), as: UTF8.self) }
+    static func string(_ url: String) async throws -> String { String(decoding: try await data(url), as: UTF8.self) }
 }
 
-// Results kept between checks while the app is open. A minute refresh runs with `enabled` set and reuses
-// results younger than the age each caller allows; full checks (at launch, daily and Check now) always
-// fetch again and replace them. Nothing here is written to disk.
-enum Reuse {
-    @TaskLocal static var enabled = false
-    static let hour: TimeInterval = 3600
-    private actor Store {
-        var entries: [String: (date: Date, value: any Sendable)] = [:]
-        func get(_ key: String, maxAge: TimeInterval) -> (any Sendable)? {
-            guard let entry = entries[key], Date().timeIntervalSince(entry.date) < maxAge else { return nil }
-            return entry.value
-        }
-        func set(_ key: String, _ value: any Sendable) { entries[key] = (Date(), value) }
+// Collects one response, refusing it once it passes the size limit.
+final class LimitedReceiver: NSObject, URLSessionDataDelegate {
+    let limit: Int
+    var continuation: CheckedContinuation<(Data, URLResponse), Error>?
+    private var received = Data(), response: URLResponse?, exceeded = false
+    init(limit: Int) { self.limit = limit }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        self.response = response
+        if response.expectedContentLength > Int64(limit) { exceeded = true; completionHandler(.cancel); return }
+        completionHandler(.allow)
     }
-    private static let store = Store()
-    static func value<T: Sendable>(_ key: String, maxAge: TimeInterval, _ compute: () async throws -> T) async rethrows -> T {
-        guard maxAge > 0 else { return try await compute() }
-        if enabled, let hit = await store.get(key, maxAge: maxAge) as? T { return hit }
-        let value = try await compute()
-        await store.set(key, value)
-        return value
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        received.append(data)
+        if received.count > limit { exceeded = true; received = Data(); dataTask.cancel() }
     }
-    // For lookups made in bulk (OSV): the saved values for the keys that have them.
-    static func values<T: Sendable>(_ keys: [String], maxAge: TimeInterval) async -> [String: T] {
-        guard enabled else { return [:] }
-        var found: [String: T] = [:]
-        for key in keys { if let hit = await store.get(key, maxAge: maxAge) as? T { found[key] = hit } }
-        return found
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let continuation = self.continuation
+        self.continuation = nil
+        if exceeded { continuation?.resume(throwing: MonitorError(message: "Source exceeded response limit")) }
+        else if let error { continuation?.resume(throwing: error) }
+        else if let response { continuation?.resume(returning: (received, response)) }
+        else { continuation?.resume(throwing: MonitorError(message: "Source returned no response")) }
     }
-    static func save(_ values: [String: any Sendable]) async { for (key, value) in values { await store.set(key, value) } }
 }
 
 enum Rules {
@@ -164,26 +163,34 @@ enum Rules {
     }
 }
 
-// Newest releases from Homebrew's public API, parsed once and kept for minute refreshes. Builds include
+// Newest releases from Homebrew's public API, parsed into just what a check compares. Builds include
 // Homebrew's rebuild number (26.12.1_1); casks also say whether the app updates itself and where its site is.
 struct HomebrewMetadata: Sendable {
     var latest: [String: String] = [:]
     var builds: [String: String] = [:]
     var casks: [String: CaskInfo] = [:]
+    // Only the fields a check compares are decoded, which is faster and lighter than parsing every field of
+    // these 20–30 MB lists.
+    private struct Formula: Decodable { let name: String; let versions: Versions; let revision: Int?; struct Versions: Decodable { let stable: String? } }
+    private struct Cask: Decodable { let token: String; let version: String?; let auto_updates: Bool?; let homepage: String? }
     static func load(_ kind: String) async throws -> HomebrewMetadata {
-        guard let rows = try await Fetch.json("https://formulae.brew.sh/api/\(kind).json", limit: 150_000_000) as? [[String: Any]] else { throw MonitorError(message: "Homebrew \(kind) metadata was not a list") }
+        let data = try await Fetch.data("https://formulae.brew.sh/api/\(kind).json", limit: 150_000_000)
         var metadata = HomebrewMetadata()
-        for row in rows {
-            if kind == "formula", let name = row["name"] as? String, let stable = (row["versions"] as? [String: Any])?["stable"] as? String {
-                let revision = row["revision"] as? Int ?? 0
-                metadata.latest[name] = stable
-                metadata.builds[name] = revision > 0 ? "\(stable)_\(revision)" : stable
+        do {
+            if kind == "formula" {
+                for row in try JSONDecoder().decode([Formula].self, from: data) {
+                    guard let stable = row.versions.stable else { continue }
+                    metadata.latest[row.name] = stable
+                    metadata.builds[row.name] = (row.revision ?? 0) > 0 ? "\(stable)_\(row.revision!)" : stable
+                }
+            } else {
+                for row in try JSONDecoder().decode([Cask].self, from: data) {
+                    guard let version = row.version else { continue }
+                    metadata.latest[row.token] = version.components(separatedBy: ",")[0]
+                    metadata.casks[row.token] = CaskInfo(autoUpdates: row.auto_updates ?? false, homepage: row.homepage)
+                }
             }
-            if kind == "cask", let token = row["token"] as? String, let version = row["version"] as? String {
-                metadata.latest[token] = version.components(separatedBy: ",")[0]
-                metadata.casks[token] = CaskInfo(autoUpdates: row["auto_updates"] as? Bool ?? false, homepage: row["homepage"] as? String)
-            }
-        }
+        } catch { throw MonitorError(message: "Homebrew \(kind) metadata was not in the expected format") }
         return metadata
     }
 }
@@ -202,8 +209,8 @@ enum Scanner {
         do {
             let installed = items("node")
             if !installed.isEmpty {
-                async let releaseData = Fetch.json("https://nodejs.org/dist/index.json", reuse: Reuse.hour)
-                async let scheduleData = Fetch.json("https://raw.githubusercontent.com/nodejs/Release/main/schedule.json", reuse: Reuse.hour)
+                async let releaseData = Fetch.json("https://nodejs.org/dist/index.json")
+                async let scheduleData = Fetch.json("https://raw.githubusercontent.com/nodejs/Release/main/schedule.json")
                 guard let releases = try await releaseData as? [[String: Any]], let schedule = try await scheduleData as? [String: Any] else { throw MonitorError(message: "Invalid Node release data") }
                 for item in installed { if let f = try Rules.node(item, releases: releases, schedule: schedule) { report.findings.append(f) } }
             }
@@ -215,7 +222,7 @@ enum Scanner {
             do {
                 let installed = items(product.id)
                 if !installed.isEmpty {
-                    guard let advisories = try await Fetch.json("https://api.github.com/repos/\(repo)/security-advisories?per_page=100", reuse: Reuse.hour) as? [[String: Any]], advisories.count < 100 else { throw MonitorError(message: "\(product.name) advisory response was invalid or needs pagination") }
+                    guard let advisories = try await Fetch.json("https://api.github.com/repos/\(repo)/security-advisories?per_page=100") as? [[String: Any]], advisories.count < 100 else { throw MonitorError(message: "\(product.name) advisory response was invalid or needs pagination") }
                     for item in installed {
                         let finding = product.id == "bun" ? try Rules.bun(item, advisories: advisories)
                             : try Rules.github(item, advisories: advisories, packages: Set(packages), source: product.id, action: "Update \(product.name) with its existing installation method, then restart it.")
@@ -228,7 +235,7 @@ enum Scanner {
         do {
             let installed = items("postgresql")
             if !installed.isEmpty {
-                let html = try await Fetch.string("https://www.postgresql.org/support/security/", reuse: Reuse.hour)
+                let html = try await Fetch.string("https://www.postgresql.org/support/security/")
                 for item in installed { if let f = try Rules.postgres(item, html: html) { report.findings.append(f) } }
             }
             record("postgres", "PostgreSQL security", "\(installed.count) copies checked against the vendor's affected and fixed versions.", url: "https://www.postgresql.org/support/security/")
@@ -239,10 +246,10 @@ enum Scanner {
             var indexed: Set<String>? = nil, unpublished: [String] = []
             for branch in Set(installed.compactMap { Version($0.version)?.branch }).sorted() {
                 let html: String
-                do { html = try await Fetch.string("https://openssl-library.org/news/vulnerabilities-\(branch)/index.html", reuse: Reuse.hour) }
+                do { html = try await Fetch.string("https://openssl-library.org/news/vulnerabilities-\(branch)/index.html") }
                 catch let error as HTTPStatusError where error.status == 404 {
                     // A missing page means no published vulnerabilities only when the index confirms it.
-                    if indexed == nil { indexed = Rules.opensslIndexedBranches(try await Fetch.string("https://openssl-library.org/news/vulnerabilities/index.html", reuse: Reuse.hour)) }
+                    if indexed == nil { indexed = Rules.opensslIndexedBranches(try await Fetch.string("https://openssl-library.org/news/vulnerabilities/index.html")) }
                     guard Rules.opensslUnpublished(branch, indexed: indexed!) else {
                         throw MonitorError(message: indexed!.isEmpty ? "OpenSSL's vulnerabilities index lists no branches; review manually" : "OpenSSL's \(branch) vulnerability page is missing although the index lists it; review manually")
                     }
@@ -307,7 +314,7 @@ enum Scanner {
         var newestFormulae: [String: String] = [:]
         for (kind, items) in [("formula", formulae), ("cask", apps)] where !items.isEmpty {
             do {
-                let metadata = try await Reuse.value("homebrew|" + kind, maxAge: Reuse.hour) { try await HomebrewMetadata.load(kind) }
+                let metadata = try await HomebrewMetadata.load(kind)
                 let latest = metadata.latest, builds = metadata.builds
                 for token in Set(items.compactMap(\.package)) { if let info = metadata.casks[token] { context.casks[token] = info } }
                 if kind == "formula" { newestFormulae = latest }
@@ -341,7 +348,7 @@ enum Scanner {
         }
 
         do {
-            let result = try await Reuse.value("softwareupdate", maxAge: Reuse.hour) { try command("/usr/sbin/softwareupdate", ["--list"], timeout: 90) }
+            let result = try command("/usr/sbin/softwareupdate", ["--list"], timeout: 90)
             guard result.code == 0 else { throw MonitorError(message: "Apple Software Update could not complete; use System Settings") }
             if result.text.contains("* Label:") {
                 let os = Installation(product: "macos", name: "Apple software", version: ProcessInfo.processInfo.operatingSystemVersionString, path: "System Settings → Software Update", domain: "apple")
@@ -352,7 +359,7 @@ enum Scanner {
 
         do {
             if report.findings.contains(where: { $0.advisories.contains { $0.hasPrefix("CVE-") } }) {
-                guard let obj = try await Fetch.json("https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json", reuse: Reuse.hour) as? [String: Any],
+                guard let obj = try await Fetch.json("https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json") as? [String: Any],
                       let rows = obj["vulnerabilities"] as? [[String: Any]], !rows.isEmpty else { throw MonitorError(message: "CISA catalog could not be parsed") }
                 let known = Set(rows.compactMap { $0["cveID"] as? String })
                 for i in report.findings.indices { report.findings[i].exploited = !known.isDisjoint(with: report.findings[i].advisories) }
@@ -367,6 +374,10 @@ enum Scanner {
         record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go and RubyGems packages in projects, global installs, Python environments, the npx cache and pinned MCP servers. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries. Excluded by design: Google Chrome and Mac App Store apps. Not covered: editor extensions, containers and images, Java and other ecosystems, unpinned MCP servers that npx hasn't cached, software outside the catalog and arbitrary install paths.", status: "manual")
         report.retainUnverified(from: previous)
         for index in report.findings.indices { report.findings[index].commands = Commands.commands(for: report.findings[index], context: context) }
+        Ownership.restrict(&report.findings, access: FileAccess.live.memoized())
+        if let homebrew = report.findings.first(where: { $0.blocked != nil && Ownership.homebrewManagers.contains($0.installation.manager ?? "") })?.blocked {
+            record("ownership", "Homebrew ownership", homebrew + " Its findings are listed without commands.", status: "manual")
+        }
         report.findings.sort { a, b in
             if (a.malicious == true) != (b.malicious == true) { return a.malicious == true }
             if a.exploited != b.exploited { return a.exploited }

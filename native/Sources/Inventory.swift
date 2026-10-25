@@ -1,15 +1,21 @@
 import Foundation
 
 struct CommandResult { let text: String; let code: Int32 }
+func trustedExecutable(_ path: String, uid: uid_t = getuid()) -> Bool {
+    var info = stat()
+    guard stat(URL(fileURLWithPath: path).resolvingSymlinksInPath().path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return false }
+    return (info.st_uid == uid || info.st_uid == 0) && info.st_mode & 0o022 == 0
+}
 func command(_ executable: String, _ arguments: [String], timeout: TimeInterval = 20) throws -> CommandResult {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: executable)
     process.arguments = arguments
-    var environment = ProcessInfo.processInfo.environment
-    environment["HOMEBREW_NO_AUTO_UPDATE"] = "1"
-    environment["HOMEBREW_NO_ANALYTICS"] = "1"
-    environment["LC_ALL"] = "C"
-    process.environment = environment
+    // Only binaries owned by this account or root, and writable by no one else, are run, with a minimal
+    // environment, so another account can't plant code that runs as you and inherited variables can't change it.
+    guard trustedExecutable(executable) else { throw MonitorError(message: "Not run: \(executable) isn't owned by this account or root, or others can change it") }
+    let inherited = ProcessInfo.processInfo.environment
+    process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": inherited["HOME"] ?? NSHomeDirectory(), "TMPDIR": inherited["TMPDIR"] ?? NSTemporaryDirectory(),
+                           "USER": NSUserName(), "LC_ALL": "C"]
     // A temporary file avoids pipe-buffer deadlock for large package inventories.
     let file = FileManager.default.temporaryDirectory.appendingPathComponent("\(appName.lowercased())-\(UUID().uuidString)")
     FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600])
@@ -43,7 +49,23 @@ enum Inventory {
     static func product(forFormula name: String) -> String { Catalog.product(formula: name)?.id ?? name }
     static func display(_ path: String) -> String { path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path }
     static func children(_ path: String) -> [String] { ((try? fm.contentsOfDirectory(atPath: path)) ?? []).filter { !$0.hasPrefix(".") }.sorted() }
-    static func json(_ path: String) -> [String: Any]? { fm.contents(atPath: path).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } }
+    // Files are read only up to a size limit, after checking they're regular files. Links are refused in project
+    // folders (a repo could point one at a huge or private file); settings in the home folder may be links.
+    static func read(_ path: String, limit: Int, followLinks: Bool = false) -> Data? {
+        var info = stat()
+        guard (followLinks ? stat(path, &info) : lstat(path, &info)) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size <= limit,
+              let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        return (try? handle.read(upToCount: limit + 1)).flatMap { $0.count > limit ? nil : $0 }
+    }
+    static func head(_ path: String, bytes: Int) -> Data? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        return try? handle.read(upToCount: bytes)
+    }
+    static func json(_ path: String, limit: Int = 32_000_000) -> [String: Any]? {
+        read(path, limit: limit, followLinks: true).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+    }
 
     static func collect(projectFolders: [String] = []) -> ScanReport {
         var report = ScanReport()
@@ -109,45 +131,46 @@ enum Inventory {
         return (items, errors, skipped)
     }
 
-    static func homebrew() -> ([Installation], [String]) {
+    // Read straight from Homebrew's folders instead of running brew: Cellar holds each formula's installed
+    // copies, opt/ links point at the active one, var/homebrew/pinned marks pins and Caskroom holds casks.
+    // No Homebrew code runs (another account may own it), and nothing waits on Ruby.
+    static func homebrew(prefixes: [String] = ["/opt/homebrew", "/usr/local"]) -> ([Installation], [String]) {
         var items: [Installation] = [], errors: [String] = []
-        for brew in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"] where fm.isExecutableFile(atPath: brew) {
-            do {
-                let result = try command(brew, ["info", "--json=v2", "--installed"], timeout: 60)
-                guard result.code == 0, let data = result.text.data(using: .utf8), let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let formulae = obj["formulae"] as? [[String: Any]] else { throw MonitorError(message: "Homebrew inventory was not valid JSON") }
-                let prefix = String(brew.dropLast(9))
-                for f in formulae {
-                    guard let name = f["name"] as? String, let installed = f["installed"] as? [[String: Any]] else { continue }
-                    let product = Catalog.product(formula: name)
-                    let active = (try? fm.destinationOfSymbolicLink(atPath: prefix + "/opt/" + name)).map { ($0 as NSString).lastPathComponent }
-                    let kegs = installed.compactMap { $0["version"] as? String }
-                    for raw in kegs {
-                        let old = kegs.count > 1 && active != nil && raw != active
-                        var item = Installation(product: product?.id ?? name, name: name, version: raw.components(separatedBy: "_")[0], path: prefix + "/Cellar/" + name + "/" + raw, domain: "brew",
-                                                package: name, note: old ? "Older Homebrew copy retained on disk; not the active version." : "Homebrew copy; running processes may still use an earlier version.",
-                                                manager: old ? "brew-old" : "brew")
-                        if !old, let osv = Catalog.osv(product, version: item.version) { item.ecosystem = osv.ecosystem; item.packageName = osv.name }
-                        if f["pinned"] as? Bool == true { item.pinned = true }
-                        items.append(item)
-                    }
-                    // Homebrew's Python bundles pip inside its framework.
-                    if name.hasPrefix("python@"), let active, let branch = captures("^python@([0-9]+\\.[0-9]+)$", name).first?[1] {
-                        let site = "\(prefix)/Cellar/\(name)/\(active)/Frameworks/Python.framework/Versions/\(branch)/lib/python\(branch)/site-packages"
-                        items += pythonPackages(site: site, interpreter: "\(prefix)/bin/python\(branch)", manager: "brew-python", package: name, label: "Homebrew \(name)")
-                        items += pythonPackages(site: "\(prefix)/lib/python\(branch)/site-packages", interpreter: "\(prefix)/bin/python\(branch)", manager: "pip-brew", label: "Homebrew Python \(branch) site-packages")
-                    }
+        for prefix in prefixes where fm.fileExists(atPath: prefix + "/Cellar") || fm.fileExists(atPath: prefix + "/Caskroom") {
+            if fm.fileExists(atPath: prefix + "/Cellar") && !fm.isReadableFile(atPath: prefix + "/Cellar") { errors.append("\(prefix)/Cellar can't be read"); continue }
+            // Renamed formulae leave links in Cellar (vercel-cli -> vercel); only real folders are installs.
+            for name in children(prefix + "/Cellar") where directory(prefix + "/Cellar/" + name) {
+                let kegs = children(prefix + "/Cellar/" + name).filter { directory(prefix + "/Cellar/" + name + "/" + $0) }
+                guard !kegs.isEmpty else { continue }
+                let product = Catalog.product(formula: name)
+                let active = (try? fm.destinationOfSymbolicLink(atPath: prefix + "/opt/" + name)).map { ($0 as NSString).lastPathComponent }
+                let pinned = (try? fm.destinationOfSymbolicLink(atPath: prefix + "/var/homebrew/pinned/" + name)) != nil
+                for raw in kegs {
+                    let old = kegs.count > 1 && active != nil && raw != active
+                    var item = Installation(product: product?.id ?? name, name: name, version: raw.components(separatedBy: "_")[0], path: prefix + "/Cellar/" + name + "/" + raw, domain: "brew",
+                                            package: name, note: old ? "Older Homebrew copy retained on disk; not the active version." : "Homebrew copy; running processes may still use an earlier version.",
+                                            manager: old ? "brew-old" : "brew")
+                    if !old, let osv = Catalog.osv(product, version: item.version) { item.ecosystem = osv.ecosystem; item.packageName = osv.name }
+                    if pinned { item.pinned = true }
+                    items.append(item)
                 }
-                for c in (obj["casks"] as? [[String: Any]]) ?? [] {
-                    guard let token = c["token"] as? String, let version = c["installed"] as? String, !Catalog.excludedCasks.contains(token) else { continue }
-                    let product = Catalog.byCask[token], osv = Catalog.osv(Catalog.byCask[token], version: version.components(separatedBy: ",")[0])
-                    items.append(Installation(product: product?.id ?? token, name: product?.name ?? token, version: version.components(separatedBy: ",")[0], path: prefix + "/Caskroom/" + token + "/" + version,
-                                              domain: "brew", package: token, note: "Homebrew cask.", ecosystem: osv?.ecosystem, packageName: osv?.name, manager: "cask"))
+                // Homebrew's Python bundles pip inside its framework.
+                if name.hasPrefix("python@"), let active, let branch = captures("^python@([0-9]+\\.[0-9]+)$", name).first?[1] {
+                    let site = "\(prefix)/Cellar/\(name)/\(active)/Frameworks/Python.framework/Versions/\(branch)/lib/python\(branch)/site-packages"
+                    items += pythonPackages(site: site, interpreter: "\(prefix)/bin/python\(branch)", manager: "brew-python", package: name, label: "Homebrew \(name)")
+                    items += pythonPackages(site: "\(prefix)/lib/python\(branch)/site-packages", interpreter: "\(prefix)/bin/python\(branch)", manager: "pip-brew", label: "Homebrew Python \(branch) site-packages")
                 }
-            } catch { errors.append("\(brew): \(error.localizedDescription)") }
+            }
+            for token in children(prefix + "/Caskroom") where !Catalog.excludedCasks.contains(token) && directory(prefix + "/Caskroom/" + token) {
+                guard let version = children(prefix + "/Caskroom/" + token).filter({ directory(prefix + "/Caskroom/" + token + "/" + $0) }).max(by: looseLess) else { continue }
+                let product = Catalog.byCask[token], osv = Catalog.osv(Catalog.byCask[token], version: version.components(separatedBy: ",")[0])
+                items.append(Installation(product: product?.id ?? token, name: product?.name ?? token, version: version.components(separatedBy: ",")[0], path: prefix + "/Caskroom/" + token + "/" + version,
+                                          domain: "brew", package: token, note: "Homebrew cask.", ecosystem: osv?.ecosystem, packageName: osv?.name, manager: "cask"))
+            }
         }
         return (items, errors)
     }
+    static func directory(_ path: String) -> Bool { var info = stat(); return lstat(path, &info) == 0 && info.st_mode & S_IFMT == S_IFDIR }  // a real folder, not a link
 
     static func runtimes(existing: [Installation]) -> ([Installation], [String]) {
         var items: [Installation] = [], errors: [String] = []
@@ -182,13 +205,13 @@ enum Inventory {
             items.append(Installation(product: "claude-code", name: "Claude Code", version: version, path: home + "/.claude/local", domain: "tools", note: "Local install in ~/.claude/local.",
                                       ecosystem: "npm", packageName: "@anthropic-ai/claude-code", manager: "claude"))
         }
-        if let text = fm.contents(atPath: "/usr/local/go/VERSION").map({ String(decoding: $0, as: UTF8.self) }), let version = captures("^go([0-9][^\\s]*)", text).first?[1] {
+        if let text = read("/usr/local/go/VERSION", limit: 4096, followLinks: true).map({ String(decoding: $0, as: UTF8.self) }), let version = captures("^go([0-9][^\\s]*)", text).first?[1] {
             items.append(Installation(product: "go", name: "Go", version: version, path: "/usr/local/go", domain: "tools", note: "Installed from go.dev.", ecosystem: "Go", packageName: "stdlib", manager: "go-pkg"))
         }
         let framework = "/Library/Frameworks/Python.framework/Versions"
         for child in children(framework) where Version(child) != nil {
             let path = framework + "/" + child
-            guard let data = fm.contents(atPath: path + "/Resources/Info.plist"), let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
+            guard let data = read(path + "/Resources/Info.plist", limit: 4_000_000, followLinks: true), let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
                   let version = info["CFBundleShortVersionString"] as? String else { errors.append("Cannot read Python \(child) metadata"); continue }
             items.append(Installation(product: "python", name: "Python (python.org)", version: version, path: path, domain: "tools", manager: "python-org"))
             items += pythonPackages(site: "\(path)/lib/python\(child)/site-packages", interpreter: "\(path)/bin/python\(child)", manager: "pip", label: "python.org Python \(child)")
@@ -228,7 +251,7 @@ enum Inventory {
 
     static func pythonPackages(site: String, interpreter: String, manager: String, package: String? = nil, label: String) -> [Installation] {
         children(site).filter { $0.hasSuffix(".dist-info") }.compactMap { dist in
-            guard let data = fm.contents(atPath: site + "/" + dist + "/METADATA") else { return nil }
+            guard let data = head(site + "/" + dist + "/METADATA", bytes: 4096) else { return nil }
             let head = String(decoding: data.prefix(4096), as: UTF8.self)
             guard let name = captures("(?m)^Name: ([^\\r\\n]+)", head).first?[1], let version = captures("(?m)^Version: ([^\\r\\n]+)", head).first?[1] else { return nil }
             return Installation(product: "pypi:" + OSV.normalized(name, "PyPI"), name: name, version: version, path: site + "/" + dist, domain: "packages", package: package,
@@ -266,15 +289,19 @@ enum Inventory {
         return (items, [])
     }
 
-    static func projects(_ lockfiles: [String], errors: inout [String]) -> [Installation] {
+    // Reading stops after a time limit, so one hostile lockfile can't hold up the whole check; what's left is reported.
+    static func projects(_ lockfiles: [String], errors: inout [String], timeLimit: TimeInterval = 60) -> [Installation] {
         var items: [Installation] = []
-        for path in lockfiles {
-            guard let (manager, packages) = Lockfiles.parse(path) else { errors.append("Cannot parse \(display(path))"); continue }
+        let deadline = Date().addingTimeInterval(timeLimit)
+        for (index, path) in lockfiles.enumerated() {
+            if Date() > deadline { errors.append("Stopped reading lockfiles after \(Int(timeLimit)) seconds; \(lockfiles.count - index) not checked"); break }
+            guard let data = read(path, limit: Lockfiles.sizeLimit) else { errors.append("Skipped \(display(path)): a link, not a regular file, or larger than 64 MB"); continue }
+            guard let (manager, packages) = Lockfiles.parse(path, data: data) else { errors.append("Cannot parse \(display(path))"); continue }
             let directory = (path as NSString).deletingLastPathComponent, file = (path as NSString).lastPathComponent
             for package in packages {
                 items.append(Installation(product: package.ecosystem.lowercased() + ":" + package.name, name: package.name, version: package.version, path: path + "#" + package.name + "@" + package.version,
                                           domain: "projects", note: display(directory) + " · " + file + (package.dependency.map { " · " + $0 } ?? ""), ecosystem: package.ecosystem,
-                                          packageName: package.name, manager: manager, location: directory, dependency: package.dependency))
+                                          packageName: package.name, manager: manager, location: directory, dependency: package.dependency, file: path))
             }
         }
         return items
@@ -293,13 +320,17 @@ enum Inventory {
         }
         let packageFlags: Set<String> = ecosystem == "npm" ? ["-p", "--package"] : ["--from"]
         let valueFlags: Set<String> = ecosystem == "npm" ? ["--registry", "--cache", "--userconfig", "--prefix"] : ["--python", "-p", "--with", "--index", "--index-url", "--extra-index-url", "-w", "--with-requirements"]
+        // An unknown option before the package may take a value (--api-key KEY), which would then look like the
+        // package name and be saved; in that case nothing is recorded.
+        let switches: Set<String> = ecosystem == "npm" ? ["-y", "--yes", "--no", "--no-install", "-q", "--quiet", "--silent", "-s", "--ignore-existing", "--prefer-offline", "--prefer-online", "--offline"]
+            : ["-q", "--quiet", "-v", "--verbose", "--isolated", "--no-cache", "--offline", "-n", "--refresh", "--no-progress", "--native-tls"]
         var index = 0
         while index < rest.count {
             let arg = rest[index]
             if packageFlags.contains(arg) { return index + 1 < rest.count ? (ecosystem, rest[index + 1]) : nil }
             if let flag = packageFlags.first(where: { arg.hasPrefix($0 + "=") }) { return (ecosystem, String(arg.dropFirst(flag.count + 1))) }
-            index += valueFlags.contains(arg) ? 2 : 1
             if !arg.hasPrefix("-") { return (ecosystem, arg) }
+            if valueFlags.contains(arg) { index += 2 } else if switches.contains(arg) || arg.contains("=") { index += 1 } else { return nil }
         }
         return nil
     }
@@ -312,6 +343,11 @@ enum Inventory {
         return (name, version.first?.isNumber == true ? version : nil)
     }
 
+    // MCP settings Shipshape reads, and may open for editing, besides project .mcp.json files.
+    static var mcpConfigFiles: [String] {
+        [home + "/.claude.json", home + "/Library/Application Support/Claude/claude_desktop_config.json", home + "/.cursor/mcp.json",
+         home + "/.codeium/windsurf/mcp_config.json", home + "/Library/Application Support/Code/User/mcp.json", home + "/.gemini/settings.json", home + "/.codex/config.toml"]
+    }
     static func mcpServers(projectFiles: [String]) -> ([Installation], [String]) {
         var servers: [(config: String, name: String, command: String, args: [String])] = [], errors: [String] = []
         func collect(_ config: String, _ table: Any?) {
@@ -320,16 +356,14 @@ enum Inventory {
                 servers.append((config, name, command, (server["args"] as? [Any])?.compactMap { $0 as? String } ?? []))
             }
         }
-        let files = [home + "/.claude.json", home + "/Library/Application Support/Claude/claude_desktop_config.json", home + "/.cursor/mcp.json",
-                     home + "/.codeium/windsurf/mcp_config.json", home + "/Library/Application Support/Code/User/mcp.json", home + "/.gemini/settings.json"] + projectFiles
-        for file in files where fm.fileExists(atPath: file) {
+        for file in mcpConfigFiles.filter({ $0.hasSuffix(".json") }) + projectFiles where fm.fileExists(atPath: file) {
             guard let obj = json(file) else { errors.append("Cannot parse \(display(file))"); continue }
             collect(file, obj["mcpServers"])
             collect(file, obj["servers"])
             for project in ((obj["projects"] as? [String: Any]) ?? [:]).values { collect(file, (project as? [String: Any])?["mcpServers"]) }
         }
-        let codex = home + "/.codex/config.toml"
-        if let text = fm.contents(atPath: codex).map({ String(decoding: $0, as: UTF8.self) }) {
+        let codex = mcpConfigFiles.first { $0.hasSuffix(".toml") }!
+        if let text = read(codex, limit: 4_000_000, followLinks: true).map({ String(decoding: $0, as: UTF8.self) }) {
             for section in text.components(separatedBy: "\n[").dropFirst() {
                 guard let name = captures("^mcp_servers\\.([A-Za-z0-9_\"-]+)\\]", section).first?[1], let command = captures("(?m)^command\\s*=\\s*\"([^\"]*)\"", section).first?[1] else { continue }
                 let args = captures("(?m)^args\\s*=\\s*\\[([^\\]]*)\\]", section).first.map { captures("\"([^\"]*)\"", $0[1]).map { $0[1] } } ?? []
@@ -351,7 +385,7 @@ enum Inventory {
             let running = version ?? (ecosystem == "npm" ? cached[name] : nil)
             let pin = version != nil ? "pinned" : running != nil ? "unpinned; npx cache holds \(running!)" : "unpinned; runs the latest release"
             items.append(Installation(product: "mcp:" + name, name: "\(server.name) (\(name))", version: running ?? "unpinned", path: server.config + "#" + server.name, domain: "mcp",
-                                      note: "MCP server in \(display(server.config)) · \(pin)", ecosystem: running == nil ? nil : ecosystem, packageName: name, manager: "mcp", location: server.config))
+                                      note: "MCP server in \(display(server.config)) · \(pin)", ecosystem: running == nil ? nil : ecosystem, packageName: name, manager: "mcp", location: server.config, file: server.config))
         }
         return (items, errors)
     }

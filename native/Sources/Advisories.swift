@@ -20,13 +20,9 @@ enum OSV {
         return ecosystem + "|" + normalized(name, ecosystem) + "|" + item.version
     }
 
-    // Minute refreshes reuse each package version's answer for six hours, so only newly installed versions are sent.
     static func query(_ items: [Installation]) async throws -> [String: [String]] {
-        let all = Array(Set(items.compactMap(key))).sorted()
-        let saved: [String: [String]] = await Reuse.values(all.map { "osv|" + $0 }, maxAge: 6 * Reuse.hour)
+        let keys = Array(Set(items.compactMap(key))).sorted()
         var matches: [String: [String]] = [:]
-        for key in all { if let ids = saved["osv|" + key], !ids.isEmpty { matches[key] = ids } }
-        let keys = all.filter { saved["osv|" + $0] == nil }
         for start in stride(from: 0, to: keys.count, by: 1000) {
             let batch = Array(keys[start..<min(start + 1000, keys.count)])
             let queries = batch.map { key -> [String: Any] in
@@ -36,13 +32,10 @@ enum OSV {
             let body = try JSONSerialization.data(withJSONObject: ["queries": queries])
             guard let obj = try await Fetch.json("https://api.osv.dev/v1/querybatch", limit: 60_000_000, body: body) as? [String: Any],
                   let results = obj["results"] as? [[String: Any]], results.count == batch.count else { throw MonitorError(message: "OSV returned an unexpected response") }
-            var answers: [String: any Sendable] = [:]
             for (key, result) in zip(batch, results) {
                 let ids = ((result["vulns"] as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String }
                 if !ids.isEmpty { matches[key] = ids }
-                answers["osv|" + key] = ids
             }
-            await Reuse.save(answers)
         }
         return matches
     }
@@ -60,9 +53,6 @@ enum OSV {
         return vulns
     }
     static func vuln(_ id: String) async throws -> Vuln {
-        try await Reuse.value("osv-vuln|" + id, maxAge: 12 * Reuse.hour) { try await read(id) }
-    }
-    static func read(_ id: String) async throws -> Vuln {
         guard id.range(of: "^[A-Za-z0-9._:-]+$", options: .regularExpression) != nil,
               let obj = try await Fetch.json("https://api.osv.dev/v1/vulns/" + id) as? [String: Any] else { throw MonitorError(message: "OSV advisory \(id) could not be read") }
         var fixed: [String: [String]] = [:], informational = false

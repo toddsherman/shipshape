@@ -16,11 +16,11 @@ It was called Security Monitor before 0.3.0.
 
 Advisories come from [OSV](https://osv.dev) (including OpenSSF malicious-package reports), [NVD](https://nvd.nist.gov), vendor security pages and GitHub security advisories, with [CISA's Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) raising priority. Google Chrome and Mac App Store apps are left out, since they update themselves. The full coverage table and its limits are in [native/README.md](native/README.md).
 
-While it's open, Shipshape checks fully at launch and daily, and refreshes every minute, so anything you update drops off the list right away. The **History** tab keeps a log of every recommendation and when it was resolved.
+Shipshape checks when it opens, daily at 9 a.m. Pacific and whenever you click **Check now**; the footer shows when the last check ran and how long ago. The **History** tab keeps a log of every recommendation and when it was resolved.
 
 ## Principles
 
-- **It never changes your Mac.** Shipshape shows commands for you to review and run; it doesn't run them.
+- **It never changes your Mac.** Shipshape shows commands for you to review and run; it doesn't run them. It only offers commands your account can run, and never suggests `sudo` for package managers.
 - **No account, API key, analytics or cloud inventory.** Your inventory stays on your Mac. Package names and versions are sent to OSV, product versions to NVD, and release lookups to Homebrew and vendors. That includes private package names in your lockfiles.
 - **Coverage is partial, and it says so.** A check that can't complete is shown as failed, never as "safe." This is an update monitor, not antivirus.
 

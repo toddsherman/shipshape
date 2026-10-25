@@ -19,26 +19,36 @@ enum Lockfiles {
     static let skipped: Set<String> = ["node_modules", ".git", ".venv", "venv", "env", ".tox", "vendor", "dist", "build", "target", ".next",
                                        ".nuxt", ".svelte-kit", ".turbo", "Pods", "DerivedData", ".build", "__pycache__", ".cache", "coverage"]
 
-    static func find(in root: String, depth limit: Int = 5) -> [String] {
+    // System folders and package-manager internals, such as Homebrew's own Library, are never projects. They are
+    // skipped while walking a chosen folder; a chosen folder inside one of them is still checked.
+    static var skippedRoots: Set<String> {
+        let home = Inventory.home
+        return ["/opt/homebrew", "/usr", "/System", "/Library", "/private", "/bin", "/sbin", "/cores", "/dev", "/Applications",
+                home + "/Library", home + "/Applications", home + "/go/pkg"]
+    }
+    static func find(in root: String, depth limit: Int = 5, skipping roots: Set<String> = skippedRoots) -> [String] {
         var found: [String] = []
         func walk(_ dir: String, _ depth: Int) {
             guard depth <= limit, found.count < 2000, let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return }
             for name in names.sorted() {
-                let path = dir + "/" + name
-                var isDirectory: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else { continue }
-                if isDirectory.boolValue {
-                    if !skipped.contains(name), !name.hasPrefix("."), (try? FileManager.default.destinationOfSymbolicLink(atPath: path)) == nil { walk(path, depth + 1) }
-                } else if managers[name] != nil || name == ".mcp.json" { found.append(path) }
+                let path = dir == "/" ? "/" + name : dir + "/" + name
+                // lstat doesn't follow links: linked folders and files are skipped, so a scan stays inside the chosen folder.
+                var info = stat()
+                guard lstat(path, &info) == 0 else { continue }
+                let type = info.st_mode & S_IFMT
+                if type == S_IFDIR {
+                    if !skipped.contains(name), !name.hasPrefix("."), !name.hasSuffix(".app"), !name.hasSuffix(".framework"), !roots.contains(path) { walk(path, depth + 1) }
+                } else if type == S_IFREG, managers[name] != nil || name == ".mcp.json" { found.append(path) }
             }
         }
         walk(root, 0)
         return found
     }
 
-    static func parse(_ path: String) -> (manager: String, packages: [LockPackage])? {
+    static let sizeLimit = 64_000_000
+    static func parse(_ path: String, data: Data? = nil) -> (manager: String, packages: [LockPackage])? {
         let file = (path as NSString).lastPathComponent
-        guard var manager = managers[file], let data = FileManager.default.contents(atPath: path), data.count < 80_000_000 else { return nil }
+        guard var manager = managers[file], let data = data ?? Inventory.read(path, limit: sizeLimit) else { return nil }
         let text = String(decoding: data, as: UTF8.self)
         let packages: [LockPackage]
         switch manager {
@@ -69,7 +79,7 @@ enum Lockfiles {
 
     // Direct and dev dependency names from the package.json beside a JavaScript lockfile.
     static func jsRoles(_ directory: String) -> [String: String] {
-        guard let data = FileManager.default.contents(atPath: directory + "/package.json"),
+        guard let data = Inventory.read(directory + "/package.json", limit: 8_000_000),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
         var roles: [String: String] = [:]
         for name in ((obj["devDependencies"] as? [String: Any]) ?? [:]).keys { roles[name] = "dev" }
@@ -161,7 +171,8 @@ enum Lockfiles {
     }
 
     static func requirements(_ text: String) -> [LockPackage] {
-        captures("(?m)^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\\[[^\\]]*\\])?\\s*==\\s*([0-9][^\\s;#,]*)", text)
+        // Extras stay on their line, so a file of unclosed brackets can't make matching slow down quadratically.
+        captures("(?m)^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\\[[^\\]\\r\\n]*\\])?[ \\t]*==[ \\t]*([0-9][^\\s;#,]*)", text)
             .map { LockPackage(name: $0[1], version: $0[2], ecosystem: "PyPI", dependency: "direct") }
     }
 

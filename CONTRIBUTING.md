@@ -27,7 +27,7 @@ To scan from the command line with the same engine, pass an output file and any 
 
 ```sh
 xcrun swiftc -swift-version 5 -O -parse-as-library native/Sources/{Models,Catalog,Lockfiles,Inventory,Advisories,Commands,Feeds}.swift native/Tests/Check.swift -o native/work/check
-native/work/check native/work/scan.json ~/Projects --refresh
+native/work/check native/work/scan.json ~/Projects
 ```
 
 ## Adding software to the catalog

@@ -5,7 +5,9 @@ struct Version: Comparable, Equatable {
     init?(_ value: String) {
         let clean = value.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "^v", with: "", options: .regularExpression)
         guard clean.range(of: "^[0-9]+(\\.[0-9]+)*$", options: .regularExpression) != nil else { return nil }
-        parts = clean.split(separator: ".").compactMap { Int($0) }
+        let parsed = clean.split(separator: ".").map { Int($0) }
+        guard !parsed.contains(nil) else { return nil }  // a component too large for Int would otherwise vanish
+        parts = parsed.compactMap { $0 }
     }
     static func < (a: Version, b: Version) -> Bool {
         for i in 0..<max(a.parts.count, b.parts.count) {
@@ -108,6 +110,9 @@ struct Installation: Codable, Identifiable, Hashable {
     var location: String? = nil    // project folder, interpreter, prefix or config the manager acts on
     var dependency: String? = nil  // project packages: direct, dev or transitive
     var pinned: Bool? = nil        // pinned in Homebrew, which refuses to upgrade it
+    var file: String? = nil        // the lockfile or settings file a project package or MCP server was read from
+    // Reports saved before `file` existed joined the file and package with "#", which a folder name can contain.
+    var sourceFile: String { file ?? String(path.prefix { $0 != "#" }) }
 }
 enum FindingKind: String, Codable { case security, unsupported, update }
 // One way to install an update. A Terminal command is copied for the user to run; a link, app or file is
@@ -137,6 +142,7 @@ struct Finding: Codable, Identifiable {
     var commands: [UpdateCommand]? = nil
     var expectedFix: String? = nil    // fix version named only in an advisory's description
     var awaitingFix: Bool? = nil      // newest release installed and no fixed release yet: nothing to install
+    var blocked: String? = nil        // why this account can't make the change; its commands are left out (see Ownership)
     var fingerprint: String { [id, installation.version, kind.rawValue, fixed, advisories.sorted().joined(separator: ","), String(exploited)].joined(separator: "|") }
 }
 // Findings whose recommended Terminal command is the same, or built from the same template (brew upgrade a,
@@ -146,7 +152,7 @@ struct FindingGroup: Identifiable {
     let id: String
     let findings: [Finding]
     var command: UpdateCommand? {
-        guard findings.count > 1, let first = findings[0].commands?.first else { return nil }
+        guard findings.count > 1, findings[0].blocked == nil, let first = findings[0].commands?.first else { return nil }
         guard let template = first.template else { return first }
         var arguments: [String] = []
         for finding in findings { if let argument = finding.commands?.first?.argument, !arguments.contains(argument) { arguments.append(argument) } }
@@ -156,7 +162,8 @@ struct FindingGroup: Identifiable {
 func groupByCommand(_ findings: [Finding]) -> [FindingGroup] {
     var order: [String] = [], members: [String: [Finding]] = [:]
     for finding in findings {
-        let key = finding.commands?.first.flatMap { command in
+        // Findings this account can't fix share a card per place and reason, such as one project owned by someone else.
+        let key = finding.blocked.map { "blocked|" + (finding.installation.location ?? "") + "|" + $0 } ?? finding.commands?.first.flatMap { command in
             command.kind != nil ? nil : command.template.map { "template|" + $0.joined(separator: "\u{1}") } ?? "command|" + command.text
         } ?? "finding|" + finding.id
         if members[key] == nil { order.append(key) }
@@ -194,16 +201,6 @@ struct ScanReport: Codable {
     var security: [Finding] { findings.filter { $0.kind != .update && $0.awaitingFix != true } }
     var awaiting: [Finding] { findings.filter { $0.kind != .update && $0.awaitingFix == true } }
     var updates: [Finding] { findings.filter { $0.kind == .update } }
-    // What a minute refresh compares to decide whether there is anything new to save.
-    var signature: [String] {
-        let findingLines = findings.map { finding -> String in
-            let commands = finding.commands?.map(\.text).joined(separator: "\n") ?? ""
-            return [finding.fingerprint, String(finding.stale), commands].joined(separator: "|")
-        }
-        let installationLines = installations.map { [$0.path, $0.version].joined(separator: "|") }
-        let checkLines = checks.map { [$0.id, $0.status, $0.detail].joined(separator: "|") }
-        return findingLines + installationLines + checkLines
-    }
 
     // Failed discovery or advisory requests cannot erase previously confirmed evidence. Findings from a
     // source this version no longer runs are dropped rather than kept as permanently unverified.
@@ -231,7 +228,12 @@ struct SavedState: Codable {
     var lastScheduledDay: String? = nil
     var projectFolders: [String]? = nil
     var history: [HistoryEntry]? = nil
-    var minuteRefresh: Bool? = nil  // nil means on
+}
+
+// "Oct 25, 2026 at 10:36 AM (5 minutes ago)"; under a minute reads "(just now)".
+func lastCheckText(_ date: Date, now: Date = Date()) -> String {
+    let ago = now.timeIntervalSince(date) < 60 ? "just now" : RelativeDateTimeFormatter().localizedString(for: date, relativeTo: now)
+    return date.formatted(date: .abbreviated, time: .shortened) + " (" + ago + ")"
 }
 
 // One recommendation's life on this Mac: when it was first found and when and how it went away. A finding
@@ -267,7 +269,7 @@ struct HistoryEntry: Codable, Identifiable, Hashable {
         product = item.product
         location = item.location
         package = item.domain == "brew" ? item.package : nil
-        place = String(item.path.prefix { $0 != "#" })
+        place = item.sourceFile
         version = item.version
         fixed = finding.fixed
         kind = finding.kind
@@ -329,7 +331,7 @@ enum History {
         let candidates = report.installations.filter { item in
             item.domain == entry.domain && item.product == entry.product && item.location == entry.location
                 && (entry.package == nil || item.package == entry.package)
-                && (entry.domain != "projects" || item.path.hasPrefix(entry.place + "#"))
+                && (entry.domain != "projects" || item.sourceFile == entry.place)
         }
         if let current = candidates.map(\.version).filter({ $0 != entry.version }).max(by: looseLess) { return changed(from: entry.version, to: current) }
         if !candidates.isEmpty { return "No longer reported" }

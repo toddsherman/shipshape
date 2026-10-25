@@ -3,6 +3,7 @@ import AppKit
 import UserNotifications
 import ServiceManagement
 import Network
+import UniformTypeIdentifiers
 
 @MainActor
 final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
@@ -13,13 +14,10 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     @Published var notificationStatus = "Not enabled"
     @Published var loginEnabled = false
     @Published var section = "Security"
-    @Published var refreshing = false
     @Published var formerCopy: String? = nil
     private var timer: Timer?
     private var pathMonitor: NWPathMonitor?
-    private var online = true
     private var launchCheckStarted = false
-    private var fullCheckQueued = false
     private var task: Task<Void, Never>?
     private var needsStateRecovery = false
     private let folder: URL
@@ -30,7 +28,6 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     var awaiting: [Finding] { report?.awaiting ?? [] }
     var projectFolders: [String] { state.projectFolders ?? [] }
     var history: [HistoryEntry] { state.history ?? [] }
-    var minuteRefresh: Bool { state.minuteRefresh ?? true }
     var stale: Bool { report.map { Date().timeIntervalSince($0.date) > 36 * 3600 } ?? true }
     var statusTitle: String {
         if scanning { return "Checking this Mac" }
@@ -59,9 +56,10 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         }
         UNUserNotificationCenter.current().delegate = self
         refreshSettings()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
+        // Only the daily check needs a timer; a generous tolerance lets macOS group its wake-ups with other work.
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.checkSchedule() } }
+        timer?.tolerance = 30
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(woke), name: NSWorkspace.didWakeNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(terminating), name: NSApplication.willTerminateNotification, object: nil)
         checkAtLaunch()
     }
     // Both apps share a bundle identifier, so an old copy left in Applications would run alongside this one.
@@ -73,8 +71,6 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         formerCopy = copy.map { "\(StateFolder.formerName), this app's former name, is still at \(Inventory.display($0)). Quit it and move it to the Trash so only \(appName) runs." }
     }
     @objc private func woke() { checkSchedule() }
-    // Minute refreshes save only when something changed, so the latest "last seen" times are saved on quit.
-    @objc private func terminating() { if state.report != nil { save() } }
     func refreshSettings() {
         checkFormerCopy()
         loginEnabled = SMAppService.mainApp.status == .enabled
@@ -107,20 +103,18 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         guard panel.runModal() == .OK else { return }
         state.projectFolders = Array(Set(projectFolders + panel.urls.map(\.path))).sorted()
         save()
+        let warnings = panel.urls.compactMap { Ownership.folderWarning($0.path, access: .live) }
+        if !warnings.isEmpty { message = warnings.joined(separator: " ") }
     }
     func removeProjectFolder(_ path: String) { state.projectFolders = projectFolders.filter { $0 != path }; save() }
     func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
     // Every launch, including at login, starts a fresh check once the network is up. After 30 seconds it
     // checks anyway; sources that can't be reached are reported as usual and earlier findings are kept.
-    // The same network monitor later pauses minute refreshes while the Mac is offline.
     private func checkAtLaunch() {
         let path = NWPathMonitor()
         path.pathUpdateHandler = { [weak self] update in
-            let satisfied = update.status == .satisfied
-            Task { @MainActor in
-                self?.online = satisfied
-                if satisfied { self?.startLaunchCheck() }
-            }
+            guard update.status == .satisfied else { return }
+            Task { @MainActor in self?.startLaunchCheck() }
         }
         path.start(queue: .main)
         pathMonitor = path
@@ -129,6 +123,8 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     private func startLaunchCheck() {
         guard !launchCheckStarted else { return }
         launchCheckStarted = true
+        pathMonitor?.cancel()
+        pathMonitor = nil
         check()
     }
     // Links open only for https pages and System Settings panes; apps and files only when they still exist.
@@ -138,9 +134,14 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         case "link":
             guard target.hasPrefix("https://") || target.hasPrefix("x-apple.systempreferences:"), let url = URL(string: target) else { return }
             NSWorkspace.shared.open(url)
-        case "app", "file":
-            guard FileManager.default.fileExists(atPath: target) else { message = "\(Inventory.display(target)) no longer exists. Run a new check."; return }
+        case "app":
+            if let problem = SafeOpen.appProblem(target) { message = problem; return }
             NSWorkspace.shared.open(URL(fileURLWithPath: target))
+        case "file":
+            // Files open in the text editor, never in whatever app their type would launch.
+            if let problem = SafeOpen.fileProblem(target, folders: projectFolders, files: Inventory.mcpConfigFiles) { message = problem; return }
+            let editor = NSWorkspace.shared.urlForApplication(toOpen: .plainText) ?? URL(fileURLWithPath: "/System/Applications/TextEdit.app")
+            NSWorkspace.shared.open([URL(fileURLWithPath: target)], withApplicationAt: editor, configuration: NSWorkspace.OpenConfiguration())
         default: break
         }
     }
@@ -158,18 +159,6 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     func checkSchedule() {
         if state.report != nil && Schedule.isDue(now: Date(), lastDay: state.lastScheduledDay) { check() }
     }
-    private func tick() {
-        checkSchedule()
-        refresh()
-    }
-    func setMinuteRefresh(_ enabled: Bool) { state.minuteRefresh = enabled; save() }
-    // While the app is open, a quiet check every minute picks up software that was updated, removed or added.
-    // It reads everything on this Mac again but reuses advisory data from the last hour (see Reuse), and it
-    // waits while a check is running, the Mac is offline or Low Power Mode is on.
-    func refresh() {
-        guard minuteRefresh, launchCheckStarted, state.report != nil, !scanning, !refreshing, online, !ProcessInfo.processInfo.isLowPowerModeEnabled else { return }
-        run(quick: true)
-    }
     func check() {
         guard !scanning else { return }
         message = nil
@@ -177,29 +166,20 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         if Schedule.calendar.component(.hour, from: Date()) >= 9 { state.lastScheduledDay = Schedule.day(Date()) }
         save()
         scanning = true
-        // A full check asked for during a minute refresh starts as soon as the refresh finishes.
-        if refreshing { fullCheckQueued = true; progress = "Starting a full check"; return }
-        run(quick: false)
-    }
-    private func run(quick: Bool) {
-        if quick { refreshing = true }
         let previous = state.report, folders = projectFolders
         let wasAwaiting = Set(previous?.awaiting.map(\.id) ?? [])
         task = Task {
             let result = await Task.detached(priority: .utility) {
-                await Reuse.$enabled.withValue(quick) {
-                    await Scanner.run(previous: previous, projectFolders: folders) { text in Task { @MainActor in if !quick { self.progress = text } } }
-                }
+                await Scanner.run(previous: previous, projectFolders: folders) { text in Task { @MainActor in self.progress = text } }
             }.value
-            let changed = previous.map { $0.signature != result.signature } ?? true
             state.report = result
             var history = state.history ?? []
             History.update(&history, with: result, projectFolders: folders, at: result.date)
             state.history = history
-            if quick { refreshing = false } else { scanning = false; progress = nil }
-            let alerted = await notifyChanges(wasAwaiting: wasAwaiting)
-            if !quick || changed || alerted { save() }
-            if fullCheckQueued { fullCheckQueued = false; run(quick: false) }
+            scanning = false
+            progress = nil
+            await notifyChanges(wasAwaiting: wasAwaiting)
+            save()
         }
     }
     // Findings that were waiting for a fix and now have one get their own alert title.
@@ -288,7 +268,7 @@ struct MenuPanel: View {
             Label(appName, systemImage: "shield.lefthalf.filled").font(.headline)
             Text(monitor.statusTitle).font(.title3.weight(.semibold))
             if let progress = monitor.progress { Text(progress).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
-            else if let date = monitor.report?.date { Text("Checked \(date.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary) }
+            else if let date = monitor.report?.date { LastCheck(date: date, prefix: "Checked ").font(.caption).foregroundStyle(.secondary) }
             HStack {
                 Label("\(monitor.security.count) security", systemImage: "exclamationmark.shield")
                 Spacer()
@@ -303,7 +283,7 @@ struct MenuPanel: View {
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
             }
-            Text(monitor.minuteRefresh ? "Every minute, plus a full check daily at 9 a.m. Pacific · while the app is open" : "Daily at 9 a.m. Pacific · while the app is open").font(.caption2).foregroundStyle(.secondary)
+            Text("At launch, daily at 9 a.m. Pacific and when you click Check now").font(.caption2).foregroundStyle(.secondary)
         }.padding(18).frame(width: 310)
         .onReceive(NotificationCenter.default.publisher(for: .init("ShowDashboard"))) { _ in openWindow(id: "dashboard") }
     }
@@ -348,9 +328,9 @@ struct Dashboard: View {
                 else { content }
                 Divider()
                 HStack {
-                    if let date = monitor.report?.date { Text("Last check: \(date.formatted(date: .abbreviated, time: .shortened))") } else { Text("No check yet") }
+                    if let date = monitor.report?.date { LastCheck(date: date, prefix: "Last check: ") } else { Text("No check yet") }
                     Spacer()
-                    Text(monitor.minuteRefresh ? "Refreshes every minute · full check daily at 9 a.m. Pacific" : "9 a.m. Pacific daily")
+                    Text("Checks at launch, daily at 9 a.m. Pacific and on Check now")
                 }.font(.caption).foregroundStyle(.secondary).padding(16)
             }.frame(maxWidth: .infinity)
         }.frame(minWidth: 900, minHeight: 640)
@@ -456,9 +436,12 @@ struct Dashboard: View {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Project folders").font(.headline)
-                    Text("Lockfiles up to five levels deep are checked: package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock, uv.lock, poetry.lock, requirements.txt, Cargo.lock, Gemfile.lock and go.mod, plus project .mcp.json files. node_modules, virtual environments and build folders are skipped. Nothing in a project is run.").foregroundStyle(.secondary)
+                    Text("Lockfiles up to five levels deep are checked: package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock, uv.lock, poetry.lock, requirements.txt, Cargo.lock, Gemfile.lock and go.mod, plus project .mcp.json files. node_modules, virtual environments, build folders, app bundles, Homebrew and system folders are skipped. Nothing in a project is run.").foregroundStyle(.secondary)
                     ForEach(monitor.projectFolders, id: \.self) { path in
-                        HStack { Image(systemName: "folder"); Text(Inventory.display(path)).textSelection(.enabled); Spacer(); Button("Remove") { monitor.removeProjectFolder(path) }.buttonStyle(.link) }
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack { Image(systemName: "folder"); Text(Inventory.display(path)).textSelection(.enabled); Spacer(); Button("Remove") { monitor.removeProjectFolder(path) }.buttonStyle(.link) }
+                            if let warning = Ownership.folderWarning(path, access: .live) { Text(warning).font(.caption).foregroundStyle(.orange).padding(.leading, 26) }
+                        }
                     }
                     Button("Add project folders…") { monitor.addProjectFolders() }
                 }
@@ -466,8 +449,6 @@ struct Dashboard: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Checks").font(.headline)
                     Text("A full check runs when the app opens, daily at 9 a.m. America/Los_Angeles (including daylight saving changes) and when you click Check now. A missed daily check runs after wake or the next app launch after 9 a.m. The app must be running to check and alert.").foregroundStyle(.secondary)
-                    Toggle("Refresh every minute while the app is open", isOn: Binding(get: { monitor.minuteRefresh }, set: { monitor.setMinuteRefresh($0) }))
-                    Text("Picks up software you update, remove or add within a minute. Refreshes read this Mac again but reuse advisory data from the last hour, and pause while the Mac is offline or in Low Power Mode.").font(.caption).foregroundStyle(.secondary)
                     Toggle("Start \(appName) when I log in", isOn: Binding(get: { monitor.loginEnabled }, set: { monitor.setLogin($0) }))
                 }
                 Divider()
@@ -588,7 +569,7 @@ struct CardStyle: ViewModifier {
 struct FindingEvidence: View {
     let finding: Finding
     // The lockfile or MCP settings file for project and MCP findings; the install path otherwise.
-    var location: String { Inventory.display(String(finding.installation.path.prefix { $0 != "#" })) }
+    var location: String { Inventory.display(finding.installation.sourceFile) }
     // Advisory IDs, each linked to its own page: the finding's link for it, NVD for CVEs, OSV otherwise.
     var advisories: AttributedString {
         var text = AttributedString("Advisories: ")
@@ -628,6 +609,7 @@ struct FindingCard: View {
             if finding.stale { Label("Previous finding · could not verify on this check", systemImage: "clock.badge.exclamationmark").font(.caption).foregroundStyle(.orange) }
             Text(finding.reason).font(.callout).foregroundStyle(.secondary)
             Text(finding.action).font(.callout)
+            if let blocked = finding.blocked { BlockedNotice(text: blocked) }
             UpdateOptions(options: finding.commands ?? [])
             FindingEvidence(finding: finding)
         }.modifier(CardStyle(alert: finding.malicious == true))
@@ -646,7 +628,7 @@ struct AllCommandsButton: View {
             .sheet(isPresented: $showing) {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("\(lines.count) command\(lines.count == 1 ? "" : "s") for \(commands.count) finding\(commands.count == 1 ? "" : "s")").font(.title3.weight(.semibold))
-                    Text("Commands that differ only in what they act on are combined, such as brew upgrade a b c or rm -rf with several folders. Findings whose best option is a website, app or file aren't included. Review before running.")
+                    Text("Commands that differ only in what they act on are combined, such as brew upgrade a b c or rm -rf with several folders. Findings whose best option is a website, app or file aren't included, and neither are those this account can't change. Review before running.")
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) { ForEach(lines, id: \.self) { UpdateOptionRow(option: UpdateCommand(text: $0, note: ""), primary: false) } }.padding(.vertical, 2)
@@ -695,11 +677,12 @@ struct FindingGroupCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title).font(.headline)
-                Text("\(findings.count) \(findings[0].kind == .update ? "updates" : "findings"), one command").font(.caption).foregroundStyle(.secondary)
+                Text("\(findings.count) \(findings[0].kind == .update ? "updates" : "findings")" + (findings[0].blocked == nil ? ", one command" : "")).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Text(badge.0).font(.caption2.weight(.bold)).foregroundStyle(badge.1)
             }
             if !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+            if let blocked = findings[0].blocked { BlockedNotice(text: blocked) }
             if let command = group.command { UpdateOptionRow(option: command, primary: true) }
             ForEach(findings) { finding in
                 let itemBadge = findingBadge(finding)
@@ -713,11 +696,26 @@ struct FindingGroupCard: View {
                     }
                     if finding.stale { Label("Previous finding · could not verify on this check", systemImage: "clock.badge.exclamationmark").font(.caption).foregroundStyle(.orange) }
                     Text(finding.reason).font(.callout).foregroundStyle(.secondary)
-                    AlternativeOptions(options: Array((finding.commands ?? []).dropFirst()))
+                    AlternativeOptions(options: finding.blocked == nil ? Array((finding.commands ?? []).dropFirst()) : finding.commands ?? [])
                     FindingEvidence(finding: finding)
                 }
             }
         }.modifier(CardStyle(alert: findings.contains { $0.malicious == true }))
+    }
+}
+// The time of the last check and how long ago it was, kept current while it's on screen.
+struct LastCheck: View {
+    let date: Date
+    let prefix: String
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in Text(prefix + lastCheckText(date, now: context.date)) }
+    }
+}
+// Why no command is offered: the software belongs to another account, or to root.
+struct BlockedNotice: View {
+    let text: String
+    var body: some View {
+        Label(text, systemImage: "lock").font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
     }
 }
 // The recommended way to update, with the other detected routes one click away.

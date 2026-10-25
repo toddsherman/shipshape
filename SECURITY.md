@@ -18,6 +18,8 @@ Only the latest release gets fixes.
 ## What Shipshape will never do
 
 - Run, install, remove or change software. It only shows commands for you to review and run.
+- Run code from your projects or from programs another account controls. Homebrew is read from its folders, and the few programs it asks for a version number must belong to you or root.
+- Open a project file with anything but your text editor, or open one that is a link, executable, or outside your project folders.
 - Recommend piping a download into a shell.
 - Read or keep environment variables, API keys or tokens from MCP settings. Only server commands and arguments are read.
 - Send analytics, or send your inventory anywhere except the advisory lookups documented in the README.

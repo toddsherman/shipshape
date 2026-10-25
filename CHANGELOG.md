@@ -2,10 +2,24 @@
 
 Shipshape was called Security Monitor before 0.3.0. Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.1 — unreleased
+
+- **Commands only for what your account can change.** On a Mac with several accounts, or with folders left owned by root after a `sudo` install, package managers failed with "Permission denied". Shipshape now checks that your account can write where each command acts. If it can't, the finding stays listed with a notice naming the folder's owner and what to do, instead of a command that would fail. That covers another person's projects, a Homebrew installed by another account, and root-owned `node_modules` or global package folders.
+- **No package-manager internals as projects.** Project scans skip app bundles, Homebrew's own folders, `/usr`, `/System`, `/Library`, `~/Library` and Go's module cache, so a broad project folder no longer lists Homebrew's own tools as projects.
+- **Warnings for project folders** that belong to another account or include system folders, when you add them and in Settings.
+- **No more minute refresh.** Checks run at launch, daily and when you click Check now; nothing runs in between. The footer and menu show the last check's time and how long ago it was.
+- **Security fixes** from an independent review, each with a regression test:
+  - "Open file" opens only plain, non-executable text files inside your project folders or known MCP settings, in your text editor. A repo could previously make it run a script.
+  - Commands are withheld when a name contains invisible control characters that could change what a pasted command does.
+  - A crafted `requirements.txt` can no longer stall checks. Project files aren't read through links or above 64 MB, and project parsing has a time limit.
+  - Homebrew is read from its folders instead of running `brew`. Other programs run only if this account or root owns them, with a minimal environment.
+  - Package names are always quoted. MCP options can't be mistaken for package names, so keys aren't saved. Oversized version numbers are rejected. Downloads stop at their size limit.
+- **Lighter checks:** a full check on a Mac with about 6,000 packages now takes about 1.9 CPU-seconds instead of 6.5, and peaks at 182 MB instead of 301 MB.
+
 ## 0.3.0 — October 24, 2026
 
 - **New name: Shipshape.** On first launch the app moves its saved results from `Application Support/Security Monitor` to `Application Support/Shipshape`. The bundle identifier is unchanged, so notification permission carries over. If the old app is still in Applications, Shipshape asks you to remove it.
-- **Refresh every minute** while the app is open. Each refresh reads this Mac and your project folders again, reusing recent advisory data, so software you update, remove or add shows up within a minute. Refreshes pause while offline or in Low Power Mode, and can be turned off in Settings.
+- **Refresh every minute** while the app is open (removed in 0.3.1).
 - **History tab:** a log of every recommendation, when it was found, and when and how it was resolved ("Updated to 9.0.2", "Removed", "Project folder no longer checked" and others). It has search, filters and CSV export.
 - **No more same-version updates:** versions are read by their first number, so `Build 4215` compares as 4215. After every scan, an update is dropped if its version is the installed release written differently.
 
