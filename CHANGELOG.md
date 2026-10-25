@@ -5,6 +5,11 @@ Every release is a universal (Apple silicon and Intel) build for macOS 13 or lat
 ## 0.3.2 — unreleased
 
 - Removed a notice that only appeared on Macs that had run pre-release builds.
+- **More project languages:** Swift Package Manager (including Xcode projects), Composer (PHP), Dart and Flutter, .NET, Elixir and Gradle lockfiles, each checked against OSV.
+- **GitHub Actions** in project workflows, including moving tags such as `@v4` and commits pinned with a version comment.
+- **More global tools:** `cargo install` crates, `go install` programs and Ruby gems.
+- **Editor extensions** in VS Code, Cursor and Windsurf are checked against Microsoft's list of extensions removed as malware, impersonation or untrustworthy.
+- **13 more catalog products,** each verified against NVD: Vault, Consul, Podman, QEMU, Composer, Gradle, Maven, rsync, Nmap, mitmproxy, Bruno, Sourcetree and 1Password.
 
 ## 0.3.1 — October 25, 2026
 

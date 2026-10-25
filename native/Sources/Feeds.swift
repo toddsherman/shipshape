@@ -270,8 +270,25 @@ enum Scanner {
             let matches = try await OSV.query(packages)
             let vulns = try await OSV.details(Set(matches.values.flatMap { $0 }))
             report.findings += OSV.findings(for: packages, matches: matches, vulns: vulns)
-            record("osv", "Package advisories (OSV)", "\(Set(packages.compactMap(OSV.key)).count) package versions across npm, PyPI, crates.io, Go and RubyGems checked, including OpenSSF malicious-package reports.", url: "https://osv.dev/")
+            record("osv", "Package advisories (OSV)", "\(Set(packages.compactMap(OSV.key)).count) package versions across npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven checked, including OpenSSF malicious-package reports.", url: "https://osv.dev/")
         } catch { failure("osv", "Package advisories (OSV)", error) }
+        if report.installations.contains(where: { $0.ecosystem == "GitHub Actions" }) {
+            progress("Checking GitHub Actions in workflows")
+            do {
+                let (found, checked, unknown) = try await GitHubActions.findings(report.installations)
+                report.findings += found
+                record("github-actions", "GitHub Actions (OSV)", "\(checked) action references in project workflows checked against their published affected versions."
+                       + (unknown > 0 ? " \(unknown) can't be checked: they point at a branch or a commit with no version comment." : ""), url: "https://osv.dev/list?ecosystem=GitHub%20Actions")
+            } catch { failure("github-actions", "GitHub Actions (OSV)", error) }
+        }
+        let extensions = report.installations.filter { $0.manager == "extension" }
+        if !extensions.isEmpty {
+            progress("Checking editor extensions")
+            do {
+                report.findings += EditorExtensions.findings(extensions, removed: try EditorExtensions.removed(try await Fetch.string(EditorExtensions.source)))
+                record("extensions", "Editor extensions", "\(extensions.count) VS Code, Cursor and Windsurf extensions checked against Microsoft's list of extensions removed from its marketplace as malware, impersonation or untrustworthy. Vulnerabilities in extensions aren't checked; no public database covers them.", url: EditorExtensions.page)
+            } catch { failure("extensions", "Editor extensions", error) }
+        }
 
         // NVD version ranges for catalog tools and libraries without a vendor rule. Without an API key NVD
         // allows about five requests per 30 seconds, so requests are spaced and results reused for 20 hours.
@@ -371,7 +388,7 @@ enum Scanner {
                 if previous?.findings.contains(where: { $0.id == report.findings[index].id && $0.exploited }) == true { report.findings[index].exploited = true }
             }
         }
-        record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go and RubyGems packages in projects, global installs, Python environments, the npx cache and pinned MCP servers. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries. Excluded by design: Google Chrome and Mac App Store apps. Not covered: editor extensions, containers and images, Java and other ecosystems, unpinned MCP servers that npx hasn't cached, software outside the catalog and arbitrary install paths.", status: "manual")
+        record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven packages in projects, global installs (including cargo install, go install and Ruby gems), Python environments, the npx cache and pinned MCP servers, plus GitHub Actions in project workflows. Editor extensions: Microsoft's list of extensions removed as malware, impersonation or untrustworthy. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries. Excluded by design: Google Chrome and Mac App Store apps. Not covered: vulnerabilities in editor extensions, CocoaPods, containers and images, unpinned MCP servers that npx hasn't cached, GitHub Actions pinned to branches or bare commits, software outside the catalog and arbitrary install paths.", status: "manual")
         report.retainUnverified(from: previous)
         for index in report.findings.indices { report.findings[index].commands = Commands.commands(for: report.findings[index], context: context) }
         Ownership.restrict(&report.findings, access: FileAccess.live.memoized())

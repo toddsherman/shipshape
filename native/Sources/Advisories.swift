@@ -105,6 +105,109 @@ enum OSV {
     }
 }
 
+// GitHub Actions advisories come from OSV, whose own lookup doesn't compare versions for this ecosystem, so
+// each action's advisories are fetched by name and its affected ranges compared here. A moving tag such as
+// v45 points at the newest 45.x release, so it is affected only if no 45.x release fixes the problem.
+enum GitHubActions {
+    struct Range { let introduced: String?; let fixed: String?; let lastAffected: String? }
+    struct Advisory { let id: String; let summary: String; let severity: String?; let aliases: [String]; let ranges: [Range] }
+
+    // The version a workflow reference stands for, or nil when it can't be told (a branch or a bare commit).
+    static func comparable(_ ref: String) -> (version: String, moving: Bool)? {
+        guard let match = captures("^v?([0-9]+(?:\\.[0-9]+)*)", ref).first else { return nil }
+        let parts = match[1].split(separator: ".").map(String.init)
+        return parts.count >= 3 ? (parts.prefix(3).joined(separator: "."), false) : ((parts + ["999999", "999999"]).prefix(3).joined(separator: "."), true)
+    }
+    static func before(_ a: String, _ b: String) -> Bool {
+        if let x = Version(a), let y = Version(b) { return x < y }
+        return looseLess(a, b)
+    }
+    static func affected(_ version: String, _ range: Range) -> Bool {
+        if let introduced = range.introduced, introduced != "0", before(version, introduced) { return false }
+        if let fixed = range.fixed { return before(version, fixed) }
+        if let last = range.lastAffected { return !before(last, version) }
+        return true
+    }
+    static func advisories(_ obj: [String: Any], name: String) -> [Advisory] {
+        ((obj["vulns"] as? [[String: Any]]) ?? []).compactMap { vuln in
+            guard let id = vuln["id"] as? String else { return nil }
+            var ranges: [Range] = []
+            for affected in (vuln["affected"] as? [[String: Any]]) ?? [] {
+                guard ((affected["package"] as? [String: Any])?["name"] as? String)?.lowercased() == name.lowercased() else { continue }
+                for range in (affected["ranges"] as? [[String: Any]]) ?? [] where ["ECOSYSTEM", "SEMVER"].contains(range["type"] as? String ?? "") {
+                    var introduced: String?, fixed: String?, last: String?
+                    for event in (range["events"] as? [[String: Any]]) ?? [] {
+                        if let v = event["introduced"] as? String { if introduced != nil || fixed != nil || last != nil { ranges.append(Range(introduced: introduced, fixed: fixed, lastAffected: last)); fixed = nil; last = nil }; introduced = v }
+                        if let v = event["fixed"] as? String { fixed = v }
+                        if let v = event["last_affected"] as? String { last = v }
+                    }
+                    if introduced != nil || fixed != nil || last != nil { ranges.append(Range(introduced: introduced, fixed: fixed, lastAffected: last)) }
+                }
+            }
+            let summary = vuln["summary"] as? String ?? id
+            let severity = ((vuln["database_specific"] as? [String: Any])?["severity"] as? String)?.uppercased()
+            return ranges.isEmpty ? nil : Advisory(id: id, summary: summary, severity: severity, aliases: vuln["aliases"] as? [String] ?? [], ranges: ranges)
+        }
+    }
+    static func finding(_ item: Installation, advisories: [Advisory]) -> Finding? {
+        guard let (version, moving) = comparable(item.version) else { return nil }
+        let hits = advisories.filter { advisory in advisory.ranges.contains { affected(version, $0) } }
+        guard !hits.isEmpty else { return nil }
+        let fixes = hits.compactMap { advisory in advisory.ranges.compactMap(\.fixed).filter { before(version, $0) }.min(by: before) }
+        let fixed = fixes.max(by: before)
+        let count = hits.count == 1 ? "1 published advisory" : "\(hits.count) published advisories"
+        var reason = count + ": " + hits.prefix(3).map(\.summary).joined(separator: "; ") + (hits.count > 3 ? "; …" : "")
+        if moving, let fixed { reason += " @\(item.version) is a moving tag, and no release in that major version fixes this, so the fix means moving to \(fixed) or later." }
+        return Finding(source: "osv-actions", installation: item, kind: .security, fixed: fixed ?? "No fixed version published", reason: reason,
+                       action: Commands.action(for: item, malicious: false, fixed: fixed), links: hits.prefix(4).map { "https://osv.dev/vulnerability/" + $0.id },
+                       advisories: Array(Set(hits.flatMap { [$0.id] + $0.aliases.filter { $0.hasPrefix("CVE-") } })).sorted(), severity: hits.compactMap(\.severity).reduce(nil, worse))
+    }
+    static func findings(_ items: [Installation]) async throws -> (findings: [Finding], checked: Int, unknown: Int) {
+        let actions = items.filter { $0.ecosystem == "GitHub Actions" }
+        var byName: [String: [Advisory]] = [:]
+        for name in Set(actions.compactMap { $0.packageName?.lowercased() }).sorted() {
+            let body = try JSONSerialization.data(withJSONObject: ["package": ["ecosystem": "GitHub Actions", "name": name]])
+            guard let obj = try await Fetch.json("https://api.osv.dev/v1/query", body: body) as? [String: Any] else { throw MonitorError(message: "OSV returned an unexpected response") }
+            byName[name] = advisories(obj, name: name)
+        }
+        let checkable = actions.filter { comparable($0.version) != nil }
+        let findings = checkable.compactMap { item in finding(item, advisories: byName[item.packageName?.lowercased() ?? ""] ?? []) }
+        return (findings, checkable.count, actions.count - checkable.count)
+    }
+}
+
+// Microsoft publishes every extension it removes from the Visual Studio Marketplace, with the reason. Extensions
+// removed as malware, impersonation or untrustworthy are flagged; spam, copyright and owner requests aren't.
+// Cursor, Windsurf and VSCodium install from Open VSX, where the same identifier may belong to someone else.
+enum EditorExtensions {
+    static let source = "https://raw.githubusercontent.com/microsoft/vsmarketplace/main/RemovedPackages.md"
+    static let page = "https://github.com/microsoft/vsmarketplace/blob/main/RemovedPackages.md"
+    static func removed(_ markdown: String) throws -> [String: (date: String, reason: String)] {
+        var list: [String: (date: String, reason: String)] = [:]
+        for row in captures("(?m)^\\|\\s*([A-Za-z0-9][A-Za-z0-9-]*\\.[A-Za-z0-9][A-Za-z0-9._-]*)\\s*\\|\\s*([0-9/]+)\\s*\\|\\s*([^|\\r\\n]+?)\\s*\\|", markdown) {
+            list[row[1].lowercased()] = (row[2], row[3])
+        }
+        // Fail closed: a page that no longer looks like the list must not read as "nothing removed".
+        guard list.count >= 100 else { throw MonitorError(message: "Microsoft's list of removed extensions wasn't in the expected format") }
+        return list
+    }
+    static func findings(_ items: [Installation], removed: [String: (date: String, reason: String)]) -> [Finding] {
+        items.filter { $0.manager == "extension" }.compactMap { item in
+            guard let entry = removed[item.name.lowercased()] else { return nil }
+            let reason = entry.reason.lowercased()
+            let malware = reason.contains("malware")
+            guard malware || reason.contains("impersonation") || reason.contains("untrustworthy") else { return nil }
+            let editor = item.package ?? "the editor"
+            let openVSX = editor != "VS Code" && editor != "VS Code Insiders"
+            return Finding(source: "vs-marketplace", installation: item, kind: .security, fixed: "Remove this extension",
+                           reason: "Microsoft removed \(item.name) from the Visual Studio Marketplace on \(entry.date) (\(entry.reason))."
+                               + (openVSX ? " \(editor) installs extensions from Open VSX, where this identifier may belong to a different publisher; check who published yours." : ""),
+                           action: "Uninstall it" + (malware ? ", then assume anything it could reach is exposed: tokens, SSH keys and files in your projects." : ", then reinstall the genuine extension if you need it."),
+                           links: [page], severity: malware ? "CRITICAL" : "HIGH", malicious: malware && !openVSX ? true : nil)
+        }
+    }
+}
+
 // NVD CVE configurations for catalog products identified by CPE. Matches need explicit version bounds
 // or an exact version; unbounded "all versions" entries and other-platform configurations are ignored.
 enum NVD {

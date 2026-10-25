@@ -22,7 +22,8 @@ struct CommandContext {
     var tools: Set<String>
     var casks: [String: CaskInfo] = [:]
     func has(_ tool: String) -> Bool { tools.contains(tool) }
-    static let known = ["brew", "mise", "npm", "pnpm", "yarn", "bun", "corepack", "uv", "pipx", "poetry", "cargo", "bundle", "go", "deno", "volta", "fnm"]
+    static let known = ["brew", "mise", "npm", "pnpm", "yarn", "bun", "corepack", "uv", "pipx", "poetry", "cargo", "bundle", "go", "deno", "volta", "fnm",
+                        "swift", "composer", "dart", "flutter", "dotnet", "mix"]
     static let all = CommandContext(tools: Set(known + ["nvm"]))
     static func detect() -> CommandContext {
         let home = Inventory.home
@@ -65,7 +66,7 @@ struct FileAccess {
 // plain, non-executable text file inside a chosen project folder or one of the MCP settings files Shipshape
 // reads, and an app a real bundle in an Applications folder. Each check returns why not, or nil.
 enum SafeOpen {
-    static let textExtensions: Set<String> = ["json", "jsonc", "txt", "toml", "yaml", "yml"]
+    static let textExtensions: Set<String> = ["json", "jsonc", "txt", "toml", "yaml", "yml", "gradle", "kts"]
     static func fileProblem(_ path: String, folders: [String], files: [String]) -> String? {
         let place = Inventory.display(path)
         var info = stat()
@@ -92,7 +93,8 @@ enum SafeOpen {
 }
 
 enum Ownership {
-    static let projectManagers: Set<String> = ["npm", "pnpm", "yarn", "yarn-berry", "bun-lock", "uv", "poetry", "pip-req", "cargo", "bundler", "go"]
+    static let projectManagers: Set<String> = ["npm", "pnpm", "yarn", "yarn-berry", "bun-lock", "uv", "poetry", "pip-req", "cargo", "bundler", "go",
+                                               "swift", "composer", "pub", "nuget", "mix", "gradle", "actions"]
     static let homebrewManagers: Set<String> = ["brew", "brew-old", "brew-python", "cask", "pip-brew"]
 
     // The folders and files an update for this installation changes. Projects include node_modules and .venv,
@@ -101,7 +103,8 @@ enum Ownership {
     static func targets(_ item: Installation, _ access: FileAccess) -> [String] {
         let parent = (item.path as NSString).deletingLastPathComponent
         switch item.manager ?? "" {
-        case "brew", "brew-old", "brew-python", "cask", "pip", "pip-brew", "npm-global", "bun-global", "pnpm-global", "pipx", "uv-tool", "mise": return [parent]
+        case "brew", "brew-old", "brew-python", "cask", "pip", "pip-brew", "npm-global", "bun-global", "pnpm-global", "pipx", "uv-tool", "mise", "gem", "extension": return [parent]
+        case "cargo-install", "go-install": return item.location.map { [$0.hasSuffix("/bin") ? $0 : ($0 as NSString).deletingLastPathComponent] } ?? []
         case "npx-cache": return item.location.map { [($0 as NSString).deletingLastPathComponent, $0] } ?? []
         case "mcp": return item.location.map { [$0] } ?? []
         case let manager where projectManagers.contains(manager):
@@ -172,12 +175,17 @@ enum Ownership {
 enum Commands {
     static let namePatterns = [
         "npm": "^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$", "PyPI": "^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$",
-        "crates.io": "^[a-z0-9][a-z0-9_-]*$", "RubyGems": "^[a-z0-9][a-z0-9._-]*$", "Go": "^[a-z0-9][a-z0-9.~_/-]*$"
+        "crates.io": "^[a-z0-9][a-z0-9_-]*$", "RubyGems": "^[a-z0-9][a-z0-9._-]*$", "Go": "^[a-z0-9][a-z0-9.~_/-]*$",
+        "SwiftURL": "^[a-z0-9.-]+(/[a-z0-9._-]+)+$", "Packagist": "^[a-z0-9]([_.-]?[a-z0-9]+)*/[a-z0-9](([_.]|-{1,2})?[a-z0-9]+)*$",
+        "Pub": "^[a-z_][a-z0-9_]*$", "NuGet": "^[a-z0-9_][a-z0-9_.-]*$", "Hex": "^[a-z][a-z0-9_]*$", "Maven": "^[a-z0-9_.-]+:[a-z0-9_.-]+$",
+        "GitHub Actions": "^[a-z0-9_.-]+/[a-z0-9_.-]+$"
     ]
     static let installPages = [
         "npm": "https://nodejs.org/en/download", "pnpm": "https://pnpm.io/installation", "yarn": "https://yarnpkg.com/getting-started/install",
         "bun": "https://bun.sh/docs/installation", "uv": "https://docs.astral.sh/uv/getting-started/installation/", "poetry": "https://python-poetry.org/docs/#installation",
-        "cargo": "https://rustup.rs", "bundle": "https://bundler.io", "go": "https://go.dev/dl/"
+        "cargo": "https://rustup.rs", "bundle": "https://bundler.io", "go": "https://go.dev/dl/", "swift": "https://developer.apple.com/xcode/",
+        "composer": "https://getcomposer.org/download/", "dart": "https://dart.dev/get-dart", "flutter": "https://docs.flutter.dev/get-started/install",
+        "dotnet": "https://dotnet.microsoft.com/download", "mix": "https://elixir-lang.org/install.html"
     ]
     static func safe(_ value: String?, _ pattern: String = "^[a-z0-9][a-z0-9.+_@-]*$") -> String? {
         value.flatMap { $0.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil ? $0 : nil }
@@ -305,6 +313,10 @@ enum Commands {
         case "mcp":
             guard let config = item.location else { return [] }
             return [file(config, "Pin the server's package to \(fix ?? "a fixed release") or later, then restart the app that runs it.")]
+        case "extension":
+            guard let id = safe(item.name, "^[a-z0-9][a-z0-9-]*\\.[a-z0-9][a-z0-9._-]*$") else { return [] }
+            if let cli = item.location { return command(Shell.quote(cli) + " --uninstall-extension " + Shell.quote(id), "Uninstalls the extension from \(item.package ?? "the editor").") }
+            return batch(["rm -rf ", ""], Shell.quote(item.path), "Deletes the extension's folder. Restart \(item.package ?? "the editor") afterwards.")
         case "pip-req":
             let requirements = item.sourceFile
             return [file(requirements, "Change the pin to \(item.packageName ?? item.name)==\(fix ?? "a fixed release"), then reinstall the project's environment.")]
@@ -338,6 +350,15 @@ enum Commands {
         case "uv-tool":
             guard let tool = safe(item.location) else { return [] }
             return command("uv tool upgrade " + tool, "Reinstalls the tool with its newest allowed dependencies.")
+        case "cargo-install":
+            return batch(["cargo install ", " --locked"], quoted, "Reinstalls the newest release of the crate.")
+        case "gem":
+            let gem = item.location.map(Shell.quote) ?? "gem"
+            if removing { return batch([gem + " uninstall ", " --all"], quoted, "Removes every installed version of the gem.") }
+            return batch([gem + " update ", ""], quoted, "Installs the newest release beside the old one; run gem cleanup \(package) afterwards to remove older copies.")
+        case "go-install":
+            guard let main = safe(item.package, namePatterns["Go"]!) else { return [] }
+            return batch(["go install ", ""], Shell.quote(main + "@latest"), "Rebuilds the program with its newest release" + (item.dependency == "transitive" ? ", which picks up newer dependencies if it has updated them." : "."))
         case "npx-cache":
             guard let directory = item.location else { return [] }
             return batch(["rm -rf ", ""], Shell.quote(directory), "Deletes this cached npx install. The next npx run downloads the current release.")
@@ -370,6 +391,30 @@ enum Commands {
         case "go":
             guard let fix else { return [] }
             return projectBatch("go", ["go get ", " && go mod tidy"], Shell.quote(package + "@v" + fix), "Updates go.mod and go.sum.")
+        case "swift":
+            // Xcode projects update their packages from Xcode's File menu; Swift packages from Terminal.
+            guard !item.sourceFile.contains(".xcodeproj/") && !item.sourceFile.contains(".xcworkspace/"),
+                  let identity = safe((package as NSString).lastPathComponent.lowercased()) else { return [] }
+            return projectBatch("swift", ["swift package update ", ""], identity, "Updates Package.resolved within the version rules in Package.swift.")
+        case "composer":
+            if removing { return projectBatch("composer", ["composer remove ", ""], quoted, "Removes the package from this project.") }
+            return projectBatch("composer", ["composer update ", " --with-dependencies"], quoted, "Updates the package and composer.lock within the constraints in composer.json.")
+        case "pub":
+            let tool = item.location.flatMap { Inventory.read($0 + "/pubspec.yaml", limit: 1_000_000) }.map { String(decoding: $0, as: UTF8.self).contains("sdk: flutter") } == true ? "flutter" : "dart"
+            if removing { return projectBatch(tool, [tool + " pub remove ", ""], quoted, "Removes the package from this project.") }
+            return projectBatch(tool, [tool + " pub upgrade ", ""], quoted, "Updates the package in pubspec.lock. Add --major-versions if the fix needs a new major version.")
+        case "nuget":
+            if removing { return project("dotnet", "dotnet remove package " + quoted, "Removes the package reference.") }
+            guard let fix else { return [] }
+            return project("dotnet", "dotnet add package " + quoted + " --version " + fix, "Sets the package to the fixed version and updates packages.lock.json on the next restore.")
+        case "mix":
+            if removing { return project("mix", "mix deps.unlock " + quoted, "Unlocks the dependency; remove it from mix.exs too.") }
+            return projectBatch("mix", ["mix deps.update ", ""], quoted, "Updates the dependency in mix.lock within the requirement in mix.exs.")
+        case "actions":
+            return [file(item.sourceFile, "Change uses: \(package)@\(item.version) to \(fix.map { "@v" + $0 } ?? "a fixed release") or later. If you pin commits, pin the commit of that release.")]
+        case "gradle":
+            guard let folder = item.location, let build = ["build.gradle.kts", "build.gradle"].map({ folder + "/" + $0 }).first(where: FileManager.default.fileExists) else { return [] }
+            return [file(build, "Raise \(package) to \(fix ?? "a fixed release") or later, then run ./gradlew dependencies --write-locks to update gradle.lockfile.")]
         default: return []
         }
     }
@@ -413,6 +458,9 @@ enum Commands {
         case "yarn" where item.dependency != "direct" && item.dependency != "dev":
             return "Add a \"resolutions\" entry for \(name) at \(fixed) or later in package.json, then run yarn install."
         case "mcp": return "Pin this MCP server's package to \(fixed) or later in \(item.location.map { Inventory.display($0) } ?? "its configuration"), then restart the app that runs it."
+        case "actions": return "Change \(name) in this workflow to v\(fixed) or later, then commit the workflow."
+        case "swift" where item.sourceFile.contains(".xcodeproj/") || item.sourceFile.contains(".xcworkspace/"):
+            return "In Xcode, choose File › Packages › Update to Latest Package Versions. If \(fixed) is outside the project's version rule for \(name), raise the rule first."
         default: return item.domain == "projects" ? "Update \(name) to \(fixed) or later, then commit the new lockfile." : "Update to \(fixed) or later."
         }
     }

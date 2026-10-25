@@ -25,8 +25,9 @@ stops monitoring.
 Coverage is partial
 Google Chrome and App Store apps are not checked; they update through
 Chrome's own updater and the App Store.
-Editor extensions, container images, software outside the built-in
-catalog and arbitrary install paths are not checked. This is not a
+Vulnerabilities in editor extensions, CocoaPods, container images,
+software outside the built-in catalog and arbitrary install paths are
+not checked. This is not a
 malware scan or a guarantee of safety.
 
 Privacy

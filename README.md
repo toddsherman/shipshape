@@ -6,8 +6,10 @@ Shipshape is a free, open-source macOS menu bar app for people who build softwar
 
 ## What it checks
 
-- **Project dependencies** from the lockfiles in folders you choose: npm, pnpm, Yarn, Bun, uv, Poetry, pip requirements, Cargo, Bundler and Go modules.
-- **Global packages:** npm, Bun and pnpm globals, Python environments, pipx and uv tools, and the npx cache.
+- **Project dependencies** from the lockfiles in folders you choose: npm, pnpm, Yarn, Bun, uv, Poetry, pip requirements, Cargo, Bundler, Go modules, Swift Package Manager (including Xcode projects), Composer, Dart and Flutter, .NET, Elixir and Gradle.
+- **GitHub Actions** used by your projects' workflows, including moving tags like `@v4`.
+- **Global packages:** npm, Bun and pnpm globals, Python environments, pipx and uv tools, `cargo install`, `go install` and Ruby gems, and the npx cache.
+- **Editor extensions** in VS Code, Cursor and Windsurf, against Microsoft's list of extensions it removed as malware or impersonation.
 - **MCP servers** configured for Claude Code, Claude, Codex, Cursor, Windsurf, VS Code and Gemini CLI.
 - **AI coding tools and runtimes:** Claude Code, Codex CLI, Gemini CLI, Copilot CLI, OpenCode, Node, Bun, Deno, Python, Go and more, however they were installed.
 - **Homebrew** formulae and casks, including old copies left on disk, and common developer apps.

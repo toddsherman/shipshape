@@ -564,6 +564,140 @@ import Foundation
         expect(plainHTTP == "Invalid source URL", "only https sources are fetched")
         Fetch.configuration = realConfiguration
 
+        // More project ecosystems: Swift, PHP, Dart and Flutter, .NET, Elixir and Gradle lockfiles.
+        func parsed(_ file: String, _ text: String) -> [String] {
+            (Lockfiles.parse("/p/" + file, data: Data(text.utf8))?.packages ?? []).map { "\($0.ecosystem) \($0.name) \($0.version) \($0.dependency ?? "-")" }
+        }
+        expect(parsed("Package.resolved", #"{"pins":[{"identity":"sparkle","kind":"remoteSourceControl","location":"https://github.com/sparkle-project/Sparkle","state":{"revision":"ac2d","version":"2.5.0"}},{"identity":"local","location":"https://github.com/me/branchy.git","state":{"branch":"main","revision":"ff00"}}],"version":3}"#)
+               == ["SwiftURL github.com/sparkle-project/Sparkle 2.5.0 -"], "Package.resolved v3: keeps the URL's case, skips branch pins")
+        expect(parsed("Package.resolved", #"{"object":{"pins":[{"package":"Vapor","repositoryURL":"git@github.com:vapor/vapor.git","state":{"version":"4.0.0"}}]},"version":1}"#)
+               == ["SwiftURL github.com/vapor/vapor 4.0.0 -"], "Package.resolved v1 and git@ URLs")
+        expect(Lockfiles.projectFolder("/w/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved") == "/w/App"
+               && Lockfiles.projectFolder("/w/Lib/Package.resolved") == "/w/Lib", "Xcode's Package.resolved belongs to the folder holding the project")
+        expect(parsed("composer.lock", #"{"packages":[{"name":"laravel/framework","version":"v8.0.0"},{"name":"acme/dev-only","version":"dev-main"}],"packages-dev":[{"name":"phpunit/phpunit","version":"9.5.0"}]}"#)
+               == ["Packagist laravel/framework 8.0.0 -", "Packagist phpunit/phpunit 9.5.0 dev"], "composer.lock: v prefixes dropped, branch versions skipped, dev packages marked")
+        let pubLock = """
+        packages:
+          http:
+            dependency: "direct main"
+            description:
+              name: http
+              url: "https://pub.dev"
+            source: hosted
+            version: "0.12.0"
+          local_thing:
+            dependency: "direct main"
+            description:
+              path: "../thing"
+            source: path
+            version: "1.0.0"
+          meta:
+            dependency: transitive
+            source: hosted
+            version: "1.9.1"
+        sdks:
+          dart: ">=3.0.0 <4.0.0"
+        """
+        expect(parsed("pubspec.lock", pubLock) == ["Pub http 0.12.0 direct", "Pub meta 1.9.1 transitive"], "pubspec.lock: hosted packages with their role; path packages skipped")
+        expect(parsed("packages.lock.json", #"{"version":1,"dependencies":{"net8.0":{"Newtonsoft.Json":{"type":"Direct","requested":"[12.0.1, )","resolved":"12.0.1"},"System.Memory":{"type":"Transitive","resolved":"4.5.4"},"MyLib":{"type":"Project"}}}}"#)
+               == ["NuGet Newtonsoft.Json 12.0.1 direct", "NuGet System.Memory 4.5.4 transitive"], "packages.lock.json: names keep their case; project references skipped")
+        expect(parsed("mix.lock", "%{\n  \"plug\": {:hex, :plug, \"1.10.0\", \"abc\", [:mix], [], \"hexpm\", \"def\"},\n  \"mine\": {:git, \"https://x/y.git\", \"0123\", []},\n}")
+               == ["Hex plug 1.10.0 -"], "mix.lock: Hex packages only")
+        expect(parsed("gradle.lockfile", "# comment\ncom.fasterxml.jackson.core:jackson-databind:2.9.8=compileClasspath,runtimeClasspath\njunit:junit:4.12=testCompileClasspath,testRuntimeClasspath\nempty=annotationProcessor\n")
+               == ["Maven com.fasterxml.jackson.core:jackson-databind 2.9.8 -", "Maven junit:junit 4.12 dev"], "gradle.lockfile: group:artifact names; test-only packages are dev")
+        func routeFor(_ manager: String, _ ecosystem: String, _ name: String, file: String, location: String = "/w/app") -> String? {
+            let item = Installation(product: "x", name: name, version: "1.0.0", path: file + "#" + name + "@1.0.0", domain: "projects", ecosystem: ecosystem, packageName: name,
+                                    manager: manager, location: location, dependency: "direct", file: file)
+            return Commands.commands(for: update(item, "2.0.0", kind: .security), context: .all).first?.text
+        }
+        expect(routeFor("swift", "SwiftURL", "github.com/sparkle-project/Sparkle", file: "/w/app/Package.resolved") == "cd /w/app && swift package update sparkle"
+               && routeFor("swift", "SwiftURL", "github.com/sparkle-project/Sparkle", file: "/w/app/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved") == nil,
+               "Swift packages update from Terminal; Xcode projects update from Xcode")
+        expect(routeFor("composer", "Packagist", "laravel/framework", file: "/w/app/composer.lock") == "cd /w/app && composer update laravel/framework --with-dependencies"
+               && routeFor("pub", "Pub", "http", file: "/w/app/pubspec.lock") == "cd /w/app && dart pub upgrade http"
+               && routeFor("nuget", "NuGet", "Newtonsoft.Json", file: "/w/app/packages.lock.json") == "cd /w/app && dotnet add package Newtonsoft.Json --version 2.0.0"
+               && routeFor("mix", "Hex", "plug", file: "/w/app/mix.lock") == "cd /w/app && mix deps.update plug", "each ecosystem gets its own update command")
+
+        // GitHub Actions: every way a workflow can reference an action, and how each is judged.
+        let workflow = """
+        jobs:
+          build:
+            steps:
+              - uses: actions/checkout@v4
+              - uses: tj-actions/changed-files@v45.0.7
+              - name: scan
+                uses: "github/codeql-action/init@v3"
+              - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+              - uses: some/thing@8e8c483db84b4bee98b60c0593521ed34d9990e8
+              - uses: ./local-action
+              - uses: docker://alpine:3
+              - uses: owner/repo@main
+        """
+        expect(parsed(".github/workflows/ci.yml", workflow) == ["GitHub Actions actions/checkout v4 -", "GitHub Actions actions/setup-node v4.2.0 (commit 1d0ff46) -",
+                                                                 "GitHub Actions github/codeql-action v3 -", "GitHub Actions owner/repo main -",
+                                                                 "GitHub Actions some/thing commit 8e8c483 -", "GitHub Actions tj-actions/changed-files v45.0.7 -"],
+               "workflow uses: lines become actions; local actions and Docker images are skipped; pinned commits keep their version comment")
+        expect(Lockfiles.projectFolder("/w/app/.github/workflows/ci.yml") == "/w/app", "a workflow belongs to the project holding .github")
+        let changedFiles = try JSONSerialization.jsonObject(with: Data(#"{"vulns":[{"id":"GHSA-mrrh-fwg8-r2c3","summary":"tj-actions changed-files through 45.0.7 allows remote attackers to discover secrets","aliases":["CVE-2025-30066"],"database_specific":{"severity":"HIGH"},"affected":[{"package":{"ecosystem":"GitHub Actions","name":"tj-actions/changed-files"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"46.0.1"}]}]}]},{"id":"GHSA-same-major","summary":"fixed within 3.x","affected":[{"package":{"name":"tj-actions/changed-files"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"3.0.0"},{"fixed":"3.2.1"}]}]}]}]}"#.utf8)) as! [String: Any]
+        let changedAdvisories = GitHubActions.advisories(changedFiles, name: "tj-actions/changed-files")
+        func judged(_ ref: String) -> String? {
+            let item = Installation(product: "x", name: "tj-actions/changed-files", version: ref, path: "/w/app/.github/workflows/ci.yml#x", domain: "projects",
+                                    ecosystem: "GitHub Actions", packageName: "tj-actions/changed-files", manager: "actions", location: "/w/app", file: "/w/app/.github/workflows/ci.yml")
+            return GitHubActions.finding(item, advisories: changedAdvisories).map { "\($0.fixed) \($0.severity ?? "-") \($0.reason.contains("moving tag") ? "moving" : "exact")" }
+        }
+        expect(judged("v45.0.7") == "46.0.1 HIGH exact" && judged("45.0.7") == "46.0.1 HIGH exact", "an exact affected version gets the fix")
+        expect(judged("v45") == "46.0.1 HIGH moving", "a moving major tag with no fix in that major is affected and says why")
+        expect(judged("v46") == nil && judged("v46.0.1") == nil, "a moving tag whose major contains the fix, and the fixed release, are not flagged")
+        expect(judged("v3") == "46.0.1 HIGH moving" && judged("v2.9.0") == "46.0.1 HIGH exact",
+               "a fix inside the same major clears that advisory for the moving tag; earlier versions still hit the open-ended one")
+        expect(judged("commit 8e8c483") == nil && judged("main") == nil && judged("v44.5.1 (commit 1234567)") == "46.0.1 HIGH exact",
+               "bare commits and branches can't be judged; a commit's version comment can")
+        expect(routeFor("actions", "GitHub Actions", "tj-actions/changed-files", file: "/w/app/.github/workflows/ci.yml").map { $0.hasPrefix("Open ci.yml") } == true,
+               "an affected action opens its workflow file to change")
+
+        // Tools installed outside Homebrew: cargo install, Ruby gems and go install programs.
+        let cargoRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-cargo-\(UUID().uuidString)").path
+        try FileManager.default.createDirectory(atPath: cargoRoot + "/bin", withIntermediateDirectories: true)
+        try Data(#"{"installs":{"ripgrep 13.0.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["rg"]},"mine 0.1.0 (path+file:///Users/a/mine)":{"bins":["mine"]}}}"#.utf8)
+            .write(to: URL(fileURLWithPath: cargoRoot + "/.crates2.json"))
+        let crates = Inventory.cargoInstalls(root: cargoRoot)
+        expect(crates.map { "\($0.name) \($0.version) \($0.ecosystem ?? "")" } == ["ripgrep 13.0.0 crates.io"], "cargo install: crates.io installs only")
+        expect(Commands.commands(for: update(crates[0], "14.0.0", kind: .security)).first?.text == "cargo install ripgrep --locked", "cargo installs update by reinstalling")
+        try? FileManager.default.removeItem(atPath: cargoRoot)
+        expect(Inventory.gemSpec("rspec-core-3.12.0.gemspec")! == ("rspec-core", "3.12.0") && Inventory.gemSpec("nokogiri-1.15.4-arm64-darwin.gemspec")! == ("nokogiri", "1.15.4")
+               && Inventory.gemSpec("net-imap-0.4.9.1.gemspec")! == ("net-imap", "0.4.9.1") && Inventory.gemSpec("README.md") == nil, "gemspec names: hyphenated names, platforms and four-part versions")
+        let gemItem = Installation(product: "rubygems:net-imap", name: "net-imap", version: "0.4.9", path: "/opt/homebrew/lib/ruby/gems/3.4.0/specifications/default/net-imap-0.4.9.gemspec",
+                                   domain: "packages", ecosystem: "RubyGems", packageName: "net-imap", manager: "gem", location: "/opt/homebrew/opt/ruby/bin/gem")
+        expect(Commands.commands(for: update(gemItem, "0.4.20", kind: .security)).first?.text == "/opt/homebrew/opt/ruby/bin/gem update net-imap", "a gem updates with its own Ruby's gem")
+        let goOutput = "/Users/a/go/bin/gopls: go1.22.0\n\tpath\tgolang.org/x/tools/gopls\n\tmod\tgolang.org/x/tools/gopls\tv0.15.0\th1:abc\n\tdep\tgolang.org/x/net\tv0.20.0\th1:def\n\tbuild\t-compiler=gc\n/Users/a/go/bin/dev: go1.22.0\n\tpath\texample.com/dev\n\tmod\texample.com/dev\t(devel)\t\n"
+        let goItems = Inventory.goModules(goOutput)
+        expect(goItems.map { "\($0.name) \($0.version) \($0.dependency ?? "")" } == ["golang.org/x/tools/gopls 0.15.0 direct", "golang.org/x/net 0.20.0 transitive"],
+               "go version -m: the program's module and the modules built into it; development builds skipped")
+        expect(Commands.commands(for: update(goItems[1], "0.23.0", kind: .security)).first?.text == "go install golang.org/x/tools/gopls@latest",
+               "a vulnerable module inside a Go program is fixed by reinstalling the program")
+
+        // Editor extensions, checked against Microsoft's list of extensions removed from its marketplace.
+        let filler = (0..<120).map { "| filler.ext\($0) | 1/1/2025 | Spam |" }.joined(separator: "\n")
+        let removedList = try EditorExtensions.removed("| Extension Identifier | Removal Date | Type |\n|---|---|---|\n| Evil.Theme | 10/24/2026 | Malware |\n| fake.prettier | 10/23/2026 | Impersonation |\n| junk.ads | 10/22/2026 | Spam |\n" + filler)
+        expect(removedList["evil.theme"]?.reason == "Malware" && removedList["fake.prettier"]?.date == "10/23/2026", "the removed list is read, case-insensitively")
+        expect((try? EditorExtensions.removed("<html>moved</html>")) == nil, "a page that isn't the list fails the check instead of reading as nothing removed")
+        let extRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-ext-\(UUID().uuidString)").path
+        for (folder, id) in [("vscode/evil.theme-1.0.0", ("Evil", "theme")), ("vscode/junk.ads-2.0.0", ("junk", "ads")), ("cursor/fake.prettier-3.0.0", ("fake", "prettier"))] {
+            try FileManager.default.createDirectory(atPath: extRoot + "/" + folder, withIntermediateDirectories: true)
+            try Data(#"{"publisher":"\#(id.0)","name":"\#(id.1)","version":"\#(folder.split(separator: "-").last!)"}"#.utf8).write(to: URL(fileURLWithPath: extRoot + "/" + folder + "/package.json"))
+        }
+        try Data("[]".utf8).write(to: URL(fileURLWithPath: extRoot + "/vscode/extensions.json"))
+        let installedExtensions = Inventory.editorExtensions(roots: [("VS Code", extRoot + "/vscode", "/usr/bin/true"), ("Cursor", extRoot + "/cursor", extRoot + "/missing-cli")])
+        expect(installedExtensions.map { "\($0.package!) \($0.name) \($0.version)" }.sorted() == ["Cursor fake.prettier 3.0.0", "VS Code Evil.theme 1.0.0", "VS Code junk.ads 2.0.0"],
+               "extensions are read from each editor's folder by publisher.name")
+        let extensionFindings = EditorExtensions.findings(installedExtensions, removed: removedList)
+        let evilExtension = extensionFindings.first { $0.installation.name == "Evil.theme" }, fake = extensionFindings.first { $0.installation.name == "fake.prettier" }
+        expect(extensionFindings.count == 2 && evilExtension?.malicious == true && evilExtension?.severity == "CRITICAL" && fake?.severity == "HIGH" && fake?.malicious == nil
+               && fake?.reason.contains("Open VSX") == true, "malware is critical; impersonation is high; spam is ignored; Open VSX editors carry the caveat")
+        expect(Commands.commands(for: evilExtension!).first?.text == "/usr/bin/true --uninstall-extension Evil.theme"
+               && Commands.commands(for: fake!).first?.text == "rm -rf " + Shell.quote(extRoot + "/cursor/fake.prettier-3.0.0"), "uninstall with the editor's tool, or delete the folder when it isn't installed")
+        try? FileManager.default.removeItem(atPath: extRoot)
+
         // Project scans skip app bundles and package-manager internals such as Homebrew's own Library.
         let scanRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-scan-\(UUID().uuidString)").path
         for (folder, file) in [("app", "package-lock.json"), ("Tool.app/Contents", "package-lock.json"), ("homebrew/Library/formula-analytics", "uv.lock")] {

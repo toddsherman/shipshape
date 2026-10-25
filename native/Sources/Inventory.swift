@@ -87,7 +87,7 @@ enum Inventory {
         check("inventory-tools", "Runtimes and AI coding tools", "tools", toolErrors, "Node (standard, nvm, Volta, fnm), Bun, Deno, uv, Go, python.org, uv and pyenv Pythons, runtimes installed with mise, and native installs of Claude Code, OpenCode and Copilot CLI.")
         let (packages, packageErrors) = globalPackages()
         add(packages)
-        check("inventory-packages", "Global packages", "packages", packageErrors, "Read \(packages.count) globally installed npm, Bun, pnpm, pip, pipx and uv tool packages, plus the npx cache.")
+        check("inventory-packages", "Global packages", "packages", packageErrors, "Read \(packages.count) globally installed npm, Bun, pnpm, pip, pipx, uv tool, cargo, Ruby gem and go install packages, the npx cache, and VS Code, Cursor and Windsurf extensions.")
         var lockfiles: [String] = [], mcpFiles: [String] = [], projectErrors: [String] = []
         for folder in projectFolders {
             guard fm.fileExists(atPath: folder) else { projectErrors.append("Cannot read \(display(folder))"); continue }
@@ -286,7 +286,100 @@ enum Inventory {
                 }
             }
         }
-        return (items, [])
+        items += cargoInstalls()
+        items += rubyGems()
+        items += editorExtensions()
+        let (goItems, goErrors) = goBinaries()
+        items += goItems
+        return (items, goErrors)
+    }
+
+    // Crates installed with cargo install, from cargo's own record (~/.cargo/.crates2.json). Only crates from
+    // crates.io are kept; git and path installs have no published versions to compare.
+    static func cargoInstalls(root: String = home + "/.cargo") -> [Installation] {
+        guard let installs = json(root + "/.crates2.json")?["installs"] as? [String: Any] else { return [] }
+        return installs.keys.sorted().compactMap { key in
+            guard let match = captures("^([A-Za-z0-9_-]+) ([0-9][^ ]*) \\(registry\\+", key).first else { return nil }
+            return Installation(product: "crates.io:" + match[1], name: match[1], version: match[2], path: root + "/.crates2.json#" + match[1], domain: "packages",
+                                note: "Installed with cargo install.", ecosystem: "crates.io", packageName: match[1], manager: "cargo-install", location: root + "/bin")
+        }
+    }
+
+    // Ruby gems in Homebrew, rbenv, mise and per-user Rubies, named by their gemspec files (name-version, with an
+    // optional platform). Default gems that ship with Ruby are included, since they get security releases too.
+    // Apple's system Ruby is left out; Apple updates it.
+    static func rubyGems() -> [Installation] {
+        var specifications: [(folder: String, gem: String?)] = []
+        func add(_ gems: String, ruby: String?) {
+            for version in children(gems) { for folder in ["specifications", "specifications/default"] { specifications.append(("\(gems)/\(version)/\(folder)", ruby.map { $0 + "/bin/gem" })) } }
+        }
+        for prefix in ["/opt/homebrew", "/usr/local"] { add(prefix + "/lib/ruby/gems", ruby: prefix + "/opt/ruby") }
+        for (root, layout) in [(home + "/.rbenv/versions", ""), (home + "/.local/share/mise/installs/ruby", "")] {
+            for version in children(root) { add("\(root)/\(version)\(layout)/lib/ruby/gems", ruby: "\(root)/\(version)") }
+        }
+        add(home + "/.gem/ruby", ruby: nil)
+        var items: [Installation] = []
+        for (folder, gem) in specifications {
+            for file in children(folder) {
+                guard let (name, version) = gemSpec(file) else { continue }
+                let installed = gem.map { fm.isExecutableFile(atPath: $0) } == true ? gem : nil
+                items.append(Installation(product: "rubygems:" + name, name: name, version: version, path: folder + "/" + file, domain: "packages",
+                                          note: "Ruby gem in \(display(folder.components(separatedBy: "/lib/ruby/gems").first ?? folder)).", ecosystem: "RubyGems",
+                                          packageName: name, manager: "gem", location: installed))
+            }
+        }
+        return items
+    }
+
+    // Extensions installed in VS Code and editors built on it, identified as publisher.name from each
+    // extension's package.json. The editor's command-line tool, when installed, is kept for uninstalling.
+    static func editorExtensions(roots: [(editor: String, folder: String, cli: String)]? = nil) -> [Installation] {
+        let editors = roots ?? [("VS Code", home + "/.vscode/extensions", "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"),
+                                ("VS Code Insiders", home + "/.vscode-insiders/extensions", "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders"),
+                                ("Cursor", home + "/.cursor/extensions", "/Applications/Cursor.app/Contents/Resources/app/bin/cursor"),
+                                ("Windsurf", home + "/.windsurf/extensions", "/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf"),
+                                ("VSCodium", home + "/.vscode-oss/extensions", "/Applications/VSCodium.app/Contents/Resources/app/bin/codium")]
+        var items: [Installation] = []
+        for (editor, folder, cli) in editors {
+            for child in children(folder) where directory(folder + "/" + child) {
+                guard let manifest = json(folder + "/" + child + "/package.json", limit: 4_000_000), let publisher = manifest["publisher"] as? String,
+                      let name = manifest["name"] as? String, let version = manifest["version"] as? String else { continue }
+                items.append(Installation(product: "extension:" + (publisher + "." + name).lowercased(), name: publisher + "." + name, version: version, path: folder + "/" + child,
+                                          domain: "packages", package: editor, note: "\(editor) extension.", manager: "extension", location: fm.isExecutableFile(atPath: cli) ? cli : nil))
+            }
+        }
+        return items
+    }
+
+    // "rspec-core-3.12.0.gemspec" → rspec-core 3.12.0; a platform suffix ("-arm64-darwin") is dropped.
+    static func gemSpec(_ file: String) -> (name: String, version: String)? {
+        captures("^(.+?)-([0-9]+(?:\\.[0-9A-Za-z]+)*)(?:-[A-Za-z0-9_]+)*\\.gemspec$", file).first.map { ($0[1], $0[2]) }
+    }
+
+    // Go programs installed with go install embed their module versions; go version -m reads them without
+    // running the programs. The Go toolchain itself must pass the usual trust check.
+    static func goBinaries(folder: String = home + "/go/bin") -> ([Installation], [String]) {
+        let binaries = children(folder).map { folder + "/" + $0 }.filter { fm.isExecutableFile(atPath: $0) && !directory($0) }
+        guard !binaries.isEmpty, let go = ["/opt/homebrew/bin/go", "/usr/local/go/bin/go", "/usr/local/bin/go"].first(where: fm.isExecutableFile) else { return ([], []) }
+        do {
+            let result = try command(go, ["version", "-m"] + binaries, timeout: 30)
+            return (goModules(result.text), [])
+        } catch { return ([], ["go version -m: \(error.localizedDescription)"]) }
+    }
+    static func goModules(_ text: String) -> [Installation] {
+        var items: [Installation] = [], binary: String?, main: String?
+        for line in text.components(separatedBy: "\n") {
+            if !line.hasPrefix("\t"), let match = captures("^(/[^:]+): go[0-9]", line).first { binary = match[1]; main = nil; continue }
+            let fields = line.split(separator: "\t").map(String.init)
+            guard let binary, fields.count >= 2 else { continue }
+            if fields[0] == "path" { main = fields[1]; continue }
+            guard fields[0] == "mod" || fields[0] == "dep", fields.count >= 3, fields[2].hasPrefix("v") else { continue }
+            let version = String(fields[2].dropFirst()), name = fields[1], tool = (binary as NSString).lastPathComponent
+            items.append(Installation(product: "go:" + name, name: name, version: version, path: binary + "#" + name, domain: "packages", package: main,
+                                      note: fields[0] == "mod" ? "Go program \(tool), installed with go install." : "Built into the Go program \(tool).",
+                                      ecosystem: "Go", packageName: name, manager: "go-install", location: binary, dependency: fields[0] == "mod" ? "direct" : "transitive"))
+        }
+        return items
     }
 
     // Reading stops after a time limit, so one hostile lockfile can't hold up the whole check; what's left is reported.
@@ -297,7 +390,7 @@ enum Inventory {
             if Date() > deadline { errors.append("Stopped reading lockfiles after \(Int(timeLimit)) seconds; \(lockfiles.count - index) not checked"); break }
             guard let data = read(path, limit: Lockfiles.sizeLimit) else { errors.append("Skipped \(display(path)): a link, not a regular file, or larger than 64 MB"); continue }
             guard let (manager, packages) = Lockfiles.parse(path, data: data) else { errors.append("Cannot parse \(display(path))"); continue }
-            let directory = (path as NSString).deletingLastPathComponent, file = (path as NSString).lastPathComponent
+            let directory = Lockfiles.projectFolder(path), file = (path as NSString).lastPathComponent
             for package in packages {
                 items.append(Installation(product: package.ecosystem.lowercased() + ":" + package.name, name: package.name, version: package.version, path: path + "#" + package.name + "@" + package.version,
                                           domain: "projects", note: display(directory) + " · " + file + (package.dependency.map { " · " + $0 } ?? ""), ecosystem: package.ecosystem,
