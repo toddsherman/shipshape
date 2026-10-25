@@ -2,7 +2,7 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
-## 0.3.2 — unreleased
+## 0.3.2 — October 25, 2026
 
 - Removed a notice that only appeared on Macs that had run pre-release builds.
 - **More project languages:** Swift Package Manager (including Xcode projects), Composer (PHP), Dart and Flutter, .NET, Elixir and Gradle lockfiles, each checked against OSV.
