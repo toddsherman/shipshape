@@ -66,7 +66,9 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     }
     // Both apps share a bundle identifier, so an old copy left in Applications would run alongside this one.
     // Checked again whenever the app becomes active, so the notice goes once the old copy is in the Trash.
+    // Development builds with their own state folder run beside the installed app on purpose, so they skip it.
     private func checkFormerCopy() {
+        guard ProcessInfo.processInfo.environment["SHIPSHAPE_STATE_DIR"] == nil else { return }
         let copy = ["/Applications", Inventory.home + "/Applications"].map { $0 + "/" + StateFolder.formerName + ".app" }.first { FileManager.default.fileExists(atPath: $0) }
         formerCopy = copy.map { "\(StateFolder.formerName), this app's former name, is still at \(Inventory.display($0)). Quit it and move it to the Trash so only \(appName) runs." }
     }
