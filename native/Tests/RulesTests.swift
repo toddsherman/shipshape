@@ -396,7 +396,7 @@ import Foundation
         try Data("{}".utf8).write(to: former.appendingPathComponent("state.json"))
         let moved = StateFolder.resolve(in: support)
         expect(moved.lastPathComponent == "Shipshape" && FileManager.default.fileExists(atPath: moved.appendingPathComponent("state.json").path) && !FileManager.default.fileExists(atPath: former.path),
-               "the former Security Monitor folder moves to the Shipshape folder")
+               "a pre-release data folder moves to the Shipshape folder")
         try FileManager.default.createDirectory(at: former, withIntermediateDirectories: true)
         expect(StateFolder.resolve(in: support) == moved && FileManager.default.fileExists(atPath: former.path), "an existing Shipshape folder is kept and a leftover old folder is left alone")
         try? FileManager.default.removeItem(at: support)

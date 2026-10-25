@@ -1,10 +1,10 @@
 # Changelog
 
-Shipshape was called Security Monitor before 0.3.0. Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
+Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
 ## 0.3.2 — unreleased
 
-- The notice about the old Security Monitor app is gone. Its saved data still moves to Shipshape's folder on first launch.
+- Removed a notice that only appeared on Macs that had run pre-release builds.
 
 ## 0.3.1 — October 25, 2026
 
@@ -22,7 +22,6 @@ Shipshape was called Security Monitor before 0.3.0. Every release is a universal
 
 ## 0.3.0 — October 24, 2026
 
-- **New name: Shipshape.** On first launch the app moves its saved results from `Application Support/Security Monitor` to `Application Support/Shipshape`. The bundle identifier is unchanged, so notification permission carries over. If the old app is still in Applications, Shipshape asks you to remove it.
 - **Refresh every minute** while the app is open (removed in 0.3.1).
 - **History tab:** a log of every recommendation, when it was found, and when and how it was resolved ("Updated to 9.0.2", "Removed", "Project folder no longer checked" and others). It has search, filters and CSV export.
 - **No more same-version updates:** versions are read by their first number, so `Build 4215` compares as 4215. After every scan, an update is dropped if its version is the installed release written differently.

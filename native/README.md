@@ -1,14 +1,10 @@
 # Shipshape for macOS — 0.3.2 preview
 
-Shipshape was called Security Monitor before 0.3.0.
-
 A native SwiftUI menu bar app for macOS 13 or later, built for Apple silicon and Intel. It watches the developer stack people install to build apps with AI coding tools such as Claude Code and Codex, and shows the easiest way to install each fix. No Python, Node, Homebrew, account or API key is needed to run it.
 
 ## Install and use
 
 Copy **Shipshape.app** from the disk image into Applications and open it. Add the folders that hold your projects, run the first check, then enable notifications. Optionally turn on **Start Shipshape when I log in** in Settings. Each Mac builds its own inventory.
-
-**Upgrading from Security Monitor:** quit Security Monitor, move it from Applications to the Trash, then install Shipshape. Both use the bundle identifier `sh.todd.security-monitor`, so notification permission carries over, and on first launch Shipshape moves the saved results and History from `Application Support/Security Monitor` to `Application Support/Shipshape`. If Start at login was on, check that it still is in Settings, since the app's file name changed.
 
 Release builds are Developer ID signed and notarized by Apple, with tickets stapled to the disk image and the app. Each release on GitHub includes `SHA256SUMS.txt` with the disk image's checksum. Never disable Gatekeeper to install or distribute a build.
 
@@ -94,7 +90,7 @@ SIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)" bash native/package
 bash native/notarize.sh security-monitor-notary
 ```
 
-To try a development build without touching the installed app's saved results, launch it with `SHIPSHAPE_STATE_DIR` set to another folder, for example `open -n --env SHIPSHAPE_STATE_DIR=/tmp/shipshape-state dist/Shipshape.app`. Without it, a development build moves a leftover `Security Monitor` folder like a real upgrade would. The name and version come from `native/Resources/Info.plist`; the build, packaging and notarization scripts read them from there, and `appName` in `Feeds.swift` is the name shown in the app. The notary keychain profile keeps its original name. Without `SIGN_IDENTITY`, the build uses an ad-hoc signature for local development only. Tests cover version ordering, vendor range rules, each lockfile format, MCP command parsing, OSV alias handling and fix selection, NVD range and platform evaluation, command quoting and routing, failed-check retention, notification fingerprints and Pacific-time scheduling.
+To try a development build without touching the installed app's saved results, launch it with `SHIPSHAPE_STATE_DIR` set to another folder, for example `open -n --env SHIPSHAPE_STATE_DIR=/tmp/shipshape-state dist/Shipshape.app`. Without it, a development build uses and changes the installed app's data. The name and version come from `native/Resources/Info.plist`; the build, packaging and notarization scripts read them from there, and `appName` in `Feeds.swift` is the name shown in the app. The notary keychain profile keeps its original name. Without `SIGN_IDENTITY`, the build uses an ad-hoc signature for local development only. Tests cover version ordering, vendor range rules, each lockfile format, MCP command parsing, OSV alias handling and fix selection, NVD range and platform evaluation, command quoting and routing, failed-check retention, notification fingerprints and Pacific-time scheduling.
 
 For a command-line scan with the same engine (pass an output file and any project folders):
 

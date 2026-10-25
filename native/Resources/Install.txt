@@ -1,5 +1,4 @@
 Shipshape 0.3.2 — macOS preview
-(formerly Security Monitor)
 
 Requires macOS 13 or later. Includes Apple silicon and Intel binaries.
 
@@ -7,11 +6,6 @@ To install
 Drag Shipshape into Applications, then open it from Applications.
 Add the folders that hold your projects, run the first check, and enable
 notifications. In Settings you can also start the app when you log in.
-
-Upgrading from Security Monitor
-Quit Security Monitor and move it from Applications to the Trash first.
-Shipshape keeps its saved results, History and notification permission.
-If you started it at login, check that setting again in Settings.
 
 What it checks
 Runtimes, package managers, AI coding tools, MCP servers, Homebrew

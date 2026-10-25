@@ -3,7 +3,7 @@
 <plist version="1.0"><dict>
 <key>CFBundleName</key><string>Shipshape</string>
 <key>CFBundleDisplayName</key><string>Shipshape</string>
-<!-- Kept from the app's original name, Security Monitor, so permissions and settings carry over. -->
+<!-- Kept from pre-release builds so notification permission and settings carry over. -->
 <key>CFBundleIdentifier</key><string>sh.todd.security-monitor</string>
 <key>CFBundleExecutable</key><string>Shipshape</string>
 <key>CFBundlePackageType</key><string>APPL</string>

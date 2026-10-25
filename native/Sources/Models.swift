@@ -365,7 +365,7 @@ enum History {
         looseLess(new, old) ? "Changed to \(new)" : "Updated to \(new)"
     }
 }
-// The app was called Security Monitor before 0.3.0. Its saved results and history move to the new folder on
+// Pre-release builds kept their data in a folder under an earlier name. It moves to the current folder on
 // first launch; if that move fails, the old folder keeps being used so nothing appears lost.
 enum StateFolder {
     static let formerName = "Security Monitor"
