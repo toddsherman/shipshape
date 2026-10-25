@@ -196,8 +196,13 @@ struct ScanReport: Codable {
     var updates: [Finding] { findings.filter { $0.kind == .update } }
     // What a minute refresh compares to decide whether there is anything new to save.
     var signature: [String] {
-        findings.map { $0.fingerprint + "|" + String($0.stale) + "|" + ($0.commands?.map(\.text).joined(separator: "\n") ?? "") }
-            + installations.map { $0.path + "|" + $0.version } + checks.map { $0.id + "|" + $0.status + "|" + $0.detail }
+        let findingLines = findings.map { finding -> String in
+            let commands = finding.commands?.map(\.text).joined(separator: "\n") ?? ""
+            return [finding.fingerprint, String(finding.stale), commands].joined(separator: "|")
+        }
+        let installationLines = installations.map { [$0.path, $0.version].joined(separator: "|") }
+        let checkLines = checks.map { [$0.id, $0.status, $0.detail].joined(separator: "|") }
+        return findingLines + installationLines + checkLines
     }
 
     // Failed discovery or advisory requests cannot erase previously confirmed evidence. Findings from a
