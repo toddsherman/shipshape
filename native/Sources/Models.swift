@@ -159,13 +159,18 @@ struct FindingGroup: Identifiable {
         return UpdateCommand(text: template.joined(separator: arguments.joined(separator: " ")), note: first.note, template: template)
     }
 }
+// Findings this account can't fix share a card per place and reason, such as one project owned by someone
+// else; others group by their Terminal command or its template; the rest stand alone.
+func groupKey(_ finding: Finding) -> String {
+    if let blocked = finding.blocked { return "blocked|" + (finding.installation.location ?? "") + "|" + blocked }
+    guard let command = finding.commands?.first, command.kind == nil else { return "finding|" + finding.id }
+    if let template = command.template { return "template|" + template.joined(separator: "\u{1}") }
+    return "command|" + command.text
+}
 func groupByCommand(_ findings: [Finding]) -> [FindingGroup] {
     var order: [String] = [], members: [String: [Finding]] = [:]
     for finding in findings {
-        // Findings this account can't fix share a card per place and reason, such as one project owned by someone else.
-        let key = finding.blocked.map { "blocked|" + (finding.installation.location ?? "") + "|" + $0 } ?? finding.commands?.first.flatMap { command in
-            command.kind != nil ? nil : command.template.map { "template|" + $0.joined(separator: "\u{1}") } ?? "command|" + command.text
-        } ?? "finding|" + finding.id
+        let key = groupKey(finding)
         if members[key] == nil { order.append(key) }
         members[key, default: []].append(finding)
     }
