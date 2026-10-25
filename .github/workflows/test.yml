@@ -1,0 +1,21 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: xcrun swift --version
+      - name: Rule tests
+        run: bash native/test.sh
+      - name: Type-check the app
+        run: xcrun swiftc -swift-version 5 -parse-as-library -typecheck native/Sources/*.swift

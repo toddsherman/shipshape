@@ -1,0 +1,11 @@
+# Build output and local scans (scans list installed software and project paths)
+native/work/
+dist/
+*.dmg
+
+# Per-machine build and verification log (local paths and project names); CHANGELOG.md is the public record
+native/VERIFICATION.md
+
+# Local tool settings
+.claude/
+.DS_Store

@@ -1,0 +1,50 @@
+Shipshape 0.3.0 — macOS preview
+(formerly Security Monitor)
+
+Requires macOS 13 or later. Includes Apple silicon and Intel binaries.
+
+To install
+Drag Shipshape into Applications, then open it from Applications.
+Add the folders that hold your projects, run the first check, and enable
+notifications. In Settings you can also start the app when you log in.
+
+Upgrading from Security Monitor
+Quit Security Monitor and move it from Applications to the Trash first.
+Shipshape keeps its saved results, History and notification permission.
+If you started it at login, check that setting again in Settings.
+
+What it checks
+Runtimes, package managers, AI coding tools, MCP servers, Homebrew
+libraries, developer apps and your projects' dependencies, against OSV,
+NVD and vendor advisories, including reports of malicious packages.
+Each finding shows the installed and fixed versions, its evidence and the
+easiest way to install the fix: a Terminal command to copy, a download
+page, or the app's own updater. The app never runs commands or changes
+software itself.
+
+A fresh check runs each time the app opens, and daily at 9 a.m. Pacific
+while the app is running. Missed checks catch up after wake. While the app
+is open it also refreshes every minute, reusing recent advisory data, so
+software you update or remove drops off the list within a minute. History
+logs every recommendation and when it was resolved. Closing the dashboard
+leaves the menu bar app running; quitting the app stops monitoring.
+
+Coverage is partial
+Google Chrome and App Store apps are not checked; they update through
+Chrome's own updater and the App Store.
+Editor extensions, container images, software outside the built-in
+catalog and arbitrary install paths are not checked. This is not a
+malware scan or a guarantee of safety.
+
+Privacy
+Each Mac keeps its own inventory in:
+~/Library/Application Support/Shipshape
+Package names and versions, including private package names from your
+lockfiles, are sent to OSV; product versions are sent to NVD. MCP
+settings are read for server commands only, never keys or environment
+variables. No account or API key is needed. Exported reports include
+local paths and package names.
+
+The preview does not update itself. Install a new signed build to receive
+new rules. To uninstall, turn off Start at login, quit the app, and move
+it to Trash. Its Application Support data can be removed separately.
