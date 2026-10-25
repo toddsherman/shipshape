@@ -1,4 +1,4 @@
-Shipshape 0.3.1 — macOS preview
+Shipshape 0.3.2 — macOS preview
 (formerly Security Monitor)
 
 Requires macOS 13 or later. Includes Apple silicon and Intel binaries.

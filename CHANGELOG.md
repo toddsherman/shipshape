@@ -2,7 +2,11 @@
 
 Shipshape was called Security Monitor before 0.3.0. Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
-## 0.3.1 — unreleased
+## 0.3.2 — unreleased
+
+- The notice about the old Security Monitor app is gone. Its saved data still moves to Shipshape's folder on first launch.
+
+## 0.3.1 — October 25, 2026
 
 - **Commands only for what your account can change.** On a Mac with several accounts, or with folders left owned by root after a `sudo` install, package managers failed with "Permission denied". Shipshape now checks that your account can write where each command acts. If it can't, the finding stays listed with a notice naming the folder's owner and what to do, instead of a command that would fail. That covers another person's projects, a Homebrew installed by another account, and root-owned `node_modules` or global package folders.
 - **No package-manager internals as projects.** Project scans skip app bundles, Homebrew's own folders, `/usr`, `/System`, `/Library`, `~/Library` and Go's module cache, so a broad project folder no longer lists Homebrew's own tools as projects.

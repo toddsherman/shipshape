@@ -14,7 +14,6 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     @Published var notificationStatus = "Not enabled"
     @Published var loginEnabled = false
     @Published var section = "Security"
-    @Published var formerCopy: String? = nil
     private var timer: Timer?
     private var pathMonitor: NWPathMonitor?
     private var launchCheckStarted = false
@@ -62,17 +61,8 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(woke), name: NSWorkspace.didWakeNotification, object: nil)
         checkAtLaunch()
     }
-    // Both apps share a bundle identifier, so an old copy left in Applications would run alongside this one.
-    // Checked again whenever the app becomes active, so the notice goes once the old copy is in the Trash.
-    // Development builds with their own state folder run beside the installed app on purpose, so they skip it.
-    private func checkFormerCopy() {
-        guard ProcessInfo.processInfo.environment["SHIPSHAPE_STATE_DIR"] == nil else { return }
-        let copy = ["/Applications", Inventory.home + "/Applications"].map { $0 + "/" + StateFolder.formerName + ".app" }.first { FileManager.default.fileExists(atPath: $0) }
-        formerCopy = copy.map { "\(StateFolder.formerName), this app's former name, is still at \(Inventory.display($0)). Quit it and move it to the Trash so only \(appName) runs." }
-    }
     @objc private func woke() { checkSchedule() }
     func refreshSettings() {
-        checkFormerCopy()
         loginEnabled = SMAppService.mainApp.status == .enabled
         Task {
             let settings = await UNUserNotificationCenter.current().notificationSettings()
@@ -275,7 +265,6 @@ struct MenuPanel: View {
                 Label("\(monitor.updates.count) updates", systemImage: "arrow.down.circle")
             }.font(.caption)
             if !(monitor.report?.errors.isEmpty ?? true) { Text("Some checks need attention").foregroundStyle(.orange).font(.caption) }
-            if monitor.formerCopy != nil { Text("Remove the old Security Monitor app from Applications.").foregroundStyle(.orange).font(.caption) }
             Divider()
             Button("Open \(appName)") { openWindow(id: "dashboard"); NSApp.activate(ignoringOtherApps: true) }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
             HStack {
@@ -323,7 +312,7 @@ struct Dashboard: View {
                     if monitor.scanning { ProgressView().controlSize(.small).padding(.top, 7) }
                     Button(monitor.scanning ? "Checking…" : "Check now") { monitor.check() }.buttonStyle(.borderedProminent).disabled(monitor.scanning)
                 }.padding(28)
-                ForEach([monitor.formerCopy, monitor.message].compactMap { $0 }, id: \.self) { Text($0).font(.callout).foregroundStyle(.orange).padding(.horizontal, 28).padding(.bottom, 16).textSelection(.enabled) }
+                ForEach([monitor.message].compactMap { $0 }, id: \.self) { Text($0).font(.callout).foregroundStyle(.orange).padding(.horizontal, 28).padding(.bottom, 16).textSelection(.enabled) }
                 if monitor.section != "Settings", monitor.report == nil { welcome }
                 else { content }
                 Divider()

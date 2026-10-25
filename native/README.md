@@ -1,4 +1,4 @@
-# Shipshape for macOS — 0.3.1 preview
+# Shipshape for macOS — 0.3.2 preview
 
 Shipshape was called Security Monitor before 0.3.0.
 
@@ -8,7 +8,7 @@ A native SwiftUI menu bar app for macOS 13 or later, built for Apple silicon and
 
 Copy **Shipshape.app** from the disk image into Applications and open it. Add the folders that hold your projects, run the first check, then enable notifications. Optionally turn on **Start Shipshape when I log in** in Settings. Each Mac builds its own inventory.
 
-**Upgrading from Security Monitor:** quit Security Monitor, move it from Applications to the Trash, then install Shipshape. Both use the bundle identifier `sh.todd.security-monitor`, so notification permission carries over, and on first launch Shipshape moves the saved results and History from `Application Support/Security Monitor` to `Application Support/Shipshape`. If the old app is still in Applications, Shipshape says so. If Start at login was on, check that it still is in Settings, since the app's file name changed.
+**Upgrading from Security Monitor:** quit Security Monitor, move it from Applications to the Trash, then install Shipshape. Both use the bundle identifier `sh.todd.security-monitor`, so notification permission carries over, and on first launch Shipshape moves the saved results and History from `Application Support/Security Monitor` to `Application Support/Shipshape`. If Start at login was on, check that it still is in Settings, since the app's file name changed.
 
 Release builds are Developer ID signed and notarized by Apple, with tickets stapled to the disk image and the app. Each release on GitHub includes `SHA256SUMS.txt` with the disk image's checksum. Never disable Gatekeeper to install or distribute a build.
 
