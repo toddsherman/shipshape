@@ -477,9 +477,11 @@ enum Commands {
 // reviews the issue there and submits it with their own GitHub account; Shipshape never posts anything itself.
 enum Feedback {
     static let repository = "https://github.com/toddsherman/shipshape"
-    // GitHub refuses new-issue links much over 8 KB, so long fields are cut down to fit, and the full text is
-    // copied for the person to paste.
-    static let limit = 7_500
+    // Someone signed out of GitHub reaches the page through its sign-in link, which carries this link encoded
+    // again; GitHub's sign-in page fails once that link passes about 7,000 characters. Long fields are cut down
+    // to fit, and the full text is copied for the person to paste.
+    static let limit = 6_800
+    static func signInLength(_ link: String) -> Int { "https://github.com/login?return_to=".count + link.count + 2 * link.filter { ":/?&=%".contains($0) }.count }
     static let notice = "\n… [Shortened to fit GitHub's link. The full text is on your clipboard; paste it here.]"
     static let labels = ["problem": "What's wrong", "output": "What happened", "finding": "The finding", "feedback": "Your feedback",
                          "what": "What should be covered", "version": "Shipshape and macOS version"]
@@ -550,13 +552,18 @@ enum Feedback {
             let items = [("template", form), ("title", title)] + Array(zip(ids, values))
             return repository + "/issues/new?" + items.filter { !$0.1.isEmpty }.map { $0.0 + "=" + encode($0.1) }.joined(separator: "&")
         }
-        var text = address()
-        while text.count > limit {
-            guard let index = values.indices.filter({ shortenable.contains(ids[$0]) && values[$0].count > notice.count + 100 })
-                .max(by: { values[$0].count < values[$1].count }) else { return nil }
-            let base = values[index].hasSuffix(notice) ? String(values[index].dropLast(notice.count)) : values[index]
-            values[index] = String(base.dropLast(max(100, (text.count - limit) / 3))) + notice  // a character takes 1 to 12 bytes once encoded
-            shortened = true
+        var text = address(), done = Set<Int>()
+        // The longest field that may be shortened keeps as much of its beginning as fits, found by halving.
+        while signInLength(text) > limit {
+            guard let index = values.indices.filter({ shortenable.contains(ids[$0]) && !done.contains($0) }).max(by: { values[$0].count < values[$1].count }) else { return nil }
+            var low = 0, high = full[index].count
+            while low < high {
+                let middle = (low + high + 1) / 2
+                values[index] = String(full[index].prefix(middle)) + notice
+                if signInLength(address()) <= limit { low = middle } else { high = middle - 1 }
+            }
+            values[index] = String(full[index].prefix(low)) + notice
+            done.insert(index); shortened = true
             text = address()
         }
         let plain = (["# " + title] + zip(ids, full).filter { !$0.1.isEmpty }.map { "### \(labels[$0.0] ?? $0.0)\n\n\($0.1)" }).joined(separator: "\n\n")

@@ -893,7 +893,11 @@ import Foundation
                && fields["output"] == "% /opt/homebrew/opt/ruby/bin/gem update json\nNothing to update & done #1 + 2 = ?\n~/project" && fields["version"]?.hasPrefix("Shipshape ") == true,
                "the issue form's fields are filled in by ID, with &, #, + and line breaks intact")
         let long = Feedback.report(jsonGem, problem: .other, title: "Long", details: String(repeating: "Gems already up-to-date ✓\n", count: 1_500), summary: jsonSummary)!
-        expect(long.shortened && long.url.absoluteString.count <= Feedback.limit && query(long.url)["output"]?.hasSuffix(Feedback.notice.trimmingCharacters(in: .whitespacesAndNewlines)) == true
+        let lines = Feedback.report(jsonGem, problem: .other, title: "Box drawing", details: String(repeating: "────────\n", count: 600), summary: jsonSummary)!
+        expect(Feedback.signInLength("https://github.com/x?a=%E2") == 35 + 26 + 2 * 7 && lines.shortened && Feedback.signInLength(lines.url.absoluteString) <= Feedback.limit
+               && Feedback.signInLength(lines.url.absoluteString) > Feedback.limit - 200 && query(lines.url)["output"]!.hasPrefix("────────\n────────"),
+               "the limit counts the link as GitHub's sign-in page carries it, and non-ASCII text keeps as much as fits")
+        expect(long.shortened && Feedback.signInLength(long.url.absoluteString) <= Feedback.limit && query(long.url)["output"]?.hasSuffix(Feedback.notice.trimmingCharacters(in: .whitespacesAndNewlines)) == true
                && query(long.url)["finding"] == jsonSummary && long.text.contains(String(repeating: "Gems already up-to-date ✓\n", count: 1_499) + "Gems already up-to-date ✓"),
                "a report too long for GitHub's link is shortened and marked, and the full text is kept for the clipboard")
         let blank = Feedback.report(jsonGem, problem: .notApplicable, title: "t", details: "  \n", summary: jsonSummary)!
