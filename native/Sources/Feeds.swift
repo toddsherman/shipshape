@@ -281,6 +281,14 @@ enum Scanner {
                        + (unknown > 0 ? " \(unknown) can't be checked: they point at a branch or a commit with no version comment." : ""), url: "https://osv.dev/list?ecosystem=GitHub%20Actions")
             } catch { failure("github-actions", "GitHub Actions (OSV)", error) }
         }
+        // Sparkle feeds name the newest release of self-updating apps, including apps outside the catalog.
+        if report.installations.contains(where: { $0.feed != nil }) {
+            progress("Checking Sparkle update feeds")
+            let (found, read, unreadable) = await SparkleFeeds.findings(report.installations, skipping: Set(report.findings.map(\.installation.path)))
+            report.findings += found
+            record("sparkle-feeds", "Sparkle update feeds", "\(read) self-updating apps' own update feeds checked for newer releases."
+                   + (unreadable > 0 ? " \(unreadable) feed\(unreadable == 1 ? "" : "s") couldn't be read; those apps still check for updates themselves." : ""), url: "https://sparkle-project.org/documentation/publishing/")
+        }
         let extensions = report.installations.filter { $0.manager == "extension" }
         if !extensions.isEmpty {
             progress("Checking editor extensions")
@@ -388,7 +396,7 @@ enum Scanner {
                 if previous?.findings.contains(where: { $0.id == report.findings[index].id && $0.exploited }) == true { report.findings[index].exploited = true }
             }
         }
-        record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven packages in projects, global installs (including cargo install, go install and Ruby gems), Python environments, the npx cache and pinned MCP servers, plus GitHub Actions in project workflows. Editor extensions: Microsoft's list of extensions removed as malware, impersonation or untrustworthy. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries. Excluded by design: Google Chrome and Mac App Store apps. Not covered: vulnerabilities in editor extensions, CocoaPods, containers and images, unpinned MCP servers that npx hasn't cached, GitHub Actions pinned to branches or bare commits, software outside the catalog and arbitrary install paths.", status: "manual")
+        record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven packages in projects, global installs (including cargo install, go install and Ruby gems), Python environments, the npx cache and pinned MCP servers, plus GitHub Actions in project workflows. Editor extensions: Microsoft's list of extensions removed as malware, impersonation or untrustworthy. Self-updating apps: their own Sparkle update feeds, and the Sparkle version bundled inside them, against Sparkle's advisories. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries. Excluded by design: Google Chrome and Mac App Store apps. Not covered: vulnerabilities in editor extensions, CocoaPods, containers and images, unpinned MCP servers that npx hasn't cached, GitHub Actions pinned to branches or bare commits, software outside the catalog and arbitrary install paths.", status: "manual")
         report.retainUnverified(from: previous)
         for index in report.findings.indices { report.findings[index].commands = Commands.commands(for: report.findings[index], context: context) }
         Ownership.restrict(&report.findings, access: FileAccess.live.memoized())

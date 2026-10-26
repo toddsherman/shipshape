@@ -77,7 +77,7 @@ enum Inventory {
         }
         let (apps, appErrors, skipped) = self.apps()
         add(apps)
-        check("inventory-apps", "Developer apps", "apps", appErrors, "Read \(apps.count) catalog apps (editors, AI tools, browsers, terminals, containers) in /Applications and your Applications folder. Skipped \(skipped) App Store or Google Chrome app\(skipped == 1 ? "" : "s") by design.")
+        check("inventory-apps", "Developer apps", "apps", appErrors, "Read \(apps.filter { $0.manager == "app" }.count) apps in /Applications and your Applications folder: catalog developer apps, plus self-updating apps with a Sparkle feed or a bundled Sparkle, and the Sparkle version inside \(apps.filter { $0.manager == "sparkle-framework" }.count) of them. Skipped \(skipped) App Store or Google Chrome app\(skipped == 1 ? "" : "s") by design.")
         let (brew, brewErrors) = homebrew()
         add(brew)
         check("inventory-brew", "Homebrew inventory", "brew", brewErrors, "Read \(brew.count) installed formula, cask and bundled Python package versions, including retained copies.", failed: true)
@@ -121,14 +121,41 @@ enum Inventory {
                           let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
                           let bundleID = info["CFBundleIdentifier"] as? String else { continue }
                     if Catalog.excludedBundleIDs.contains(bundleID) || fm.fileExists(atPath: url.appendingPathComponent("Contents/_MASReceipt/receipt").path) { skipped += 1; continue }
-                    guard let product = Catalog.byBundleID[bundleID] else { continue }
-                    guard let version = (info["CFBundleShortVersionString"] ?? info["CFBundleVersion"]) as? String else { errors.append("Unreadable version: \(url.lastPathComponent)"); continue }
-                    items.append(Installation(product: product.id, name: product.name, version: version, path: url.path, domain: "apps", package: product.casks.first,
-                                              ecosystem: Catalog.osv(product, version: version)?.ecosystem, packageName: Catalog.osv(product, version: version)?.name, manager: "app"))
+                    let build = info["CFBundleVersion"] as? String
+                    let feed = (info["SUFeedURL"] as? String).flatMap { $0.hasPrefix("https://") ? $0 : nil }
+                    let sparkle = sparkleVersion(url.path)
+                    let title = (info["CFBundleDisplayName"] ?? info["CFBundleName"]) as? String ?? url.deletingPathExtension().lastPathComponent
+                    // Apps outside the catalog are kept when Sparkle can say something about them: a feed with
+                    // their newest release, or a bundled Sparkle with known advisories.
+                    let product = Catalog.byBundleID[bundleID]
+                    guard product != nil || feed != nil || sparkle != nil else { continue }
+                    guard let version = info["CFBundleShortVersionString"] as? String ?? build else { errors.append("Unreadable version: \(url.lastPathComponent)"); continue }
+                    let name = product?.name ?? title
+                    items.append(Installation(product: product?.id ?? "app:" + bundleID, name: name, version: version, path: url.path, domain: "apps", package: product?.casks.first,
+                                              ecosystem: product.flatMap { Catalog.osv($0, version: version)?.ecosystem }, packageName: product.flatMap { Catalog.osv($0, version: version)?.name },
+                                              manager: "app", build: build, feed: feed))
+                    if let sparkle {
+                        items.append(Installation(product: "swifturl:github.com/sparkle-project/Sparkle", name: "Sparkle in \(name)", version: sparkle, path: url.path + "/Contents/Frameworks/Sparkle.framework",
+                                                  domain: "apps", note: "The update framework bundled inside \(name). It is updated with the app.", ecosystem: "SwiftURL",
+                                                  packageName: "github.com/sparkle-project/Sparkle", manager: "sparkle-framework", location: url.path))
+                    }
                 } else if url.pathComponents.count - base.pathComponents.count >= 3 { enumerator.skipDescendants() }
             }
         }
         return (items, errors, skipped)
+    }
+
+    // The version of the Sparkle framework bundled in an app, trimmed of build suffixes ("1.27.1-3-g05be1d71",
+    // "1.22.0 1354-g4e0506a") so it can be compared; prerelease tags such as -beta.1 are kept.
+    static func sparkleVersion(_ app: String) -> String? {
+        let framework = app + "/Contents/Frameworks/Sparkle.framework"
+        guard let data = ["/Versions/A/Resources/Info.plist", "/Resources/Info.plist"].lazy.compactMap({ read(framework + $0, limit: 1_000_000, followLinks: true) }).first,
+              let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
+              let raw = (info["CFBundleShortVersionString"] ?? info["CFBundleVersion"]) as? String else { return nil }
+        return trimmedSparkleVersion(raw)
+    }
+    static func trimmedSparkleVersion(_ raw: String) -> String? {
+        captures("^([0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:-(?:alpha|beta|rc)[0-9.]*)?)", raw).first?[1]
     }
 
     // Read straight from Homebrew's folders instead of running brew: Cellar holds each formula's installed

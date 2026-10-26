@@ -208,6 +208,89 @@ enum EditorExtensions {
     }
 }
 
+// Self-updating apps name their Sparkle update feed (an RSS "appcast") in SUFeedURL. Each item names a
+// release by build number (sparkle:version, compared with the app's CFBundleVersion as Sparkle does) and
+// usually a readable version. Beta channels, other platforms and releases needing a newer macOS are skipped.
+enum SparkleFeeds {
+    struct Release: Equatable { var build: String; var version: String?; var minimumSystem: String? }
+    final class Reader: NSObject, XMLParserDelegate {
+        var releases: [Release] = []
+        private var inItem = false, current = Release(build: ""), element = "", text = "", skip = false
+        private static func local(_ name: String) -> String { name.split(separator: ":").last.map(String.init) ?? name }
+        func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+            if name == "item" { inItem = true; current = Release(build: ""); skip = false }
+            guard inItem else { return }
+            element = name; text = ""
+            if name == "enclosure" {
+                for (key, value) in attributes where key.contains(":") {
+                    switch Self.local(key) {
+                    case "version": current.build = value
+                    case "shortVersionString": current.version = value
+                    case "os": if value.lowercased() != "macos" { skip = true }
+                    default: break
+                    }
+                }
+            }
+        }
+        func parser(_ parser: XMLParser, foundCharacters string: String) { text += string }
+        func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+            guard inItem else { return }
+            let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if name.contains(":") {
+                switch Self.local(name) {
+                case "version": if !value.isEmpty { current.build = value }
+                case "shortVersionString": if !value.isEmpty { current.version = value }
+                case "minimumSystemVersion": current.minimumSystem = value
+                case "channel": skip = true
+                default: break
+                }
+            }
+            if name == "item" {
+                inItem = false
+                if !skip && !current.build.isEmpty { releases.append(current) }
+            }
+            text = ""
+        }
+    }
+    static func releases(_ data: Data) -> [Release] {
+        let parser = XMLParser(data: data), reader = Reader()
+        parser.shouldResolveExternalEntities = false
+        parser.delegate = reader
+        return parser.parse() ? reader.releases : []
+    }
+    static func older(_ a: String, _ b: String) -> Bool {
+        if let x = Version(a), let y = Version(b) { return x < y }
+        return looseLess(a, b)
+    }
+    // The newest release this Mac can install, if any.
+    static func newest(_ releases: [Release], system: String = ProcessInfo.processInfo.operatingSystemVersionString) -> Release? {
+        let macOS = captures("([0-9]+(?:\\.[0-9]+)*)", system).first?[1] ?? "99"
+        return releases.filter { $0.minimumSystem.map { !older(macOS, $0) } ?? true }.max { older($0.build, $1.build) }
+    }
+    static func finding(_ item: Installation, releases: [Release], system: String = ProcessInfo.processInfo.operatingSystemVersionString) -> Finding? {
+        guard let installed = item.build ?? Optional(item.version), let release = newest(releases, system: system), older(installed, release.build) else { return nil }
+        let version = release.version ?? release.build
+        return Finding(source: "sparkle-feed", installation: item, kind: .update, fixed: version,
+                       reason: "\(item.name)'s own update feed lists \(version)\(release.version != nil && release.version != release.build ? " (build \(release.build))" : "") as its newest release. This alone does not establish a security vulnerability.",
+                       action: "Open \(item.name) and check for updates, or download the release from its developer.", links: [])
+    }
+    static func findings(_ items: [Installation], skipping paths: Set<String>) async -> (findings: [Finding], read: Int, unreadable: Int) {
+        let apps = items.filter { $0.feed != nil && !paths.contains($0.path) }
+        var findings: [Finding] = [], read = 0, unreadable = 0
+        await withTaskGroup(of: (Installation, Data?).self) { group in
+            for app in apps { group.addTask { (app, try? await Fetch.data(app.feed!, limit: 5_000_000)) } }
+            for await (app, data) in group {
+                guard let data else { unreadable += 1; continue }
+                let releases = Self.releases(data)
+                if releases.isEmpty { unreadable += 1; continue }
+                read += 1
+                if let finding = finding(app, releases: releases) { findings.append(finding) }
+            }
+        }
+        return (findings, read, unreadable)
+    }
+}
+
 // NVD CVE configurations for catalog products identified by CPE. Matches need explicit version bounds
 // or an exact version; unbounded "all versions" entries and other-platform configurations are ignored.
 enum NVD {

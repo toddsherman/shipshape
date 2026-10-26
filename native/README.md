@@ -1,4 +1,4 @@
-# Shipshape for macOS — 0.3.2 preview
+# Shipshape for macOS — 0.3.3 preview
 
 A native SwiftUI menu bar app for macOS 13 or later, built for Apple silicon and Intel. It watches the developer stack people install to build apps with AI coding tools such as Claude Code and Codex, and shows the easiest way to install each fix. No Python, Node, Homebrew, account or API key is needed to run it.
 
@@ -27,6 +27,7 @@ Notifications are deduplicated by installation, version, fix version, advisory i
 | Runtimes | Node (standard, Homebrew, nvm, Volta, fnm), Bun, Deno, uv, Go (go.dev or Homebrew), python.org, Homebrew, uv and pyenv Pythons; Node, Python, Go, Ruby, Bun and Deno installed with mise; Rust, Ruby, PHP and OpenJDK from Homebrew | Vendor rules for Node and Bun; OSV for Go's standard library and uv; NVD for the rest |
 | Homebrew | Every installed formula and cask, including retained older copies | Vendor rules for PostgreSQL (including the libpq client library) and OpenSSL; OSV for Docker Compose's Go module; NVD for catalog tools and libraries (curl, git, sqlite, libxml2, libpng and others) |
 | Developer apps | Catalog apps in /Applications and ~/Applications: browsers, terminals, Docker, JetBrains IDEs, Postman, Tailscale and others | NVD where a CPE exists |
+| Self-updating apps (Sparkle) | Any non-App Store app in /Applications or ~/Applications with an https Sparkle feed (`SUFeedURL`) or a bundled `Sparkle.framework`, on the catalog or not | The app's own feed for newer releases, compared by build number as Sparkle does (beta channels, other platforms and releases needing a newer macOS are skipped). The bundled Sparkle version is checked against Sparkle's advisories in OSV; the fix is updating the app |
 | Apple | Software Update, including Command Line Tools | Update eligibility only |
 
 **Excluded by design:** Google Chrome, whether installed directly or with Homebrew, and every app installed from the Mac App Store. They update through Chrome's own updater and the App Store, and are skipped entirely: not listed, checked or counted as findings.
@@ -77,7 +78,7 @@ Package names and versions are checked against each ecosystem's naming rules and
 
 State lives in `~/Library/Application Support/Shipshape/state.json` (folder 0700, file 0600). It contains local paths, project folders, package names, versions, results and notification fingerprints. There is no analytics, account, remote inventory or AI service.
 
-Package names and versions are sent to OSV, product names and versions to NVD, and release and advisory lookups to Homebrew, GitHub, Node, PostgreSQL and OpenSSL. **Private package names in your lockfiles are included in OSV queries.** MCP settings are read for each server's command and arguments only; environment variables, headers and keys are never kept. Lockfiles are read as text and nothing in a project is run. Exported reports contain local paths and package names, so review them before sharing.
+Package names and versions are sent to OSV, product names and versions to NVD, and release and advisory lookups to Homebrew, GitHub, Node, PostgreSQL and OpenSSL. Self-updating apps' Sparkle feeds are fetched from each app's developer, the same request the app makes when it checks for updates. **Private package names in your lockfiles are included in OSV queries.** MCP settings are read for each server's command and arguments only; environment variables, headers and keys are never kept. Lockfiles are read as text and nothing in a project is run. Exported reports contain local paths and package names, so review them before sharing.
 
 To uninstall, turn off Start at login, quit the app and move it to Trash. Remove the Application Support folder separately if you no longer need saved results.
 

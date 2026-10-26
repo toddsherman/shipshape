@@ -2,6 +2,11 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.3 — October 25, 2026
+
+- **Self-updating apps (Sparkle):** any app with a Sparkle update feed, on the built-in list or not, is checked against its own feed for newer releases.
+- **Bundled Sparkle:** the Sparkle framework inside each app is checked against Sparkle's published advisories, such as the signing-check bypass fixed in 2.6.4. The fix is updating the app.
+
 ## 0.3.2 — October 25, 2026
 
 - Removed a notice that only appeared on Macs that had run pre-release builds.

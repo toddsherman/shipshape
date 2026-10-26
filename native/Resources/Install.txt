@@ -1,4 +1,4 @@
-Shipshape 0.3.2 — macOS preview
+Shipshape 0.3.3 — macOS preview
 
 Requires macOS 13 or later. Includes Apple silicon and Intel binaries.
 
@@ -34,7 +34,8 @@ Privacy
 Each Mac keeps its own inventory in:
 ~/Library/Application Support/Shipshape
 Package names and versions, including private package names from your
-lockfiles, are sent to OSV; product versions are sent to NVD. MCP
+lockfiles, are sent to OSV; product versions are sent to NVD; self-updating
+apps' update feeds are fetched from their developers. MCP
 settings are read for server commands only, never keys or environment
 variables. No account or API key is needed. Exported reports include
 local paths and package names.

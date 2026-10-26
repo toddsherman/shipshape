@@ -10,6 +10,7 @@ Shipshape is a free, open-source macOS menu bar app for people who build softwar
 - **GitHub Actions** used by your projects' workflows, including moving tags like `@v4`.
 - **Global packages:** npm, Bun and pnpm globals, Python environments, pipx and uv tools, `cargo install`, `go install` and Ruby gems, and the npx cache.
 - **Editor extensions** in VS Code, Cursor and Windsurf, against Microsoft's list of extensions it removed as malware or impersonation.
+- **Self-updating apps** that use Sparkle, whether or not they're on the built-in list: newer releases from each app's own update feed, and the Sparkle version bundled inside, against Sparkle's advisories.
 - **MCP servers** configured for Claude Code, Claude, Codex, Cursor, Windsurf, VS Code and Gemini CLI.
 - **AI coding tools and runtimes:** Claude Code, Codex CLI, Gemini CLI, Copilot CLI, OpenCode, Node, Bun, Deno, Python, Go and more, however they were installed.
 - **Homebrew** formulae and casks, including old copies left on disk, and common developer apps.
@@ -21,7 +22,7 @@ Shipshape checks when it opens, daily at 9 a.m. Pacific and whenever you click *
 ## Principles
 
 - **It never changes your Mac.** Shipshape shows commands for you to review and run; it doesn't run them. It only offers commands your account can run, and never suggests `sudo` for package managers.
-- **No account, API key, analytics or cloud inventory.** Your inventory stays on your Mac. Package names and versions are sent to OSV, product versions to NVD, and release lookups to Homebrew and vendors. That includes private package names in your lockfiles.
+- **No account, API key, analytics or cloud inventory.** Your inventory stays on your Mac. Package names and versions are sent to OSV, product versions to NVD, and release lookups to Homebrew, vendors and self-updating apps' own update feeds. That includes private package names in your lockfiles.
 - **Coverage is partial, and it says so.** A check that can't complete is shown as failed, never as "safe." This is an update monitor, not antivirus.
 
 ## Install

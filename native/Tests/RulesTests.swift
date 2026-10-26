@@ -698,6 +698,59 @@ import Foundation
                && Commands.commands(for: fake!).first?.text == "rm -rf " + Shell.quote(extRoot + "/cursor/fake.prettier-3.0.0"), "uninstall with the editor's tool, or delete the folder when it isn't installed")
         try? FileManager.default.removeItem(atPath: extRoot)
 
+        // Sparkle: self-updating apps' own feeds, and the Sparkle framework bundled inside apps.
+        let appcast = Data("""
+        <?xml version="1.0" encoding="utf-8"?>
+        <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+          <channel>
+            <item><title>2.0.4</title><sparkle:version>111</sparkle:version><sparkle:shortVersionString>2.0.4</sparkle:shortVersionString>
+              <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion><enclosure url="https://example.com/a.zip" length="1" type="application/octet-stream"/></item>
+            <item><title>2.1 beta</title><sparkle:version>120</sparkle:version><sparkle:shortVersionString>2.1b1</sparkle:shortVersionString><sparkle:channel>beta</sparkle:channel>
+              <enclosure url="https://example.com/b.zip"/></item>
+            <item><title>Windows</title><enclosure url="https://example.com/w.exe" sparkle:version="130" sparkle:os="windows"/></item>
+            <item><title>2.0.3</title><enclosure url="https://example.com/c.zip" sparkle:version="110" sparkle:shortVersionString="2.0.3"/></item>
+          </channel>
+        </rss>
+        """.utf8)
+        let feedReleases = SparkleFeeds.releases(appcast)
+        expect(feedReleases == [SparkleFeeds.Release(build: "111", version: "2.0.4", minimumSystem: "14.0"), SparkleFeeds.Release(build: "110", version: "2.0.3", minimumSystem: nil)],
+               "appcast items in both layouts; beta channels and other platforms skipped")
+        expect(SparkleFeeds.newest(feedReleases, system: "Version 27.0 (Build 27A1)")?.version == "2.0.4" && SparkleFeeds.newest(feedReleases, system: "Version 13.6 (Build 22G1)")?.version == "2.0.3",
+               "releases needing a newer macOS are skipped")
+        expect(SparkleFeeds.releases(Data("<rss><item>".utf8)).isEmpty, "a broken feed yields nothing")
+        let feedApp = Installation(product: "app:com.example.rect", name: "Rectangle", version: "0.94", path: "/Applications/Rectangle.app", domain: "apps", manager: "app", build: "100", feed: "https://example.com/updates.xml")
+        let feedFinding = SparkleFeeds.finding(feedApp, releases: feedReleases, system: "Version 27.0 (Build 27A1)")
+        expect(feedFinding?.fixed == "2.0.4" && feedFinding?.kind == .update && feedFinding?.reason.contains("(build 111)") == true
+               && Commands.commands(for: feedFinding!).first.map { $0.kind == "app" && $0.text == "Open Rectangle" } == true, "an older build gets an update that opens the app's own updater")
+        var currentApp = feedApp; currentApp.build = "111"
+        expect(SparkleFeeds.finding(currentApp, releases: feedReleases, system: "Version 27.0 (Build 27A1)") == nil, "an app at the feed's newest build has no update")
+        expect(Inventory.trimmedSparkleVersion("1.27.1-3-g05be1d71") == "1.27.1" && Inventory.trimmedSparkleVersion("1.22.0 1354-g4e0506a") == "1.22.0"
+               && Inventory.trimmedSparkleVersion("2.7.0-beta.1") == "2.7.0-beta.1" && Inventory.trimmedSparkleVersion("2.10.0") == "2.10.0", "bundled Sparkle versions lose build suffixes, keep prerelease tags")
+        let appsRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-apps-\(UUID().uuidString)").path
+        func makeApp(_ name: String, _ info: [String: String], sparkle: String? = nil, appStore: Bool = false) throws {
+            let contents = appsRoot + "/" + name + ".app/Contents"
+            try FileManager.default.createDirectory(atPath: contents, withIntermediateDirectories: true)
+            try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: URL(fileURLWithPath: contents + "/Info.plist"))
+            if let sparkle {
+                let resources = contents + "/Frameworks/Sparkle.framework/Versions/A/Resources"
+                try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: true)
+                try PropertyListSerialization.data(fromPropertyList: ["CFBundleShortVersionString": sparkle], format: .xml, options: 0).write(to: URL(fileURLWithPath: resources + "/Info.plist"))
+            }
+            if appStore { try FileManager.default.createDirectory(atPath: contents + "/_MASReceipt", withIntermediateDirectories: true); try Data().write(to: URL(fileURLWithPath: contents + "/_MASReceipt/receipt")) }
+        }
+        try makeApp("Tidy", ["CFBundleIdentifier": "com.example.tidy", "CFBundleShortVersionString": "1.2", "CFBundleVersion": "42", "SUFeedURL": "https://example.com/tidy.xml"], sparkle: "1.27.1-3-g05be1d71")
+        try makeApp("Plain", ["CFBundleIdentifier": "com.example.plain", "CFBundleShortVersionString": "3.0", "SUFeedURL": "http://example.com/plain.xml"])
+        try makeApp("Store", ["CFBundleIdentifier": "com.example.store", "CFBundleShortVersionString": "1.0", "SUFeedURL": "https://example.com/s.xml"], sparkle: "2.0.0", appStore: true)
+        let (sparkleApps, _, appStoreSkipped) = Inventory.apps(roots: [appsRoot])
+        expect(sparkleApps.map { "\($0.name) \($0.version) \($0.manager!) \($0.build ?? "-") \($0.feed ?? "-")" }
+               == ["Tidy 1.2 app 42 https://example.com/tidy.xml", "Sparkle in Tidy 1.27.1 sparkle-framework - -"] && appStoreSkipped == 1,
+               "apps with an https feed or a bundled Sparkle are kept; an http feed alone isn't; App Store apps are skipped")
+        let bundled = update(sparkleApps[1], "2.9.2", kind: .security)
+        expect(Commands.commands(for: bundled).first.map { $0.kind == "app" && $0.text == "Open Tidy" && $0.target?.hasSuffix("/Tidy.app") == true } == true
+               && Commands.action(for: sparkleApps[1], malicious: false, fixed: "2.9.2").hasPrefix("Update Tidy to a release that bundles Sparkle 2.9.2 or later"),
+               "a vulnerable bundled Sparkle is fixed by updating the app that contains it")
+        try? FileManager.default.removeItem(atPath: appsRoot)
+
         // Project scans skip app bundles and package-manager internals such as Homebrew's own Library.
         let scanRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-scan-\(UUID().uuidString)").path
         for (folder, file) in [("app", "package-lock.json"), ("Tool.app/Contents", "package-lock.json"), ("homebrew/Library/formula-analytics", "uv.lock")] {

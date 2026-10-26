@@ -111,6 +111,8 @@ struct Installation: Codable, Identifiable, Hashable {
     var dependency: String? = nil  // project packages: direct, dev or transitive
     var pinned: Bool? = nil        // pinned in Homebrew, which refuses to upgrade it
     var file: String? = nil        // the lockfile or settings file a project package or MCP server was read from
+    var build: String? = nil       // an app's CFBundleVersion, which its Sparkle feed is compared with
+    var feed: String? = nil        // an app's https Sparkle update feed (SUFeedURL)
     // Reports saved before `file` existed joined the file and package with "#", which a folder name can contain.
     var sourceFile: String { file ?? String(path.prefix { $0 != "#" }) }
 }
