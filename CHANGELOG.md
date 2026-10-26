@@ -2,6 +2,10 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.7 — October 25, 2026
+
+- **Ruby gems:** only the newest copy of each gem is checked, since that's the one Ruby loads. A default gem that ships with Ruby, such as json 2.18.0 in Ruby 4.0, is no longer flagged once a newer version is installed; `gem update` reported nothing to update, and the gem can't be removed.
+
 ## 0.3.6 — October 25, 2026
 
 - **Codex** is checked against its own update feed, which it sets in code rather than in its Info.plist. When it's current, its bundled Sparkle waits in **No fix released yet** instead of asking you to update.

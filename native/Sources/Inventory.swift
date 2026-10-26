@@ -341,26 +341,30 @@ enum Inventory {
     // optional platform). Default gems that ship with Ruby are included, since they get security releases too.
     // Apple's system Ruby is left out; Apple updates it.
     static func rubyGems() -> [Installation] {
-        var specifications: [(folder: String, gem: String?)] = []
-        func add(_ gems: String, ruby: String?) {
-            for version in children(gems) { for folder in ["specifications", "specifications/default"] { specifications.append(("\(gems)/\(version)/\(folder)", ruby.map { $0 + "/bin/gem" })) } }
-        }
+        var homes: [(gems: String, gem: String?)] = []
+        func add(_ root: String, ruby: String?) { for version in children(root) { homes.append(("\(root)/\(version)", ruby.map { $0 + "/bin/gem" })) } }
         for prefix in ["/opt/homebrew", "/usr/local"] { add(prefix + "/lib/ruby/gems", ruby: prefix + "/opt/ruby") }
         for (root, layout) in [(home + "/.rbenv/versions", ""), (home + "/.local/share/mise/installs/ruby", "")] {
             for version in children(root) { add("\(root)/\(version)\(layout)/lib/ruby/gems", ruby: "\(root)/\(version)") }
         }
         add(home + "/.gem/ruby", ruby: nil)
-        var items: [Installation] = []
-        for (folder, gem) in specifications {
-            for file in children(folder) {
-                guard let (name, version) = gemSpec(file) else { continue }
-                let installed = gem.map { fm.isExecutableFile(atPath: $0) } == true ? gem : nil
-                items.append(Installation(product: "rubygems:" + name, name: name, version: version, path: folder + "/" + file, domain: "packages",
-                                          note: "Ruby gem in \(display(folder.components(separatedBy: "/lib/ruby/gems").first ?? folder)).", ecosystem: "RubyGems",
-                                          packageName: name, manager: "gem", location: installed))
+        return homes.flatMap { gems(in: $0.gems, gem: $0.gem) }
+    }
+    // Only the newest copy of each gem in a gem folder is kept: it's the one require loads, and gem update has
+    // nothing to do while it's current. Older copies stay on disk until gem cleanup, and a default gem replaced
+    // by a newer install can't be removed at all.
+    static func gems(in folder: String, gem: String?) -> [Installation] {
+        let installed = gem.map { fm.isExecutableFile(atPath: $0) } == true ? gem : nil
+        var newest: [String: Installation] = [:]
+        for specifications in [folder + "/specifications", folder + "/specifications/default"] {
+            for file in children(specifications) {
+                guard let (name, version) = gemSpec(file), newest[name].map({ looseLess($0.version, version) }) ?? true else { continue }
+                newest[name] = Installation(product: "rubygems:" + name, name: name, version: version, path: specifications + "/" + file, domain: "packages",
+                                            note: "Ruby gem in \(display(folder.components(separatedBy: "/lib/ruby/gems").first ?? folder)).", ecosystem: "RubyGems",
+                                            packageName: name, manager: "gem", location: installed)
             }
         }
-        return items
+        return newest.values.sorted { $0.name < $1.name }
     }
 
     // Extensions installed in VS Code and editors built on it, identified as publisher.name from each

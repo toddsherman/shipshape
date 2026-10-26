@@ -677,6 +677,17 @@ import Foundation
         let gemItem = Installation(product: "rubygems:net-imap", name: "net-imap", version: "0.4.9", path: "/opt/homebrew/lib/ruby/gems/3.4.0/specifications/default/net-imap-0.4.9.gemspec",
                                    domain: "packages", ecosystem: "RubyGems", packageName: "net-imap", manager: "gem", location: "/opt/homebrew/opt/ruby/bin/gem")
         expect(Commands.commands(for: update(gemItem, "0.4.20", kind: .security)).first?.text == "/opt/homebrew/opt/ruby/bin/gem update net-imap", "a gem updates with its own Ruby's gem")
+        // Ruby loads the newest copy of a gem; older copies, including a default gem a newer install replaced, aren't checked.
+        let gemRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-gems-\(UUID().uuidString)").path, gemHome = gemRoot + "/lib/ruby/gems/4.0.0"
+        for folder in ["specifications", "specifications/default"] { try FileManager.default.createDirectory(atPath: gemHome + "/" + folder, withIntermediateDirectories: true) }
+        for file in ["specifications/json-3.1.0.gemspec", "specifications/json-2.19.0.gemspec", "specifications/default/json-2.18.0.gemspec", "specifications/default/psych-5.2.0.gemspec",
+                     "specifications/default/rake-13.0.0.gemspec", "specifications/rake-13.0.0.gemspec", "specifications/nokogiri-1.15.4-arm64-darwin.gemspec", "specifications/nokogiri-1.16.0-arm64-darwin.gemspec"] {
+            try Data().write(to: URL(fileURLWithPath: gemHome + "/" + file))
+        }
+        expect(Inventory.gems(in: gemHome, gem: nil).map { "\($0.name) \($0.version) \(($0.path as NSString).lastPathComponent)\($0.path.contains("/default/") ? " default" : "")" }
+               == ["json 3.1.0 json-3.1.0.gemspec", "nokogiri 1.16.0 nokogiri-1.16.0-arm64-darwin.gemspec", "psych 5.2.0 psych-5.2.0.gemspec default", "rake 13.0.0 rake-13.0.0.gemspec"],
+               "only the newest copy of each gem is checked; a default gem counts only while nothing newer is installed")
+        try? FileManager.default.removeItem(atPath: gemRoot)
         let goOutput = "/Users/a/go/bin/gopls: go1.22.0\n\tpath\tgolang.org/x/tools/gopls\n\tmod\tgolang.org/x/tools/gopls\tv0.15.0\th1:abc\n\tdep\tgolang.org/x/net\tv0.20.0\th1:def\n\tbuild\t-compiler=gc\n/Users/a/go/bin/dev: go1.22.0\n\tpath\texample.com/dev\n\tmod\texample.com/dev\t(devel)\t\n"
         let goItems = Inventory.goModules(goOutput)
         expect(goItems.map { "\($0.name) \($0.version) \($0.dependency ?? "")" } == ["golang.org/x/tools/gopls 0.15.0 direct", "golang.org/x/net 0.20.0 transitive"],
