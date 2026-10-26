@@ -1,0 +1,30 @@
+name: Wrong or missing finding
+description: Shipshape reported something incorrectly, or missed a known fix. The Report a problem link on a finding fills this in for you.
+labels: [accuracy]
+body:
+  - type: markdown
+    attributes:
+      value: Issues are public. Remove private project names, paths and anything sensitive before posting.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's wrong
+      description: What Shipshape showed, and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: What happened
+      description: Terminal output from the command Shipshape suggested, if you ran it, or what you saw.
+      render: shell
+  - type: textarea
+    id: finding
+    attributes:
+      label: The finding
+      description: Product and installed version, how it was installed (Homebrew, npm global, project lockfile, app download, …), and any advisory or release link.
+  - type: input
+    id: version
+    attributes:
+      label: Shipshape and macOS version
+      description: Shipshape's version is at the bottom of its sidebar.

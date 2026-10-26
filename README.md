@@ -17,7 +17,7 @@ Shipshape is a free, open-source macOS menu bar app for people who build softwar
 
 Advisories come from [OSV](https://osv.dev) (including OpenSSF malicious-package reports), [NVD](https://nvd.nist.gov), vendor security pages and GitHub security advisories, with [CISA's Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) raising priority. Google Chrome and Mac App Store apps are left out, since they update themselves. The full coverage table and its limits are in [native/README.md](native/README.md).
 
-Shipshape checks when it opens, daily at 9 a.m. Pacific and whenever you click **Check now**; the footer shows when the last check ran and how long ago. The **History** tab keeps a log of every recommendation and when it was resolved.
+Shipshape checks when it opens, daily at 9 a.m. Pacific and whenever you click **Check now**; the footer shows when the last check ran and how long ago. The **History** tab keeps a log of every recommendation and when it was resolved. If a finding looks wrong, **Report a problem** on its card opens a GitHub issue with its details filled in, for you to review and submit.
 
 ## Principles
 

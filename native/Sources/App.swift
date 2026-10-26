@@ -14,6 +14,7 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     @Published var notificationStatus = "Not enabled"
     @Published var loginEnabled = false
     @Published var section = "Security"
+    @Published var feedbackOpen = false
     private var timer: Timer?
     private var pathMonitor: NWPathMonitor?
     private var launchCheckStarted = false
@@ -264,6 +265,7 @@ struct MenuPanel: View {
             HStack {
                 Button(monitor.scanning ? "Checking…" : "Check now") { monitor.check() }.disabled(monitor.scanning)
                 Spacer()
+                Button("Send feedback…") { monitor.feedbackOpen = true; openWindow(id: "dashboard"); NSApp.activate(ignoringOtherApps: true) }.buttonStyle(.link)
                 Button("Quit") { NSApp.terminate(nil) }
             }
             Text("At launch, daily at 9 a.m. Pacific and when you click Check now").font(.caption2).foregroundStyle(.secondary)
@@ -317,6 +319,7 @@ struct Dashboard: View {
                 }.font(.caption).foregroundStyle(.secondary).padding(16)
             }.frame(maxWidth: .infinity)
         }.frame(minWidth: 900, minHeight: 640)
+        .sheet(isPresented: $monitor.feedbackOpen) { FeedbackSheet().environmentObject(monitor) }
         .onReceive(NotificationCenter.default.publisher(for: .init("ShowDashboard"))) { _ in openWindow(id: "dashboard") }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in monitor.refreshSettings() }
     }
@@ -419,7 +422,7 @@ struct Dashboard: View {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Project folders").font(.headline)
-                    Text("Lockfiles up to five levels deep are checked: package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock, uv.lock, poetry.lock, requirements.txt, Cargo.lock, Gemfile.lock and go.mod, plus project .mcp.json files. node_modules, virtual environments, build folders, app bundles, Homebrew and system folders are skipped. Nothing in a project is run.").foregroundStyle(.secondary)
+                    Text("Lockfiles up to five levels deep are checked: package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock, uv.lock, poetry.lock, requirements.txt, Cargo.lock, Gemfile.lock, go.mod, Package.resolved, composer.lock, pubspec.lock, packages.lock.json, mix.lock and gradle.lockfile, plus GitHub Actions workflows and project .mcp.json files. node_modules, virtual environments, build folders, app bundles, Homebrew and system folders are skipped. Nothing in a project is run.").foregroundStyle(.secondary)
                     ForEach(monitor.projectFolders, id: \.self) { path in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack { Image(systemName: "folder"); Text(Inventory.display(path)).textSelection(.enabled); Spacer(); Button("Remove") { monitor.removeProjectFolder(path) }.buttonStyle(.link) }
@@ -451,6 +454,12 @@ struct Dashboard: View {
                     Text("Update commands are shown for you to copy and run; the app never installs, removes or changes anything itself. This preview does not update itself.").foregroundStyle(.secondary)
                     Text("History is kept on this Mac with the latest result, up to the newest \(History.limit.formatted()) entries.").foregroundStyle(.secondary)
                     HStack { Button("Open local data") { monitor.openData() }; Button("Export report…") { monitor.export() }.disabled(monitor.report == nil) }
+                }
+                Divider()
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Feedback").font(.headline)
+                    Text("Ideas, problems and software \(appName) should check go to its GitHub repository as issues, which are public. You review each one on GitHub and submit it with your own account. For a finding that's wrong, use Report a problem on its card.").foregroundStyle(.secondary)
+                    Button("Send feedback…") { monitor.feedbackOpen = true }
                 }
             }.padding(.horizontal, 28).padding(.bottom, 24)
         }
@@ -550,7 +559,9 @@ struct CardStyle: ViewModifier {
 }
 // Location, linked advisory IDs and the source page for one finding.
 struct FindingEvidence: View {
+    @EnvironmentObject var monitor: Monitor
     let finding: Finding
+    @State private var reporting = false
     // The lockfile or MCP settings file for project and MCP findings; the install path otherwise.
     var location: String { Inventory.display(finding.installation.sourceFile) }
     // Advisory IDs, each linked to its own page: the finding's link for it, NVD for CVEs, OSV otherwise.
@@ -573,7 +584,102 @@ struct FindingEvidence: View {
                 if !finding.advisories.isEmpty { Text(advisories).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
             }
             Spacer()
-            if let source = finding.links.first, let url = URL(string: source), url.scheme == "https" { Link("Open website", destination: url).font(.callout) }
+            HStack(spacing: 16) {
+                Button("Report a problem") { reporting = true }.buttonStyle(.link).font(.caption)
+                    .help("Opens a GitHub issue about this finding, filled in for you to check and submit.")
+                if let source = finding.links.first, let url = URL(string: source), url.scheme == "https" { Link("Open website", destination: url).font(.callout) }
+            }
+        }.sheet(isPresented: $reporting) { ReportSheet(finding: finding).environmentObject(monitor) }
+    }
+}
+// Report a problem with one finding: the issue's text, editable, before it opens on GitHub.
+struct ReportSheet: View {
+    let finding: Finding
+    @State private var problem = Feedback.Problem.fixFailed
+    @State private var title = ""
+    @State private var details = ""
+    @State private var summary = ""
+    var body: some View {
+        // The suggested title follows the choice of problem until it's edited.
+        let choice = Binding(get: { problem }, set: { new in
+            if title == Feedback.title(for: finding, problem: problem) { title = Feedback.title(for: finding, problem: new) }
+            problem = new
+        })
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Report a problem with \(finding.installation.name)").font(.title3.weight(.semibold))
+            Text("This opens a new issue on GitHub with the text below filled in, for you to check and submit with your GitHub account. Issues are public, so remove anything private, such as project names. Your home folder is shown as ~.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Picker("What's wrong", selection: choice) { ForEach(Feedback.Problem.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+            FeedbackField(label: "Title", text: $title)
+            FeedbackEditor(label: "What happened", prompt: "Paste the Terminal output, or describe what you saw.", text: $details, height: 110)
+            FeedbackEditor(label: "The finding", prompt: "", text: $summary, height: 130)
+            Text(Feedback.system).font(.caption).foregroundStyle(.secondary)
+            FeedbackButtons { Feedback.report(finding, problem: problem, title: title, details: details, summary: summary) }
+        }.padding(20).frame(width: 640)
+        .onAppear { if title.isEmpty { title = Feedback.title(for: finding, problem: problem); summary = Feedback.summary(of: finding) } }
+    }
+}
+// Send feedback: an idea, a question or a problem, or software Shipshape should check.
+struct FeedbackSheet: View {
+    @State private var kind = Feedback.Kind.feedback
+    @State private var title = ""
+    @State private var text = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Send feedback").font(.title3.weight(.semibold))
+            Text("This opens a new issue on GitHub with your text filled in, for you to check and submit with your GitHub account. Issues are public. For a finding that's wrong, use Report a problem on its card instead.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Picker("About", selection: $kind) { ForEach(Feedback.Kind.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+            FeedbackField(label: "Title", text: $title)
+            FeedbackEditor(label: kind == .feedback ? "Your feedback" : "What should be covered",
+                           prompt: kind == .feedback ? "What would make \(appName) better, or what went wrong?" : "The software, lockfile or install location, how people install it, and where its advisories are published.",
+                           text: $text, height: 160)
+            Text(Feedback.system).font(.caption).foregroundStyle(.secondary)
+            FeedbackButtons { Feedback.feedback(kind, title: title, text: text) }
+        }.padding(20).frame(width: 560)
+    }
+}
+struct FeedbackField: View {
+    let label: String
+    @Binding var text: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) { Text(label).font(.callout.weight(.semibold)); TextField(label, text: $text, prompt: Text("")).labelsHidden() }
+    }
+}
+// A labeled text box for several lines, with a prompt while it's empty.
+struct FeedbackEditor: View {
+    let label: String
+    let prompt: String
+    @Binding var text: String
+    let height: CGFloat
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.callout.weight(.semibold))
+            TextEditor(text: $text).font(.system(.callout, design: .monospaced)).frame(height: height)
+                .overlay(alignment: .topLeading) {
+                    if text.isEmpty { Text(prompt).font(.callout).foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false) }
+                }
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.15)))
+        }
+    }
+}
+// Opens the filled-in issue on GitHub. When it had to be shortened to fit the link, the full text is copied first.
+struct FeedbackButtons: View {
+    @EnvironmentObject var monitor: Monitor
+    @Environment(\.dismiss) private var dismiss
+    let issue: () -> Feedback.Issue?
+    @State private var tooLong = false
+    var body: some View {
+        HStack {
+            Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+            if tooLong { Text("The title is too long for a GitHub link.").font(.caption).foregroundStyle(.orange) }
+            Spacer()
+            Button("Open in GitHub") {
+                guard let issue = issue() else { tooLong = true; return }
+                if issue.shortened { monitor.copy(issue.text) }
+                NSWorkspace.shared.open(issue.url)
+                dismiss()
+            }.buttonStyle(.borderedProminent)
         }
     }
 }

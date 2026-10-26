@@ -862,8 +862,53 @@ import Foundation
         expect(!Schedule.isDue(now: summer, lastDay: Schedule.day(summer)), "once per Pacific day")
         expect(Schedule.isDue(now: summer.addingTimeInterval(3600 * 4), lastDay: nil), "catch up after sleep")
 
+        // Report a problem: a GitHub new-issue link with the repository's issue form filled in, home folder as ~.
+        var jsonGem = Finding(source: "osv", installation: Installation(product: "rubygems:json", name: "json", version: "2.18.0", path: "/opt/homebrew/lib/ruby/gems/4.0.0/specifications/default/json-2.18.0.gemspec",
+                                                                    domain: "packages", note: "Ruby gem in /opt/homebrew.", ecosystem: "RubyGems", packageName: "json", manager: "gem", location: "/opt/homebrew/opt/ruby/bin/gem"),
+                              kind: .security, fixed: "2.19.9", reason: "", action: "", links: [], advisories: ["CVE-2026-33210", "CVE-2026-54696"], severity: "HIGH")
+        jsonGem.commands = Commands.commands(for: jsonGem)
+        let jsonSummary = Feedback.summary(of: jsonGem)
+        expect(Feedback.title(for: jsonGem, problem: .fixFailed) == "json 2.18.0: the fix didn't work"
+               && jsonSummary == """
+               - **Finding:** json 2.18.0 → 2.19.9 (HIGH, security fix)
+               - **Installed:** Ruby gem in /opt/homebrew.
+               - **Read from:** `/opt/homebrew/lib/ruby/gems/4.0.0/specifications/default/json-2.18.0.gemspec`
+               - **Found by:** osv · gem · RubyGems
+               - **Shown:** `/opt/homebrew/opt/ruby/bin/gem update json`
+               - **Advisories:** CVE-2026-33210, CVE-2026-54696
+               """, "a finding report names the finding, where it was read from and the command shown")
+        let viteReport = Finding(source: "osv", installation: Installation(product: "npm:vite", name: "vite", version: "5.0.0", path: "/p/package-lock.json#vite", domain: "projects",
+                                                                          ecosystem: "npm", packageName: "vite", manager: "npm"), kind: .security, fixed: "6.4.4", reason: "", action: "", links: [])
+        expect(Feedback.summary(of: viteReport).components(separatedBy: "\n").contains("- **Found by:** osv · npm"), "a manager named like its ecosystem is listed once")
+        expect(Feedback.redact("cd '/Users/ann/Shipshape Demo' && ls /Users/ann /Users/anne/x", home: "/Users/ann") == "cd '~/Shipshape Demo' && ls ~ /Users/anne/x",
+               "the home folder becomes ~, but only as a whole path component")
+        func query(_ url: URL) -> [String: String] {
+            Dictionary((URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
+        }
+        let output = "% /opt/homebrew/opt/ruby/bin/gem update json\nNothing to update & done #1 + 2 = ?\n" + Inventory.home + "/project"
+        let report = Feedback.report(jsonGem, problem: .fixFailed, title: Feedback.title(for: jsonGem, problem: .fixFailed), details: output, summary: jsonSummary)!
+        let fields = query(report.url)
+        expect(report.url.absoluteString.hasPrefix("https://github.com/toddsherman/shipshape/issues/new?template=wrong-or-missing-finding.yml&title=") && !report.shortened
+               && fields["title"] == "json 2.18.0: the fix didn't work" && fields["problem"] == "The fix didn't work" && fields["finding"] == jsonSummary
+               && fields["output"] == "% /opt/homebrew/opt/ruby/bin/gem update json\nNothing to update & done #1 + 2 = ?\n~/project" && fields["version"]?.hasPrefix("Shipshape ") == true,
+               "the issue form's fields are filled in by ID, with &, #, + and line breaks intact")
+        let long = Feedback.report(jsonGem, problem: .other, title: "Long", details: String(repeating: "Gems already up-to-date ✓\n", count: 1_500), summary: jsonSummary)!
+        expect(long.shortened && long.url.absoluteString.count <= Feedback.limit && query(long.url)["output"]?.hasSuffix(Feedback.notice.trimmingCharacters(in: .whitespacesAndNewlines)) == true
+               && query(long.url)["finding"] == jsonSummary && long.text.contains(String(repeating: "Gems already up-to-date ✓\n", count: 1_499) + "Gems already up-to-date ✓"),
+               "a report too long for GitHub's link is shortened and marked, and the full text is kept for the clipboard")
+        let blank = Feedback.report(jsonGem, problem: .notApplicable, title: "t", details: "  \n", summary: jsonSummary)!
+        expect(query(blank.url)["output"] == nil && query(blank.url)["problem"] == "It's already up to date or not installed", "empty fields are left out")
+        let coverage = Feedback.feedback(.coverage, title: "Check Zed extensions", text: "Zed extensions live in ~/Library/Application Support/Zed/extensions.")!
+        expect(query(coverage.url)["template"] == "coverage-request.yml" && query(coverage.url)["what"]?.hasPrefix("Zed extensions") == true
+               && query(Feedback.feedback(.feedback, title: "Idea", text: "Dark mode screenshots")!.url)["feedback"] == "Dark mode screenshots", "general feedback uses its own issue forms")
+
         // Optional live-format fixtures are kept outside the distributable app.
         let root = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "native/work"
+        // The issue forms on GitHub must have the field IDs the app fills in, or GitHub leaves those fields empty.
+        for (form, ids) in [("wrong-or-missing-finding.yml", ["problem", "output", "finding", "version"]), ("feedback.yml", ["feedback", "version"]), ("coverage-request.yml", ["what", "version"])] {
+            let text = try? String(contentsOfFile: root + "/../../.github/ISSUE_TEMPLATE/" + form, encoding: .utf8)
+            expect(text.map { form in ids.allSatisfy { form.contains("id: " + $0 + "\n") } } == true, "\(form) has the fields \(ids.joined(separator: ", "))")
+        }
         if let data = FileManager.default.contents(atPath: root + "/bun.txt") {
             let rows = try JSONSerialization.jsonObject(with: data) as! [[String: Any]]
             let finding = try Rules.bun(item("bun", "1.3.13"), advisories: rows)

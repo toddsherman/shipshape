@@ -1,0 +1,18 @@
+name: Feedback
+description: An idea, a question, or something in Shipshape that didn't work
+labels: [feedback]
+body:
+  - type: markdown
+    attributes:
+      value: Issues are public. Remove private project names, paths and anything sensitive before posting. To report a security vulnerability in Shipshape itself, follow SECURITY.md instead.
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Your feedback
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Shipshape and macOS version
+      description: Shipshape's version is at the bottom of its sidebar.

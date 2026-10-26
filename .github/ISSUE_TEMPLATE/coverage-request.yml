@@ -1,0 +1,23 @@
+name: Coverage request
+description: Software, a lockfile format or an install location Shipshape should check
+labels: [coverage]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What should be covered
+    validations:
+      required: true
+  - type: textarea
+    id: install
+    attributes:
+      label: How people usually install it on a Mac
+  - type: textarea
+    id: advisories
+    attributes:
+      label: Where its security advisories are published
+      description: An NVD CPE, OSV package, GitHub security advisories or a vendor page.
+  - type: input
+    id: version
+    attributes:
+      label: Shipshape and macOS version

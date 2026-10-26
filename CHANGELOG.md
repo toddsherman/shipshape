@@ -2,6 +2,12 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.9 — October 25, 2026
+
+- **Report a problem** on any finding opens a new GitHub issue with the finding's details filled in: what's wrong, room for Terminal output, how it was installed and the command shown. **Send feedback…** in the menu and in Settings does the same for ideas, problems and software Shipshape should check. You review the issue on GitHub and submit it with your own account; Shipshape never posts anything, and your home folder is shown as `~`.
+- The issue templates are now GitHub issue forms.
+- Settings lists every lockfile format Shipshape reads.
+
 ## 0.3.8 — October 25, 2026
 
 - **A ship instead of a shield:** a new sailboat app icon, and a sailboat in the menu bar (filled, with the count, when something needs attention) and in the app's headers.

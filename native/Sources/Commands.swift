@@ -472,3 +472,103 @@ enum Commands {
         }
     }
 }
+
+// Reports and feedback open GitHub's new-issue page with one of the repository's issue forms filled in. The person
+// reviews the issue there and submits it with their own GitHub account; Shipshape never posts anything itself.
+enum Feedback {
+    static let repository = "https://github.com/toddsherman/shipshape"
+    // GitHub refuses new-issue links much over 8 KB, so long fields are cut down to fit, and the full text is
+    // copied for the person to paste.
+    static let limit = 7_500
+    static let notice = "\n… [Shortened to fit GitHub's link. The full text is on your clipboard; paste it here.]"
+    static let labels = ["problem": "What's wrong", "output": "What happened", "finding": "The finding", "feedback": "Your feedback",
+                         "what": "What should be covered", "version": "Shipshape and macOS version"]
+    enum Problem: String, CaseIterable {
+        case fixFailed = "The fix didn't work"
+        case notApplicable = "It's already up to date or not installed"
+        case wrongDetails = "Wrong version or advisory"
+        case other = "Something else"
+        var title: String {
+            switch self {
+            case .fixFailed: return "the fix didn't work"
+            case .notApplicable: return "already up to date or not installed"
+            case .wrongDetails: return "wrong version or advisory"
+            case .other: return "problem with this finding"
+            }
+        }
+    }
+    enum Kind: String, CaseIterable {
+        case feedback = "An idea, a question or a problem"
+        case coverage = "Software Shipshape should check"
+        var form: String { self == .feedback ? "feedback.yml" : "coverage-request.yml" }
+        var field: String { self == .feedback ? "feedback" : "what" }
+    }
+    typealias Issue = (url: URL, shortened: Bool, text: String)
+
+    static func title(for finding: Finding, problem: Problem) -> String {
+        redact("\(finding.installation.name) \(finding.installation.version): \(problem.title)")
+    }
+    // What Shipshape knows about a finding, as a Markdown list for the issue's "The finding" field.
+    static func summary(of finding: Finding) -> String {
+        let item = finding.installation
+        let status = finding.malicious == true ? "malicious package" : finding.awaitingFix == true ? "no fix released yet"
+            : finding.kind == .update ? "update" : finding.kind == .unsupported ? "unsupported" : "security fix"
+        var lines = ["**Finding:** \(item.name) \(item.version) → \(finding.fixed) (" + [finding.severity, status].compactMap { $0 }.joined(separator: ", ") + ")"]
+        if !item.note.isEmpty { lines.append("**Installed:** " + item.note) }
+        lines.append("**Read from:** " + code(item.sourceFile))
+        lines.append("**Found by:** " + [finding.source, item.manager, item.ecosystem].compactMap { $0 }.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }.joined(separator: " · "))
+        if let command = finding.commands?.first { lines.append("**Shown:** " + (command.kind == nil ? code(command.text) : command.text)) }
+        if let blocked = finding.blocked { lines.append("**No command:** " + blocked) }
+        if finding.stale { lines.append("**Status:** an earlier finding the last check couldn't verify") }
+        if !finding.advisories.isEmpty { lines.append("**Advisories:** " + finding.advisories.joined(separator: ", ")) }
+        return redact(lines.map { "- " + $0 }.joined(separator: "\n"))
+    }
+    static var system: String {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        #if arch(arm64)
+        let chip = "Apple silicon"
+        #else
+        let chip = "Intel"
+        #endif
+        return "\(appName) \(appVersion) · macOS \(os.majorVersion).\(os.minorVersion)" + (os.patchVersion > 0 ? ".\(os.patchVersion)" : "") + " · \(chip)"
+    }
+
+    static func report(_ finding: Finding, problem: Problem, title: String, details: String, summary: String) -> Issue? {
+        issue(form: "wrong-or-missing-finding.yml", title: title, fields: [("problem", problem.rawValue), ("output", details), ("finding", summary), ("version", system)],
+              shortenable: ["output", "finding"])
+    }
+    static func feedback(_ kind: Kind, title: String, text: String) -> Issue? {
+        issue(form: kind.form, title: title, fields: [(kind.field, text), ("version", system)], shortenable: [kind.field])
+    }
+    // A new-issue link for an issue form, its fields filled in by their IDs, with the home folder shown as ~.
+    // While the link is too long, the longest field that may be shortened is cut down and marked.
+    static func issue(form: String, title: String, fields: [(id: String, value: String)], shortenable: Set<String>) -> Issue? {
+        let title = String(redact(title).trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
+        let ids = fields.map(\.id), full = fields.map { redact($0.value.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        var values = full, shortened = false
+        func address() -> String {
+            let items = [("template", form), ("title", title)] + Array(zip(ids, values))
+            return repository + "/issues/new?" + items.filter { !$0.1.isEmpty }.map { $0.0 + "=" + encode($0.1) }.joined(separator: "&")
+        }
+        var text = address()
+        while text.count > limit {
+            guard let index = values.indices.filter({ shortenable.contains(ids[$0]) && values[$0].count > notice.count + 100 })
+                .max(by: { values[$0].count < values[$1].count }) else { return nil }
+            let base = values[index].hasSuffix(notice) ? String(values[index].dropLast(notice.count)) : values[index]
+            values[index] = String(base.dropLast(max(100, (text.count - limit) / 3))) + notice  // a character takes 1 to 12 bytes once encoded
+            shortened = true
+            text = address()
+        }
+        let plain = (["# " + title] + zip(ids, full).filter { !$0.1.isEmpty }.map { "### \(labels[$0.0] ?? $0.0)\n\n\($0.1)" }).joined(separator: "\n\n")
+        return URL(string: text).map { ($0, shortened, plain) }
+    }
+    // The home folder becomes ~ wherever it appears as a whole path component.
+    static func redact(_ text: String, home: String = Inventory.home) -> String {
+        guard home.count > 1, let pattern = try? NSRegularExpression(pattern: NSRegularExpression.escapedPattern(for: home) + "(?![^/\\s'\"`)\\]])") else { return text }
+        return pattern.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "~")
+    }
+    static func encode(_ text: String) -> String {
+        text.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")) ?? ""
+    }
+    private static func code(_ text: String) -> String { text.contains("`") ? text : "`" + text + "`" }
+}
