@@ -122,12 +122,12 @@ enum Inventory {
                           let bundleID = info["CFBundleIdentifier"] as? String else { continue }
                     if Catalog.excludedBundleIDs.contains(bundleID) || fm.fileExists(atPath: url.appendingPathComponent("Contents/_MASReceipt/receipt").path) { skipped += 1; continue }
                     let build = info["CFBundleVersion"] as? String
-                    let feed = (info["SUFeedURL"] as? String).flatMap { $0.hasPrefix("https://") ? $0 : nil }
+                    let product = Catalog.byBundleID[bundleID]
+                    let feed = (info["SUFeedURL"] as? String).flatMap { $0.hasPrefix("https://") ? $0 : nil } ?? product?.feed
                     let sparkle = sparkleBuild(url.path)
                     let title = (info["CFBundleDisplayName"] ?? info["CFBundleName"]) as? String ?? url.deletingPathExtension().lastPathComponent
                     // Apps outside the catalog are kept when Sparkle can say something about them: a feed with
                     // their newest release, or a bundled Sparkle with known advisories.
-                    let product = Catalog.byBundleID[bundleID]
                     guard product != nil || feed != nil || sparkle != nil else { continue }
                     guard let version = info["CFBundleShortVersionString"] as? String ?? build else { errors.append("Unreadable version: \(url.lastPathComponent)"); continue }
                     let name = product?.name ?? title

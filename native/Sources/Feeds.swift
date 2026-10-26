@@ -445,8 +445,13 @@ enum Scanner {
         let newer = Set(findings.filter { $0.kind == .update || ($0.kind == .security && $0.awaitingFix != true && $0.fixed.first?.isNumber == true) }.map(\.installation.path))
         for index in findings.indices {
             let finding = findings[index], item = finding.installation
-            guard finding.kind == .security, finding.malicious != true, let name = item.sparkleApp, let app = item.location, !newer.contains(app),
-                  currentApps.contains(app) || waiting.contains(finding.id) else { continue }
+            guard finding.kind == .security, finding.malicious != true, let name = item.sparkleApp, let app = item.location, !newer.contains(app) else { continue }
+            // Nothing shows whether the app is current: it sets its feed in code, or the feed couldn't be read.
+            guard currentApps.contains(app) || waiting.contains(finding.id) else {
+                findings[index].action = "Update \(name) to a release that bundles " + (finding.fixed.first?.isNumber == true ? "Sparkle \(finding.fixed) or later" : "a fixed Sparkle")
+                    + ". Shipshape can't tell whether one is out, because it couldn't find or read \(name)'s update feed. If you have the newest \(name), only its developer can update Sparkle, so let them know."
+                continue
+            }
             findings[index].awaitingFix = true
             findings[index].fixed = finding.fixed.first?.isNumber == true ? "\(finding.fixed), not in \(name) yet" : "No fix released yet"
             findings[index].action = "You have the newest \(name), and it still bundles Sparkle \(item.version). Only its developer can update Sparkle, so let them know. Shipshape alerts you when a newer \(name) is released."

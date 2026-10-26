@@ -13,6 +13,7 @@ struct Product {
     var osv: (ecosystem: String, name: String)? = nil  // "{major}" in the name follows the installed major version
     var github: (repo: String, packages: [String])? = nil  // the project's own GitHub security advisories
     var download: String? = nil  // vendor download page for directly installed apps
+    var feed: String? = nil  // the public Sparkle feed of an app that sets its feed in code instead of in Info.plist
 }
 
 enum Catalog {
@@ -47,7 +48,7 @@ enum Catalog {
         Product(id: "opencode", name: "OpenCode", formulae: ["opencode"], casks: ["opencode-desktop"], github: ("anomalyco/opencode", ["opencode-ai", "opencode"])),
         Product(id: "ollama", name: "Ollama", bundleIDs: ["com.electron.ollama", "com.ollama.ollama"], formulae: ["ollama"], casks: ["ollama-app", "ollama"], cpe: "ollama:ollama", download: "https://ollama.com/download"),
         Product(id: "claude-desktop", name: "Claude", bundleIDs: ["com.anthropic.claudefordesktop"], casks: ["claude"], download: "https://claude.ai/download"),
-        Product(id: "codex-app", name: "Codex", bundleIDs: ["com.openai.codex"]),
+        Product(id: "codex-app", name: "Codex", bundleIDs: ["com.openai.codex"], feed: "https://persistent.oaistatic.com/codex-app-prod/appcast.xml"),
         Product(id: "chatgpt", name: "ChatGPT", bundleIDs: ["com.openai.chat"], casks: ["chatgpt"]),
         Product(id: "cursor", name: "Cursor", bundleIDs: ["com.todesktop.230313mzl4w4u92"], casks: ["cursor"], cpe: "anysphere:cursor", download: "https://cursor.com/downloads"),
         Product(id: "windsurf", name: "Windsurf", bundleIDs: ["com.exafunction.windsurf"], casks: ["windsurf"], download: "https://windsurf.com/download"),

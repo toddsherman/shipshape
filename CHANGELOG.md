@@ -2,6 +2,11 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.6 — October 25, 2026
+
+- **Codex** is checked against its own update feed, which it sets in code rather than in its Info.plist. When it's current, its bundled Sparkle waits in **No fix released yet** instead of asking you to update.
+- When Shipshape can't tell whether an app with a vulnerable Sparkle is current, because its update feed can't be found or read, the card says so instead of implying an update is out.
+
 ## 0.3.5 — October 25, 2026
 
 - **The alert for a bundled Sparkle** names the app and says its new release *may* include a newer Sparkle ("New iTerm2 release"), instead of "Fix now available" with Sparkle's repository name.
