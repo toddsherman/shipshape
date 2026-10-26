@@ -2,6 +2,10 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.8 — October 25, 2026
+
+- **A ship instead of a shield:** a new sailboat app icon, and a sailboat in the menu bar (filled, with the count, when something needs attention) and in the app's headers.
+
 ## 0.3.7 — October 25, 2026
 
 - **Ruby gems:** only the newest copy of each gem is checked, since that's the one Ruby loads. A default gem that ships with Ruby, such as json 2.18.0 in Ruby 4.0, is no longer flagged once a newer version is installed; `gem update` reported nothing to update, and the gem can't be removed.

@@ -238,7 +238,7 @@ struct ShipshapeApp: App {
         MenuBarExtra {
             MenuPanel().environmentObject(monitor)
         } label: {
-            Image(systemName: monitor.scanning ? "arrow.triangle.2.circlepath" : monitor.security.isEmpty ? "shield.lefthalf.filled" : "exclamationmark.shield.fill")
+            Image(systemName: monitor.scanning ? "arrow.triangle.2.circlepath" : monitor.security.isEmpty ? "sailboat" : "sailboat.fill")
             if !monitor.security.isEmpty { Text("\(monitor.security.count)") }
         }.menuBarExtraStyle(.window)
     }
@@ -249,7 +249,7 @@ struct MenuPanel: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label(appName, systemImage: "shield.lefthalf.filled").font(.headline)
+            Label(appName, systemImage: "sailboat.fill").font(.headline)
             Text(monitor.statusTitle).font(.title3.weight(.semibold))
             if let progress = monitor.progress { Text(progress).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
             else if let date = monitor.report?.date { LastCheck(date: date, prefix: "Checked ").font(.caption).foregroundStyle(.secondary) }
@@ -282,7 +282,7 @@ struct Dashboard: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
-                Label(appName, systemImage: "shield.lefthalf.filled").font(.title3.weight(.semibold)).padding(.bottom, 25).padding(.top, 14)
+                Label(appName, systemImage: "sailboat.fill").font(.title3.weight(.semibold)).padding(.bottom, 25).padding(.top, 14)
                 ForEach(sections, id: \.0) { title, symbol in
                     Button { monitor.section = title; query = "" } label: {
                         HStack { Image(systemName: symbol).frame(width: 20); Text(title); Spacer(); if title == "Security" && !monitor.security.isEmpty { Text("\(monitor.security.count)").font(.caption.weight(.semibold)) } }
@@ -332,7 +332,7 @@ struct Dashboard: View {
     }
     var welcome: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Image(systemName: "shield.lefthalf.filled").font(.system(size: 48)).foregroundStyle(.blue)
+            Image(systemName: "sailboat.fill").font(.system(size: 48)).foregroundStyle(.blue)
             Text("Know what in your dev stack needs a fix.").font(.title.weight(.semibold))
             Text("Checks the runtimes, package managers, AI coding tools, MCP servers, Homebrew libraries and project dependencies you build with against OSV, NVD and vendor advisories. Every finding comes with its evidence and a command you can copy into Terminal.").foregroundStyle(.secondary)
             Text("Add the folders that hold your projects so their lockfiles are included. Inventory stays on this Mac; public advisory services receive package names and versions only. No accounts or API keys are needed.").font(.callout)
