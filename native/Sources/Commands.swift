@@ -315,7 +315,7 @@ enum Commands {
             return [file(config, "Pin the server's package to \(fix ?? "a fixed release") or later, then restart the app that runs it.")]
         case "sparkle-framework":
             guard let app = item.location else { return [] }
-            let name = String(item.name.dropFirst("Sparkle in ".count))
+            let name = item.sparkleApp ?? item.name
             return [UpdateCommand(text: "Open \(name)", note: "Check for updates in \(name). A release that bundles Sparkle \(fix ?? "with the fix") or later fixes this.", kind: "app", target: app)]
         case "extension":
             guard let id = safe(item.name, "^[a-z0-9][a-z0-9-]*\\.[a-z0-9][a-z0-9._-]*$") else { return [] }
@@ -464,7 +464,7 @@ enum Commands {
         case "mcp": return "Pin this MCP server's package to \(fixed) or later in \(item.location.map { Inventory.display($0) } ?? "its configuration"), then restart the app that runs it."
         case "actions": return "Change \(name) in this workflow to v\(fixed) or later, then commit the workflow."
         case "sparkle-framework":
-            let app = String(item.name.dropFirst("Sparkle in ".count))
+            let app = item.sparkleApp ?? item.name
             return "Update \(app) to a release that bundles Sparkle \(fixed) or later. If its newest release still bundles an affected Sparkle, ask its developer to update it."
         case "swift" where item.sourceFile.contains(".xcodeproj/") || item.sourceFile.contains(".xcworkspace/"):
             return "In Xcode, choose File › Packages › Update to Latest Package Versions. If \(fixed) is outside the project's version rule for \(name), raise the rule first."

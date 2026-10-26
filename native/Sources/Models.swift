@@ -115,6 +115,8 @@ struct Installation: Codable, Identifiable, Hashable {
     var feed: String? = nil        // an app's https Sparkle update feed (SUFeedURL)
     // Reports saved before `file` existed joined the file and package with "#", which a folder name can contain.
     var sourceFile: String { file ?? String(path.prefix { $0 != "#" }) }
+    // The app a bundled Sparkle belongs to; its entry is named "Sparkle in <app>".
+    var sparkleApp: String? { manager == "sparkle-framework" ? String(name.dropFirst("Sparkle in ".count)) : nil }
 }
 enum FindingKind: String, Codable { case security, unsupported, update }
 // One way to install an update. A Terminal command is copied for the user to run; a link, app or file is
@@ -235,6 +237,41 @@ struct SavedState: Codable {
     var lastScheduledDay: String? = nil
     var projectFolders: [String]? = nil
     var history: [HistoryEntry]? = nil
+}
+// What the alert about new or changed findings says. `released` holds the findings that were waiting for a fix.
+// A bundled Sparkle that stops waiting isn't known to be fixed: its app has a new release, which may or may not
+// bundle a newer Sparkle, so the alert names the app and says only that.
+enum Alerts {
+    static func findings(_ changed: [Finding], released: Set<String>) -> (title: String, body: String) {
+        let newRelease = { (finding: Finding) in released.contains(finding.id) && finding.installation.sparkleApp != nil }
+        let others = changed.filter { !newRelease($0) }
+        let apps = Array(Set(changed.filter(newRelease).compactMap(\.installation.sparkleApp))).sorted()
+        let title = changed.contains { $0.malicious == true } ? "Malicious package found"
+            : others.contains { released.contains($0.id) } ? "Fix now available"
+            : !others.isEmpty ? "Security updates to review"
+            : apps.count == 1 ? "New \(apps[0]) release" : "New app releases"
+        var body: [String] = []
+        if !others.isEmpty {
+            let names = Array(Set(others.map { $0.installation.sparkleApp != nil ? $0.installation.name : $0.installation.packageName ?? $0.installation.name })).sorted()
+            body.append(names.prefix(4).joined(separator: ", ") + (names.count > 4 ? " and \(names.count - 4) more" : "") + ".")
+        }
+        if !apps.isEmpty {
+            body.append(apps.count == 1 ? "The new release of \(apps[0]) may include a newer Sparkle than the vulnerable version it bundles now."
+                                        : "New releases of \(list(apps)) may include a newer Sparkle than the vulnerable versions they bundle now.")
+        }
+        body.append(others.isEmpty ? "Open \(appName) for details." : "Open \(appName) for versions and update commands.")
+        return (title, body.joined(separator: " "))
+    }
+    static func list(_ names: [String]) -> String {
+        let shown = names.count > 4 ? Array(names.prefix(4)) + ["\(names.count - 4) more"] : names
+        return shown.count < 2 ? shown.joined() : shown.dropLast().joined(separator: ", ") + " and " + shown.last!
+    }
+    // Delivered alerts are kept only for findings still listed and not waiting for a fix. A waiting finding loses
+    // its record, so it alerts again when a fix or a new release appears, even if it was alerted before it waited.
+    static func pruned(_ delivered: [String: String], report: ScanReport) -> [String: String] {
+        let ids = Set(report.findings.filter { $0.awaitingFix != true }.map(\.id))
+        return delivered.filter { ids.contains($0.key) }
+    }
 }
 
 // "Oct 25, 2026 at 10:36 AM (5 minutes ago)"; under a minute reads "(just now)".

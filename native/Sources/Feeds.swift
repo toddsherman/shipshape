@@ -370,8 +370,9 @@ enum Scanner {
                                            action: "Remove retained copies once nothing depends on them.", links: ["https://docs.brew.sh/Manpage#cleanup-options-formulacask-"]))
         }
 
-        markAwaiting(&report.findings, newest: newestFormulae)
-        markSparkleAwaiting(&report.findings, currentApps: currentApps.subtracting(report.findings.filter { $0.kind == .update }.map(\.installation.path)))
+        let waiting = Dictionary((previous?.awaiting ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        markAwaiting(&report.findings, newest: newestFormulae, waiting: waiting)
+        markSparkleAwaiting(&report.findings, currentApps: currentApps, waiting: Set(waiting.keys))
         let skipped = dropSameReleaseUpdates(&report.findings)
         if skipped > 0 {
             record("same-release", "Update sanity check", "\(skipped) update\(skipped == 1 ? "" : "s") skipped because the newer version was the installed release written differently.", status: "checked")
@@ -434,27 +435,38 @@ enum Scanner {
         return before - findings.count
     }
 
-    // An NVD finding with no fixed release, on a copy that is already Homebrew's newest: nothing to install yet.
-    // It becomes an ordinary finding again, with its command, once Homebrew ships a newer release.
     // A vulnerable Sparkle inside an app that is already at its newest release can't be fixed by updating; only
     // the app's developer can ship a newer Sparkle. Like an NVD finding with no fixed release, it waits in
     // "No fix released yet", and becomes an ordinary finding again, with an alert, once a newer release appears.
-    static func markSparkleAwaiting(_ findings: inout [Finding], currentApps: Set<String>) {
+    // One that was waiting keeps waiting until something shows a newer release, so an update feed that can't be
+    // read this time doesn't pass for a new release.
+    static func markSparkleAwaiting(_ findings: inout [Finding], currentApps: Set<String>, waiting: Set<String> = []) {
+        // Apps with a newer release: from their feed or Homebrew, or a fixed release of the app itself.
+        let newer = Set(findings.filter { $0.kind == .update || ($0.kind == .security && $0.awaitingFix != true && $0.fixed.first?.isNumber == true) }.map(\.installation.path))
         for index in findings.indices {
             let finding = findings[index], item = finding.installation
-            guard item.manager == "sparkle-framework", finding.kind == .security, finding.malicious != true, let app = item.location, currentApps.contains(app) else { continue }
-            let name = String(item.name.dropFirst("Sparkle in ".count))
+            guard finding.kind == .security, finding.malicious != true, let name = item.sparkleApp, let app = item.location, !newer.contains(app),
+                  currentApps.contains(app) || waiting.contains(finding.id) else { continue }
             findings[index].awaitingFix = true
             findings[index].fixed = finding.fixed.first?.isNumber == true ? "\(finding.fixed), not in \(name) yet" : "No fix released yet"
             findings[index].action = "You have the newest \(name), and it still bundles Sparkle \(item.version). Only its developer can update Sparkle, so let them know. Shipshape alerts you when a newer \(name) is released."
         }
     }
 
-    static func markAwaiting(_ findings: inout [Finding], newest: [String: String]) {
+    // An NVD finding with no fixed release, on a copy that is already Homebrew's newest: nothing to install yet.
+    // It becomes an ordinary finding again, with its command, once Homebrew ships a newer release.
+    // Without Homebrew's data nothing shows a newer release, so one that was waiting keeps waiting.
+    static func markAwaiting(_ findings: inout [Finding], newest: [String: String], waiting: [String: Finding] = [:]) {
         for index in findings.indices {
             let finding = findings[index], item = finding.installation
-            guard finding.source.hasPrefix("nvd:"), finding.kind == .security, item.manager == "brew", let package = item.package, let latest = newest[package],
-                  !looseLess(item.version, latest), finding.fixed == NVD.noFixListed || finding.expectedFix != nil else { continue }
+            guard finding.source.hasPrefix("nvd:"), finding.kind == .security, item.manager == "brew", let package = item.package else { continue }
+            guard let latest = newest[package] else {
+                if let old = waiting[finding.id], old.installation.version == item.version {
+                    findings[index].awaitingFix = true; findings[index].fixed = old.fixed; findings[index].action = old.action
+                }
+                continue
+            }
+            guard !looseLess(item.version, latest), finding.fixed == NVD.noFixListed || finding.expectedFix != nil else { continue }
             findings[index].awaitingFix = true
             findings[index].fixed = finding.expectedFix.map { "\($0), not released yet" } ?? "No fix released yet"
             findings[index].action = "You have Homebrew's newest \(item.name) (\(latest)), and no release fixes these yet."

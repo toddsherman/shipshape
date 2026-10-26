@@ -2,6 +2,12 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.5 — October 25, 2026
+
+- **The alert for a bundled Sparkle** names the app and says its new release *may* include a newer Sparkle ("New iTerm2 release"), instead of "Fix now available" with Sparkle's repository name.
+- That alert now arrives for findings you'd already been alerted about before they started waiting, including everything carried over from 0.3.3.
+- A finding waiting in No fix released yet keeps waiting when its app's update feed or Homebrew's data can't be read, instead of briefly turning into an alert.
+
 ## 0.3.4 — October 25, 2026
 
 - **Bundled Sparkle in apps that are already current** moves to **No fix released yet**: updating can't help until the developer ships a newer Sparkle, so there's no "Open app" button and it doesn't count as needing attention. Shipshape alerts you when a newer release of the app appears.

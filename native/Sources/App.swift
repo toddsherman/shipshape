@@ -172,7 +172,7 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
             save()
         }
     }
-    // Findings that were waiting for a fix and now have one get their own alert title.
+    // Findings that were waiting for a fix and now have one, or whose app has a new release, get their own alert (see Alerts).
     // Returns whether the record of delivered alerts changed and needs saving.
     @discardableResult private func notifyChanges(wasAwaiting: Set<String> = []) async -> Bool {
         guard let report else { return false }
@@ -184,11 +184,7 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         let failureSignature = report.checks.filter { $0.status == "failed" }.map(\.id).sorted().joined(separator: ",")
         if !changed.isEmpty {
             let content = UNMutableNotificationContent()
-            let malicious = changed.contains { $0.malicious == true }
-            let released = changed.contains { wasAwaiting.contains($0.id) }
-            content.title = malicious ? "Malicious package found" : released ? "Fix now available" : "Security updates to review"
-            let names = Array(Set(changed.map { $0.installation.packageName ?? $0.installation.name })).sorted()
-            content.body = names.prefix(4).joined(separator: ", ") + (names.count > 4 ? " and \(names.count - 4) more" : "") + ". Open \(appName) for versions and update commands."
+            (content.title, content.body) = Alerts.findings(changed, released: wasAwaiting)
             content.sound = .default
             do {
                 try await center.add(UNNotificationRequest(identifier: "security-findings", content: content, trigger: nil))
@@ -203,9 +199,7 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
                 state.lastFailure = failureSignature
             } catch { message = "Could not schedule a check-failure alert: \(error.localizedDescription)" }
         } else if failureSignature.isEmpty { state.lastFailure = nil }
-        // Remove delivered fingerprints only after the corresponding issue really disappeared.
-        let ids = Set(report.findings.map(\.id))
-        state.delivered = state.delivered.filter { ids.contains($0.key) }
+        state.delivered = Alerts.pruned(state.delivered, report: report)
         return before.0 != state.delivered || before.1 != state.lastFailure
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions { [.banner, .sound] }

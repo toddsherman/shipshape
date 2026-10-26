@@ -265,6 +265,14 @@ import Foundation
         var appFinding = [NVD.finding(vscodeCopy, product: Catalog.byID["vscode"]!, hits: [NVDHit(id: "CVE-2026-8", fixed: nil, severity: "LOW")])!]
         Scanner.markAwaiting(&appFinding, newest: ["visual-studio-code": "1.90"])
         expect(appFinding[0].awaitingFix == nil, "only Homebrew formulae are compared with Homebrew's newest release")
+        var homebrewDown = [krbFinding], neverWaited = [krbFinding], upgradedSince = [krbFinding]
+        Scanner.markAwaiting(&homebrewDown, newest: [:], waiting: [waiting[0].id: waiting[0]])
+        Scanner.markAwaiting(&neverWaited, newest: [:])
+        let olderCopy = Finding(source: waiting[0].source, installation: Installation(product: "krb5", name: "krb5", version: "1.22.1", path: krb5.path, domain: "brew", package: "krb5", manager: "brew"),
+                                kind: .security, fixed: waiting[0].fixed, reason: "", action: waiting[0].action, links: [])
+        Scanner.markAwaiting(&upgradedSince, newest: [:], waiting: [olderCopy.id: olderCopy])
+        expect(homebrewDown[0].awaitingFix == true && homebrewDown[0].fixed == "1.22.3, not released yet" && neverWaited[0].awaitingFix == nil && upgradedSince[0].awaitingFix == nil,
+               "without Homebrew's data, only a finding that was waiting on the same version keeps waiting")
 
         // Homebrew rebuilds and old copies.
         expect(homebrewOlder("26.12.1", "26.12.1_1") && homebrewOlder("26.11.0_3", "26.12.1") && !homebrewOlder("26.12.1_1", "26.12.1_1")
@@ -773,6 +781,47 @@ import Foundation
         expect(waitingSparkle.awaitingFix == true && waitingSparkle.fixed == "2.6.4, not in Folx yet" && waitingSparkle.action.hasPrefix("You have the newest Folx, and it still bundles Sparkle 1.20.0")
                && Commands.commands(for: waitingSparkle).isEmpty, "a current app's bundled Sparkle has no button and says only the developer can fix it")
         expect(ScanReport(findings: sparkleFindings).security.isEmpty && ScanReport(findings: sparkleFindings).awaiting.count == 1, "it waits in No fix released yet instead of counting as needing attention")
+        let freshSparkle = OSV.findings(for: [sparkleItem], matches: [OSV.key(sparkleItem)!: ["GHSA-a", "GHSA-b"]], vulns: sparkleVulns)
+        var unreadFeed = freshSparkle
+        Scanner.markSparkleAwaiting(&unreadFeed, currentApps: [], waiting: [waitingSparkle.id])
+        expect(unreadFeed[0].awaitingFix == true && unreadFeed[0].fixed == waitingSparkle.fixed, "a waiting Sparkle keeps waiting when nothing shows a newer release, such as an unreadable feed")
+        let folxUpdate = Finding(source: "sparkle-feed", installation: Installation(product: "app:folx", name: "Folx", version: "5.30", path: "/Applications/Folx.app", domain: "apps", manager: "app"),
+                                 kind: .update, fixed: "5.31", reason: "", action: "", links: [])
+        var folxReleased = freshSparkle + [folxUpdate], folxBothSources = freshSparkle + [folxUpdate]
+        Scanner.markSparkleAwaiting(&folxReleased, currentApps: [], waiting: [waitingSparkle.id])
+        Scanner.markSparkleAwaiting(&folxBothSources, currentApps: ["/Applications/Folx.app"])
+        expect(folxReleased[0].awaitingFix == nil && Commands.commands(for: folxReleased[0]).first?.text == "Open Folx" && folxBothSources[0].awaitingFix == nil,
+               "a newer release of the app ends the wait, even if another source calls the app current")
+        let itermSparkle = Finding(source: "osv", installation: Installation(product: "swifturl:github.com/sparkle-project/Sparkle", name: "Sparkle in iTerm2", version: "1.22.0", path: "/Applications/iTerm.app/Contents/Frameworks/Sparkle.framework",
+                                                                             domain: "apps", ecosystem: "SwiftURL", packageName: "github.com/sparkle-project/Sparkle", manager: "sparkle-framework", location: "/Applications/iTerm.app"),
+                                   kind: .security, fixed: "2.6.4", reason: "", action: "", links: [])
+        let itermFix = Finding(source: "nvd:iterm2", installation: Installation(product: "iterm2", name: "iTerm2", version: "3.5.0", path: "/Applications/iTerm.app", domain: "apps", manager: "app"),
+                               kind: .security, fixed: "3.5.1", reason: "", action: "", links: [])
+        var itermFindings = [itermFix, itermSparkle]
+        Scanner.markSparkleAwaiting(&itermFindings, currentApps: [], waiting: [itermSparkle.id])
+        expect(itermFindings[1].awaitingFix == nil, "a fixed release of the app itself also counts as a newer release")
+
+        // Alerts: a Sparkle that stops waiting means a new app release, which may or may not bundle a newer Sparkle.
+        let folxAlert = Alerts.findings([folxReleased[0]], released: [waitingSparkle.id])
+        expect(folxAlert.title == "New Folx release" && folxAlert.body == "The new release of Folx may include a newer Sparkle than the vulnerable version it bundles now. Open Shipshape for details.",
+               "a Sparkle alert names the app and doesn't call it a fix")
+        let twoApps = Alerts.findings([itermSparkle, folxReleased[0]], released: [waitingSparkle.id, itermSparkle.id])
+        expect(twoApps.title == "New app releases" && twoApps.body == "New releases of Folx and iTerm2 may include a newer Sparkle than the vulnerable versions they bundle now. Open Shipshape for details.",
+               "several apps with new releases are named together")
+        let firstSeen = Alerts.findings([freshSparkle[0]], released: [])
+        expect(firstSeen.title == "Security updates to review" && firstSeen.body == "Sparkle in Folx. Open Shipshape for versions and update commands.", "a new Sparkle finding is named by its app, not Sparkle's repository")
+        let leftPad = Finding(source: "osv", installation: Installation(product: "npm:left-pad", name: "left-pad", version: "1.0.0", path: "/p/package-lock.json#left-pad", domain: "projects", packageName: "left-pad"),
+                              kind: .security, fixed: "1.1.0", reason: "", action: "", links: [])
+        let mixed = Alerts.findings([leftPad, folxReleased[0]], released: [waitingSparkle.id])
+        expect(mixed.title == "Security updates to review"
+               && mixed.body == "left-pad. The new release of Folx may include a newer Sparkle than the vulnerable version it bundles now. Open Shipshape for versions and update commands.", "other findings are listed before the app release")
+        expect(Alerts.findings([leftPad, folxReleased[0]], released: [waitingSparkle.id, leftPad.id]).title == "Fix now available", "a real fix that was waiting keeps its title")
+        var badPad = leftPad; badPad.malicious = true
+        expect(Alerts.findings([badPad, folxReleased[0]], released: [waitingSparkle.id]).title == "Malicious package found", "malicious packages come first")
+        expect(Alerts.list(["A"]) == "A" && Alerts.list(["A", "B"]) == "A and B" && Alerts.list(["A", "B", "C"]) == "A, B and C"
+               && Alerts.list(["A", "B", "C", "D", "E", "F"]) == "A, B, C, D and 2 more", "app names are listed in a sentence")
+        let pruned = Alerts.pruned([waitingSparkle.id: "before it waited", leftPad.id: "delivered", "gone": "removed"], report: ScanReport(findings: [waitingSparkle, leftPad]))
+        expect(pruned == [leftPad.id: "delivered"], "a waiting finding forgets its earlier alert, so a new release alerts again")
 
         // Project scans skip app bundles and package-manager internals such as Homebrew's own Library.
         let scanRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-scan-\(UUID().uuidString)").path
