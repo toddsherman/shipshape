@@ -749,7 +749,30 @@ import Foundation
         expect(Commands.commands(for: bundled).first.map { $0.kind == "app" && $0.text == "Open Tidy" && $0.target?.hasSuffix("/Tidy.app") == true } == true
                && Commands.action(for: sparkleApps[1], malicious: false, fixed: "2.9.2").hasPrefix("Update Tidy to a release that bundles Sparkle 2.9.2 or later"),
                "a vulnerable bundled Sparkle is fixed by updating the app that contains it")
+        expect(sparkleApps[1].note.contains("a modified Sparkle build, 1.27.1 plus 3 changes"), "a Sparkle with changes on top of a release says so on its card")
+        expect(Inventory.sparkleChanges("1.22.0 1354-g4e0506a") == 1354 && Inventory.sparkleChanges("1.27.1-3-g05be1d71") == 3
+               && Inventory.sparkleChanges("2.7.0-beta.1") == nil && Inventory.sparkleChanges("2.10.0") == nil, "build suffixes give the number of changes; releases and prereleases have none")
         try? FileManager.default.removeItem(atPath: appsRoot)
+
+        // Bundled Sparkle in an app that is already current: nothing to install until the developer ships a fix.
+        let sparkleItem = Installation(product: "swifturl:github.com/sparkle-project/Sparkle", name: "Sparkle in Folx", version: "1.20.0", path: "/Applications/Folx.app/Contents/Frameworks/Sparkle.framework",
+                                       domain: "apps", ecosystem: "SwiftURL", packageName: "github.com/sparkle-project/Sparkle", manager: "sparkle-framework", location: "/Applications/Folx.app")
+        let sparkleTarget = "SwiftURL|github.com/sparkle-project/Sparkle"
+        let sparkleVulns = ["GHSA-a": OSV.Vuln(id: "GHSA-a", summary: "Signing checks bypass", aliases: [], severity: "HIGH", fixed: [sparkleTarget: ["2.6.4"]]),
+                            "GHSA-b": OSV.Vuln(id: "GHSA-b", summary: "XPC listener accepts unvalidated connections", aliases: [], severity: "MODERATE", fixed: [:])]
+        var sparkleFindings = OSV.findings(for: [sparkleItem], matches: [OSV.key(sparkleItem)!: ["GHSA-a", "GHSA-b"]], vulns: sparkleVulns)
+        expect(sparkleFindings.first?.reason == "2 published advisories: Signing checks bypass; XPC listener accepts unvalidated connections. 1 has no published fix.",
+               "advisory titles end with a period before the count of advisories with no fix")
+        expect(SparkleFeeds.current(currentApp, releases: feedReleases, system: "Version 27.0 (Build 27A1)") && !SparkleFeeds.current(feedApp, releases: feedReleases, system: "Version 27.0 (Build 27A1)")
+               && !SparkleFeeds.current(currentApp, releases: [], system: "Version 27.0 (Build 27A1)"), "an app is current only when its feed offers nothing newer")
+        var otherApps = sparkleFindings
+        Scanner.markSparkleAwaiting(&otherApps, currentApps: ["/Applications/Rectangle.app"])
+        expect(otherApps.first?.awaitingFix == nil && Commands.commands(for: otherApps[0]).first?.text == "Open Folx", "an app with a newer release keeps its Open button")
+        Scanner.markSparkleAwaiting(&sparkleFindings, currentApps: ["/Applications/Folx.app"])
+        let waitingSparkle = sparkleFindings[0]
+        expect(waitingSparkle.awaitingFix == true && waitingSparkle.fixed == "2.6.4, not in Folx yet" && waitingSparkle.action.hasPrefix("You have the newest Folx, and it still bundles Sparkle 1.20.0")
+               && Commands.commands(for: waitingSparkle).isEmpty, "a current app's bundled Sparkle has no button and says only the developer can fix it")
+        expect(ScanReport(findings: sparkleFindings).security.isEmpty && ScanReport(findings: sparkleFindings).awaiting.count == 1, "it waits in No fix released yet instead of counting as needing attention")
 
         // Project scans skip app bundles and package-manager internals such as Homebrew's own Library.
         let scanRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-scan-\(UUID().uuidString)").path

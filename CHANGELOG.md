@@ -2,6 +2,12 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.4 — October 25, 2026
+
+- **Bundled Sparkle in apps that are already current** moves to **No fix released yet**: updating can't help until the developer ships a newer Sparkle, so there's no "Open app" button and it doesn't count as needing attention. Shipshape alerts you when a newer release of the app appears.
+- **Modified Sparkle builds,** such as iTerm2's (Sparkle 1.22.0 plus 1,354 changes), are noted on their card, since the version may not show fixes made since.
+- Advisory summaries read correctly when some advisories have no published fix ("…Signing Checks Bypass. 1 has no published fix.").
+
 ## 0.3.3 — October 25, 2026
 
 - **Self-updating apps (Sparkle):** any app with a Sparkle update feed, on the built-in list or not, is checked against its own feed for newer releases.

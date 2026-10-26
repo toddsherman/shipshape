@@ -1,4 +1,4 @@
-# Shipshape for macOS — 0.3.3 preview
+# Shipshape for macOS — 0.3.4 preview
 
 A native SwiftUI menu bar app for macOS 13 or later, built for Apple silicon and Intel. It watches the developer stack people install to build apps with AI coding tools such as Claude Code and Codex, and shows the easiest way to install each fix. No Python, Node, Homebrew, account or API key is needed to run it.
 
@@ -27,7 +27,7 @@ Notifications are deduplicated by installation, version, fix version, advisory i
 | Runtimes | Node (standard, Homebrew, nvm, Volta, fnm), Bun, Deno, uv, Go (go.dev or Homebrew), python.org, Homebrew, uv and pyenv Pythons; Node, Python, Go, Ruby, Bun and Deno installed with mise; Rust, Ruby, PHP and OpenJDK from Homebrew | Vendor rules for Node and Bun; OSV for Go's standard library and uv; NVD for the rest |
 | Homebrew | Every installed formula and cask, including retained older copies | Vendor rules for PostgreSQL (including the libpq client library) and OpenSSL; OSV for Docker Compose's Go module; NVD for catalog tools and libraries (curl, git, sqlite, libxml2, libpng and others) |
 | Developer apps | Catalog apps in /Applications and ~/Applications: browsers, terminals, Docker, JetBrains IDEs, Postman, Tailscale and others | NVD where a CPE exists |
-| Self-updating apps (Sparkle) | Any non-App Store app in /Applications or ~/Applications with an https Sparkle feed (`SUFeedURL`) or a bundled `Sparkle.framework`, on the catalog or not | The app's own feed for newer releases, compared by build number as Sparkle does (beta channels, other platforms and releases needing a newer macOS are skipped). The bundled Sparkle version is checked against Sparkle's advisories in OSV; the fix is updating the app |
+| Self-updating apps (Sparkle) | Any non-App Store app in /Applications or ~/Applications with an https Sparkle feed (`SUFeedURL`) or a bundled `Sparkle.framework`, on the catalog or not | The app's own feed for newer releases, compared by build number as Sparkle does (beta channels, other platforms and releases needing a newer macOS are skipped). The bundled Sparkle version is checked against Sparkle's advisories in OSV; the fix is updating the app. When the app is already at its newest release (by its own feed or Homebrew's cask data), there is nothing to install: the finding waits in **No fix released yet**, with no button and not counted as needing attention, and Shipshape alerts you when a newer release appears. Apps that ship their own modified Sparkle (a version like `1.22.0 1354-g4e0506a`) are noted, since the version may not show fixes made since |
 | Apple | Software Update, including Command Line Tools | Update eligibility only |
 
 **Excluded by design:** Google Chrome, whether installed directly or with Homebrew, and every app installed from the Mac App Store. They update through Chrome's own updater and the App Store, and are skipped entirely: not listed, checked or counted as findings.

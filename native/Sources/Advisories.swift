@@ -91,9 +91,12 @@ enum OSV {
             }
             let malicious = chosen.contains { $0.id.hasPrefix("MAL-") }
             let count = chosen.count == 1 ? "1 published advisory" : "\(chosen.count) published advisories"
+            var titles = chosen.prefix(3).map(\.summary).joined(separator: "; ") + (chosen.count > 3 ? "; …" : "")
+            if !titles.hasSuffix(".") && !titles.hasSuffix("…") { titles += "." }
+            let unpublished = unfixed > 0 && !fixes.isEmpty ? " \(unfixed) \(unfixed == 1 ? "has" : "have") no published fix." : ""
             let reason = malicious
                 ? "OpenSSF's malicious-package database lists this exact version. Assume anything it could reach is exposed."
-                : count + ": " + chosen.prefix(3).map(\.summary).joined(separator: "; ") + (chosen.count > 3 ? "; …" : "") + (unfixed > 0 && !fixes.isEmpty ? " \(unfixed) without a published fix." : "")
+                : count + ": " + titles + unpublished
             let advisories = Set(chosen.flatMap { [$0.id] + $0.aliases.filter { $0.hasPrefix("CVE-") } })
             findings.append(Finding(source: "osv", installation: item, kind: .security,
                                     fixed: malicious ? "Remove this version" : fixes.max(by: looseLess) ?? "No fixed version published",
@@ -274,9 +277,14 @@ enum SparkleFeeds {
                        reason: "\(item.name)'s own update feed lists \(version)\(release.version != nil && release.version != release.build ? " (build \(release.build))" : "") as its newest release. This alone does not establish a security vulnerability.",
                        action: "Open \(item.name) and check for updates, or download the release from its developer.", links: [])
     }
-    static func findings(_ items: [Installation], skipping paths: Set<String>) async -> (findings: [Finding], read: Int, unreadable: Int) {
+    // Whether the app already has the newest release its feed offers this Mac.
+    static func current(_ item: Installation, releases: [Release], system: String = ProcessInfo.processInfo.operatingSystemVersionString) -> Bool {
+        guard let installed = item.build ?? Optional(item.version), let release = newest(releases, system: system) else { return false }
+        return !older(installed, release.build)
+    }
+    static func findings(_ items: [Installation], skipping paths: Set<String>) async -> (findings: [Finding], current: Set<String>, read: Int, unreadable: Int) {
         let apps = items.filter { $0.feed != nil && !paths.contains($0.path) }
-        var findings: [Finding] = [], read = 0, unreadable = 0
+        var findings: [Finding] = [], current = Set<String>(), read = 0, unreadable = 0
         await withTaskGroup(of: (Installation, Data?).self) { group in
             for app in apps { group.addTask { (app, try? await Fetch.data(app.feed!, limit: 5_000_000)) } }
             for await (app, data) in group {
@@ -284,10 +292,10 @@ enum SparkleFeeds {
                 let releases = Self.releases(data)
                 if releases.isEmpty { unreadable += 1; continue }
                 read += 1
-                if let finding = finding(app, releases: releases) { findings.append(finding) }
+                if let finding = finding(app, releases: releases) { findings.append(finding) } else if Self.current(app, releases: releases) { current.insert(app.path) }
             }
         }
-        return (findings, read, unreadable)
+        return (findings, current, read, unreadable)
     }
 }
 

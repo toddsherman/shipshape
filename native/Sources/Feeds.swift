@@ -281,11 +281,14 @@ enum Scanner {
                        + (unknown > 0 ? " \(unknown) can't be checked: they point at a branch or a commit with no version comment." : ""), url: "https://osv.dev/list?ecosystem=GitHub%20Actions")
             } catch { failure("github-actions", "GitHub Actions (OSV)", error) }
         }
+        // Apps already at their newest release, from their Sparkle feed or Homebrew's cask data.
+        var currentApps = Set<String>()
         // Sparkle feeds name the newest release of self-updating apps, including apps outside the catalog.
         if report.installations.contains(where: { $0.feed != nil }) {
             progress("Checking Sparkle update feeds")
-            let (found, read, unreadable) = await SparkleFeeds.findings(report.installations, skipping: Set(report.findings.map(\.installation.path)))
+            let (found, current, read, unreadable) = await SparkleFeeds.findings(report.installations, skipping: Set(report.findings.map(\.installation.path)))
             report.findings += found
+            currentApps.formUnion(current)
             record("sparkle-feeds", "Sparkle update feeds", "\(read) self-updating apps' own update feeds checked for newer releases."
                    + (unreadable > 0 ? " \(unreadable) feed\(unreadable == 1 ? "" : "s") couldn't be read; those apps still check for updates themselves." : ""), url: "https://sparkle-project.org/documentation/publishing/")
         }
@@ -345,6 +348,7 @@ enum Scanner {
                 if kind == "formula" { newestFormulae = latest }
                 var candidates = 0
                 for item in items {
+                    if kind == "cask", let target = latest[item.package!], target != "latest", !looseLess(item.version, target) { currentApps.insert(item.path) }
                     // Formulae compare the installed build (its Cellar folder, e.g. 26.12.1) with Homebrew's newest, rebuilds included.
                     let installed = kind == "formula" ? (item.path as NSString).lastPathComponent : item.version
                     guard let target = (kind == "formula" ? builds : latest)[item.package!], target != "latest",
@@ -367,6 +371,7 @@ enum Scanner {
         }
 
         markAwaiting(&report.findings, newest: newestFormulae)
+        markSparkleAwaiting(&report.findings, currentApps: currentApps.subtracting(report.findings.filter { $0.kind == .update }.map(\.installation.path)))
         let skipped = dropSameReleaseUpdates(&report.findings)
         if skipped > 0 {
             record("same-release", "Update sanity check", "\(skipped) update\(skipped == 1 ? "" : "s") skipped because the newer version was the installed release written differently.", status: "checked")
@@ -431,6 +436,20 @@ enum Scanner {
 
     // An NVD finding with no fixed release, on a copy that is already Homebrew's newest: nothing to install yet.
     // It becomes an ordinary finding again, with its command, once Homebrew ships a newer release.
+    // A vulnerable Sparkle inside an app that is already at its newest release can't be fixed by updating; only
+    // the app's developer can ship a newer Sparkle. Like an NVD finding with no fixed release, it waits in
+    // "No fix released yet", and becomes an ordinary finding again, with an alert, once a newer release appears.
+    static func markSparkleAwaiting(_ findings: inout [Finding], currentApps: Set<String>) {
+        for index in findings.indices {
+            let finding = findings[index], item = finding.installation
+            guard item.manager == "sparkle-framework", finding.kind == .security, finding.malicious != true, let app = item.location, currentApps.contains(app) else { continue }
+            let name = String(item.name.dropFirst("Sparkle in ".count))
+            findings[index].awaitingFix = true
+            findings[index].fixed = finding.fixed.first?.isNumber == true ? "\(finding.fixed), not in \(name) yet" : "No fix released yet"
+            findings[index].action = "You have the newest \(name), and it still bundles Sparkle \(item.version). Only its developer can update Sparkle, so let them know. Shipshape alerts you when a newer \(name) is released."
+        }
+    }
+
     static func markAwaiting(_ findings: inout [Finding], newest: [String: String]) {
         for index in findings.indices {
             let finding = findings[index], item = finding.installation

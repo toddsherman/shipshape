@@ -123,7 +123,7 @@ enum Inventory {
                     if Catalog.excludedBundleIDs.contains(bundleID) || fm.fileExists(atPath: url.appendingPathComponent("Contents/_MASReceipt/receipt").path) { skipped += 1; continue }
                     let build = info["CFBundleVersion"] as? String
                     let feed = (info["SUFeedURL"] as? String).flatMap { $0.hasPrefix("https://") ? $0 : nil }
-                    let sparkle = sparkleVersion(url.path)
+                    let sparkle = sparkleBuild(url.path)
                     let title = (info["CFBundleDisplayName"] ?? info["CFBundleName"]) as? String ?? url.deletingPathExtension().lastPathComponent
                     // Apps outside the catalog are kept when Sparkle can say something about them: a feed with
                     // their newest release, or a bundled Sparkle with known advisories.
@@ -135,8 +135,9 @@ enum Inventory {
                                               ecosystem: product.flatMap { Catalog.osv($0, version: version)?.ecosystem }, packageName: product.flatMap { Catalog.osv($0, version: version)?.name },
                                               manager: "app", build: build, feed: feed))
                     if let sparkle {
-                        items.append(Installation(product: "swifturl:github.com/sparkle-project/Sparkle", name: "Sparkle in \(name)", version: sparkle, path: url.path + "/Contents/Frameworks/Sparkle.framework",
-                                                  domain: "apps", note: "The update framework bundled inside \(name). It is updated with the app.", ecosystem: "SwiftURL",
+                        let modified = sparkle.changes.map { " It's a modified Sparkle build, \(sparkle.version) plus \($0.formatted()) change\($0 == 1 ? "" : "s"), so its version may not show fixes made since." } ?? ""
+                        items.append(Installation(product: "swifturl:github.com/sparkle-project/Sparkle", name: "Sparkle in \(name)", version: sparkle.version, path: url.path + "/Contents/Frameworks/Sparkle.framework",
+                                                  domain: "apps", note: "The update framework bundled inside \(name). It is updated with the app." + modified, ecosystem: "SwiftURL",
                                                   packageName: "github.com/sparkle-project/Sparkle", manager: "sparkle-framework", location: url.path))
                     }
                 } else if url.pathComponents.count - base.pathComponents.count >= 3 { enumerator.skipDescendants() }
@@ -146,13 +147,17 @@ enum Inventory {
     }
 
     // The version of the Sparkle framework bundled in an app, trimmed of build suffixes ("1.27.1-3-g05be1d71",
-    // "1.22.0 1354-g4e0506a") so it can be compared; prerelease tags such as -beta.1 are kept.
-    static func sparkleVersion(_ app: String) -> String? {
+    // "1.22.0 1354-g4e0506a") so it can be compared; prerelease tags such as -beta.1 are kept. A suffix of the
+    // form N-g<commit> means the app ships its own build with N changes on top of that Sparkle release.
+    static func sparkleBuild(_ app: String) -> (version: String, changes: Int?)? {
         let framework = app + "/Contents/Frameworks/Sparkle.framework"
         guard let data = ["/Versions/A/Resources/Info.plist", "/Resources/Info.plist"].lazy.compactMap({ read(framework + $0, limit: 1_000_000, followLinks: true) }).first,
               let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
-              let raw = (info["CFBundleShortVersionString"] ?? info["CFBundleVersion"]) as? String else { return nil }
-        return trimmedSparkleVersion(raw)
+              let raw = (info["CFBundleShortVersionString"] ?? info["CFBundleVersion"]) as? String, let version = trimmedSparkleVersion(raw) else { return nil }
+        return (version, sparkleChanges(raw))
+    }
+    static func sparkleChanges(_ raw: String) -> Int? {
+        captures("^[0-9]+(?:\\.[0-9]+)*[ -]([0-9]+)-g[0-9a-f]{6,}", raw).first.flatMap { Int($0[1]) }
     }
     static func trimmedSparkleVersion(_ raw: String) -> String? {
         captures("^([0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:-(?:alpha|beta|rc)[0-9.]*)?)", raw).first?[1]
