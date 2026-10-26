@@ -39,6 +39,8 @@ Add an entry to `native/Sources/Catalog.swift` with its bundle IDs, Homebrew for
 
 Check that the source actually has data for the product before adding it. Shipshape reports nothing for a CPE or package that doesn't exist, which looks like "safe." The [native README](native/README.md) explains how each source is matched.
 
+If the app updates itself with Sparkle but sets its update feed in code instead of in its Info.plist (`SUFeedURL`), add its public appcast as `feed`, as Codex's entry does. Use an https feed anyone can read, never one that needs a per-install ID or account, and check that its newest item matches the newest release.
+
 ## Ground rules
 
 These keep Shipshape trustworthy, so pull requests that break them won't be merged:
