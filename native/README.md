@@ -1,4 +1,4 @@
-# Shipshape for macOS — 0.3.12 preview
+# Shipshape for macOS — 0.3.13 preview
 
 A native SwiftUI menu bar app for macOS 13 or later, built for Apple silicon and Intel. It watches the developer stack people install to build apps with AI coding tools such as Claude Code and Codex, and shows the easiest way to install each fix. No Python, Node, Homebrew, account or API key is needed to run it.
 

@@ -19,6 +19,10 @@ struct Product {
 
 enum Catalog {
     static let vendorRules: Set<String> = ["node", "bun", "postgresql", "openssl", "opencode"]
+    // Apps whose own updater follows a release channel chosen per device or organization, which Homebrew's cask
+    // doesn't track. Claude can sit on a version line apart from the public one (3.6556.2 while Homebrew lists
+    // 4.29.0) and still be current, so its installed version isn't compared with Homebrew's.
+    static let ownChannels: Set<String> = ["claude-desktop"]
     // Never inventoried or checked. Chrome updates through its own updater; apps with a Mac App Store
     // receipt, which Inventory skips, update through the App Store.
     static let excludedBundleIDs: Set<String> = ["com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.dev", "com.google.Chrome.canary"]

@@ -347,7 +347,8 @@ enum Scanner {
                 for token in Set(items.compactMap(\.package)) { if let info = metadata.casks[token] { context.casks[token] = info } }
                 if kind == "formula" { newestFormulae = latest }
                 var candidates = 0
-                for item in items {
+                let own = kind == "cask" ? items.filter { Catalog.ownChannels.contains($0.product) } : []
+                for item in items where !own.contains(where: { $0.path == item.path }) {
                     if kind == "cask", let target = latest[item.package!], target != "latest", !looseLess(item.version, target) { currentApps.insert(item.path) }
                     // Formulae compare the installed build (its Cellar folder, e.g. 26.12.1) with Homebrew's newest, rebuilds included.
                     let installed = kind == "formula" ? (item.path as NSString).lastPathComponent : item.version
@@ -361,7 +362,8 @@ enum Scanner {
                                                        : "Newer release metadata is available. This alone does not establish a security vulnerability.",
                                                    action: item.manager == "app" ? "Install the new release with one of the options below." : "Review the release notes, then update with Homebrew.", links: ["https://formulae.brew.sh/\(kind)/\(item.package!)"]))
                 }
-                record("homebrew-\(kind)", "Homebrew \(kind) metadata", "\(items.count) installations compared with Homebrew's current releases; \(candidates) newer.", url: "https://formulae.brew.sh/")
+                record("homebrew-\(kind)", "Homebrew \(kind) metadata", "\(items.count - own.count) installations compared with Homebrew's current releases; \(candidates) newer."
+                       + (own.isEmpty ? "" : " \(own.map(\.name).joined(separator: ", ")) \(own.count == 1 ? "updates itself" : "update themselves") on a release channel Homebrew doesn't track, so \(own.count == 1 ? "it isn't" : "they aren't") compared."), url: "https://formulae.brew.sh/")
             } catch { failure("homebrew-\(kind)", "Homebrew \(kind) metadata", error) }
         }
         for item in report.installations where item.manager == "uv-python-old" {

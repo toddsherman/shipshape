@@ -1,4 +1,4 @@
-Shipshape 0.3.12 — macOS preview
+Shipshape 0.3.13 — macOS preview
 
 Requires macOS 13 or later. Includes Apple silicon and Intel binaries.
 

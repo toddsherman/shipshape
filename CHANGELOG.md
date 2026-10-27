@@ -2,6 +2,10 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.13 — October 27, 2026
+
+- **Claude is no longer reported as out of date when its own updater says it's current.** Claude picks its release channel per device and organization, and some channels follow a version line apart from the public one Homebrew lists (3.6556.2 while Homebrew had 4.29.0). Shipshape now leaves Claude's updates to Claude, and Coverage says so.
+
 ## 0.3.12 — October 27, 2026
 
 - **The Security page starts with an overview.** A summary card shows how many items need attention, a ring with the share of your inventory that needs no action (items only waiting for a fixed release count as done, so 100% means there's nothing left you can do), and a bar of every item by its most urgent finding. Below it, six tiles sort findings into malicious packages, known exploitation, security fixes, end of support, waiting for a fix and updates. Malicious packages and known exploitation turn red when present. Clicking a tile lists just those findings. Updates are now a tile, so the separate Updates page is gone.

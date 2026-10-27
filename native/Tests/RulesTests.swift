@@ -211,6 +211,7 @@ import Foundation
         }
         let (foundApps, _, skipped) = Inventory.apps(roots: [applications])
         expect(foundApps.map(\.product) == ["vscode"] && skipped == 3, "Chrome and App Store copies are skipped; other catalog apps are found")
+        expect(Catalog.ownChannels.contains("claude-desktop") && Catalog.ownChannels.allSatisfy { Catalog.byID[$0] != nil }, "Claude follows its own release channel, and own-channel apps exist in the catalog")
         expect(Catalog.byID["chrome"] == nil && Catalog.excludedCasks.contains("google-chrome") && !Catalog.vendorRules.contains("chrome"), "Chrome has no catalog entry, cask or vendor rule")
         let plainApp = Installation(product: "tool-x", name: "Tool X", version: "1.0", path: "/Applications/Tool X.app", domain: "apps", package: "tool-x", manager: "app")
         var manual = CommandContext(tools: ["brew"]); manual.casks["tool-x"] = CaskInfo(autoUpdates: false, homepage: "https://tool-x.example/")
