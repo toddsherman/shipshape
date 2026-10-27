@@ -2,6 +2,12 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.12 — October 27, 2026
+
+- **The Security page starts with an overview.** A summary card shows how many items need attention, a ring with the share of your inventory that needs no action (items only waiting for a fixed release count as done, so 100% means there's nothing left you can do), and a bar of every item by its most urgent finding. Below it, six tiles sort findings into malicious packages, known exploitation, security fixes, end of support, waiting for a fix and updates. Malicious packages and known exploitation turn red when present. Clicking a tile lists just those findings. Updates are now a tile, so the separate Updates page is gone.
+- **The menu bar panel lists the same kinds of finding,** each with its count. Clicking one opens the Security page at that list, and the panel closes when it opens the window.
+- **A known-exploited flaw with no fix released yet counts as needing attention,** in the overview, the sidebar and the menu bar count, instead of waiting quietly with other unfixed advisories.
+
 ## 0.3.11 — October 27, 2026
 
 - **Shipshape has a Dock icon** and a regular app menu, alongside its menu bar icon. Clicking the Dock icon opens its window again after you close it.

@@ -180,6 +180,79 @@ func groupByCommand(_ findings: [Finding]) -> [FindingGroup] {
     }
     return order.map { FindingGroup(id: $0, findings: members[$0]!) }
 }
+// The kinds of action a finding needs, most urgent first. Each finding belongs to exactly one; the Security page
+// shows a tile for each.
+enum FindingCategory: Int, CaseIterable, Identifiable, Comparable {
+    case malicious, exploited, security, unsupported, waiting, updates
+    var id: Int { rawValue }
+    static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
+    init(of finding: Finding) {
+        if finding.malicious == true { self = .malicious }
+        else if finding.exploited && finding.kind != .update { self = .exploited }
+        else if finding.awaitingFix == true { self = .waiting }
+        else {
+            switch finding.kind {
+            case .security: self = .security
+            case .unsupported: self = .unsupported
+            case .update: self = .updates
+            }
+        }
+    }
+    var title: String {
+        switch self {
+        case .malicious: return "Malicious packages"
+        case .exploited: return "Known exploitation"
+        case .security: return "Security fixes"
+        case .unsupported: return "End of support"
+        case .waiting: return "Waiting for a fix"
+        case .updates: return "Updates"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .malicious: return "Reported as malware. Remove them, then rotate secrets they could reach."
+        case .exploited: return "Attackers are using these flaws now. Fix these first."
+        case .security: return "A released version fixes a published advisory."
+        case .unsupported: return "These versions no longer get security fixes."
+        case .waiting: return "You have the newest release. \(appName) alerts you when a fix ships."
+        case .updates: return "Newer releases with no confirmed security fix."
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .malicious: return "ladybug"
+        case .exploited: return "flame"
+        case .security: return "exclamationmark.shield"
+        case .unsupported: return "calendar.badge.exclamationmark"
+        case .waiting: return "hourglass"
+        case .updates: return "arrow.down.circle"
+        }
+    }
+    var urgent: Bool { self == .malicious || self == .exploited }
+    // Everything to act on now; waiting findings and plain updates are left out.
+    var needsAttention: Bool { self < .waiting }
+    static func counts(in report: ScanReport) -> [FindingCategory: Int] {
+        report.findings.reduce(into: [:]) { $0[FindingCategory(of: $1), default: 0] += 1 }
+    }
+    static func attentionTitle(_ count: Int) -> String {
+        count == 0 ? "Nothing needs attention" : count == 1 ? "1 item needs attention" : "\(count) items need attention"
+    }
+    // Inventory items by the category of their most urgent finding. An item counts as waiting only when all its
+    // findings are, since anything else on it is still something to do. Items without findings aren't counted.
+    static func items(in report: ScanReport) -> [FindingCategory: Int] {
+        func rank(_ category: FindingCategory) -> Int { category == .waiting ? Int.max : category.rawValue }
+        var worst: [String: FindingCategory] = [:]
+        for finding in report.findings {
+            let category = FindingCategory(of: finding), current = worst[finding.installation.id] ?? category
+            worst[finding.installation.id] = rank(category) < rank(current) ? category : current
+        }
+        return worst.values.reduce(into: [:]) { $0[$1, default: 0] += 1 }
+    }
+    // Inventory items with nothing left to do: no findings, or only findings waiting for a fixed release.
+    static func settled(in report: ScanReport) -> Int {
+        max(0, report.installations.count - items(in: report).filter { $0.key != .waiting }.values.reduce(0, +))
+    }
+}
 struct NVDHit: Codable, Hashable {
     let id: String
     let fixed: String?
@@ -210,6 +283,8 @@ struct ScanReport: Codable {
     var security: [Finding] { findings.filter { $0.kind != .update && $0.awaitingFix != true } }
     var awaiting: [Finding] { findings.filter { $0.kind != .update && $0.awaitingFix == true } }
     var updates: [Finding] { findings.filter { $0.kind == .update } }
+    // What the Security page lists first: everything to act on now, including known exploitation with no fix yet.
+    var attention: [Finding] { findings.filter { FindingCategory(of: $0).needsAttention } }
 
     // Failed discovery or advisory requests cannot erase previously confirmed evidence. Findings from a
     // source this version no longer runs are dropped rather than kept as permanently unverified.

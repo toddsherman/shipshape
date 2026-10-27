@@ -15,6 +15,7 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     @Published var loginEnabled = false
     @Published var section = "Security"
     @Published var feedbackOpen = false
+    @Published var filter: FindingCategory? = nil  // the Security page's selected tile; nil lists what needs attention
     private var timer: Timer?
     private var pathMonitor: NWPathMonitor?
     private var launchCheckStarted = false
@@ -26,13 +27,14 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     var security: [Finding] { report?.security ?? [] }
     var updates: [Finding] { report?.updates ?? [] }
     var awaiting: [Finding] { report?.awaiting ?? [] }
+    var attention: [Finding] { report?.attention ?? [] }
     var projectFolders: [String] { state.projectFolders ?? [] }
     var history: [HistoryEntry] { state.history ?? [] }
     var stale: Bool { report.map { Date().timeIntervalSince($0.date) > 36 * 3600 } ?? true }
     var statusTitle: String {
         if scanning { return "Checking this Mac" }
         if report == nil { return "Ready for your first check" }
-        if !security.isEmpty { return "\(security.count) items need attention" }
+        if !attention.isEmpty { return FindingCategory.attentionTitle(attention.count) }
         if stale { return "A fresh check is due" }
         if !awaiting.isEmpty { return "Nothing to install right now" }
         return "No fixes found in covered checks"
@@ -239,8 +241,8 @@ struct ShipshapeApp: App {
         MenuBarExtra {
             MenuPanel().environmentObject(monitor)
         } label: {
-            Image(systemName: monitor.scanning ? "arrow.triangle.2.circlepath" : monitor.security.isEmpty ? "sailboat" : "sailboat.fill")
-            if !monitor.security.isEmpty { Text("\(monitor.security.count)") }
+            Image(systemName: monitor.scanning ? "arrow.triangle.2.circlepath" : monitor.attention.isEmpty ? "sailboat" : "sailboat.fill")
+            if !monitor.attention.isEmpty { Text("\(monitor.attention.count)") }
         }.menuBarExtraStyle(.window)
     }
 }
@@ -248,29 +250,77 @@ struct ShipshapeApp: App {
 struct MenuPanel: View {
     @EnvironmentObject var monitor: Monitor
     @Environment(\.openWindow) private var openWindow
+    @State private var panel: NSWindow?
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Label(appName, systemImage: "sailboat.fill").font(.headline)
             Text(monitor.statusTitle).font(.title3.weight(.semibold))
             if let progress = monitor.progress { Text(progress).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
             else if let date = monitor.report?.date { LastCheck(date: date, prefix: "Checked ").font(.caption).foregroundStyle(.secondary) }
-            HStack {
-                Label("\(monitor.security.count) security", systemImage: "exclamationmark.shield")
-                Spacer()
-                Label("\(monitor.updates.count) updates", systemImage: "arrow.down.circle")
-            }.font(.caption)
-            if !(monitor.report?.errors.isEmpty ?? true) { Text("Some checks need attention").foregroundStyle(.orange).font(.caption) }
+            let counts = monitor.report.map { FindingCategory.counts(in: $0) } ?? [:]
+            let shown = FindingCategory.allCases.filter { (counts[$0] ?? 0) > 0 }
+            if !shown.isEmpty {
+                VStack(spacing: 5) {
+                    ForEach(shown) { category in
+                        CategoryRow(category: category, count: counts[category] ?? 0) { monitor.section = "Security"; monitor.filter = category; open() }
+                    }
+                }
+            }
+            if !(monitor.report?.errors.isEmpty ?? true) {
+                Button("Some checks need attention") { monitor.section = "Coverage"; open() }.buttonStyle(.link).foregroundStyle(.orange).font(.caption)
+            }
             Divider()
-            Button("Open \(appName)") { openWindow(id: "dashboard"); NSApp.activate(ignoringOtherApps: true) }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
+            Button("Open \(appName)") { open() }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
             HStack {
                 Button(monitor.scanning ? "Checking…" : "Check now") { monitor.check() }.disabled(monitor.scanning)
                 Spacer()
-                Button("Send feedback…") { monitor.feedbackOpen = true; openWindow(id: "dashboard"); NSApp.activate(ignoringOtherApps: true) }.buttonStyle(.link)
+                Button("Send feedback…") { monitor.feedbackOpen = true; open() }.buttonStyle(.link)
                 Button("Quit") { NSApp.terminate(nil) }
             }
-            Text("At launch, daily at 9 a.m. Pacific and when you click Check now").font(.caption2).foregroundStyle(.secondary)
+            Text("At launch, daily at 9 a.m. Pacific and when you click Check now").font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(18).frame(width: 310)
+        .background(WindowReader { panel = $0 })
         .onReceive(NotificationCenter.default.publisher(for: .init("ShowDashboard"))) { _ in openWindow(id: "dashboard") }
+    }
+    // Opens the dashboard and dismisses this panel, which would otherwise stay open in front of it. The panel is
+    // dismissed the way Escape does it: closing its window instead leaves the menu bar icon needing two clicks.
+    func open() {
+        if let panel, let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+                                                    context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53) {
+            panel.sendEvent(escape)
+        }
+        openWindow(id: "dashboard"); NSApp.activate(ignoringOtherApps: true)
+    }
+}
+// Reports the window a view is shown in, so the menu bar panel can close itself.
+struct WindowReader: NSViewRepresentable {
+    let found: (NSWindow?) -> Void
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { found(view.window) }
+        return view
+    }
+    func updateNSView(_ view: NSView, context: Context) {}
+}
+// One kind of finding in the menu bar panel. Clicking it opens the Security page listing them.
+struct CategoryRow: View {
+    let category: FindingCategory
+    let count: Int
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: category.symbol).frame(width: 18)
+                Text(category.title)
+                Spacer()
+                Text("\(count)").monospacedDigit().fontWeight(.semibold)
+                Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).opacity(0.6)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .foregroundStyle(category.urgent ? Color.white : .primary)
+            .background(category.urgent ? alarmRed : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+        }.buttonStyle(.plain)
     }
 }
 
@@ -279,15 +329,15 @@ struct Dashboard: View {
     @Environment(\.openWindow) private var openWindow
     @State private var query = ""
     @State private var domain = "all"
-    let sections = [("Security", "exclamationmark.shield"), ("Updates", "arrow.down.circle"), ("History", "clock.arrow.circlepath"), ("Inventory", "desktopcomputer"), ("Coverage", "checklist"), ("Settings", "gearshape")]
+    let sections = [("Security", "exclamationmark.shield"), ("History", "clock.arrow.circlepath"), ("Inventory", "desktopcomputer"), ("Coverage", "checklist"), ("Settings", "gearshape")]
     let domains = [("all", "All"), ("projects", "Projects"), ("packages", "Packages"), ("mcp", "MCP"), ("tools", "Runtimes"), ("brew", "Homebrew"), ("apps", "Apps")]
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
                 Label(appName, systemImage: "sailboat.fill").font(.title3.weight(.semibold)).padding(.bottom, 25).padding(.top, 14)
                 ForEach(sections, id: \.0) { title, symbol in
-                    Button { monitor.section = title; query = "" } label: {
-                        HStack { Image(systemName: symbol).frame(width: 20); Text(title); Spacer(); if title == "Security" && !monitor.security.isEmpty { Text("\(monitor.security.count)").font(.caption.weight(.semibold)) } }
+                    Button { monitor.section = title; query = ""; if title == "Security" { monitor.filter = nil } } label: {
+                        HStack { Image(systemName: symbol).frame(width: 20); Text(title); Spacer(); if title == "Security" && !monitor.attention.isEmpty { Text("\(monitor.attention.count)").font(.caption.weight(.semibold)) } }
                             .padding(.horizontal, 12).padding(.vertical, 10).contentShape(Rectangle())
                             .background(monitor.section == title ? Color.accentColor.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 8))
                     }.buttonStyle(.plain)
@@ -325,8 +375,7 @@ struct Dashboard: View {
     }
     var subtitle: String {
         switch monitor.section {
-        case "Security": return "Published fixes and malicious-package reports that match your developer tools and dependencies."
-        case "Updates": return "Newer releases, with security significance unconfirmed."
+        case "Security": return "Published fixes, malicious-package reports and newer releases that match your developer tools and dependencies."
         case "Inventory": return "Developer software and packages found by the latest check."
         case "History": return "Every recommendation on this Mac: when it was found, and when and how it was resolved."
         case "Coverage": return "What was checked, what failed, and what needs manual review."
@@ -350,41 +399,39 @@ struct Dashboard: View {
     }
     @ViewBuilder var content: some View {
         switch monitor.section {
-        case "Security", "Updates":
-            let findings = monitor.section == "Security" ? monitor.security : monitor.updates
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    if monitor.section == "Security" {
-                        HStack(spacing: 12) {
-                            StatCard(number: "\(monitor.security.count)", label: "Security items", color: .orange)
-                            StatCard(number: "\(monitor.security.filter { $0.malicious == true }.count)", label: "Malicious packages", color: .red)
-                            StatCard(number: "\(monitor.updates.count)", label: "Other updates", color: .blue)
-                            StatCard(number: "\(monitor.report?.errors.count ?? 0)", label: "Check issues", color: .secondary)
-                        }
-                        HStack {
-                            Text("Coverage is partial. No finding does not mean everything is safe; see Coverage.").font(.caption).foregroundStyle(.secondary)
+        case "Security":
+            let filter = monitor.filter
+            let findings = filter.map { category in (monitor.report?.findings ?? []).filter { FindingCategory(of: $0) == category } } ?? monitor.attention
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        if let report = monitor.report { Overview(report: report) }
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(filter?.title ?? "Needs attention").font(.title2.weight(.semibold))
+                            Text("\(findings.count)").font(.title2).foregroundStyle(.secondary)
+                            if filter != nil { Button("Show all that need attention") { monitor.filter = nil }.buttonStyle(.link) }
                             Spacer()
                             AllCommandsButton(findings: findings)
-                        }.padding(.vertical, 3)
-                    } else if !findings.isEmpty {
-                        HStack { Spacer(); AllCommandsButton(findings: findings) }
-                    }
-                    if findings.isEmpty {
-                        Label(monitor.section != "Security" ? "No newer releases found in covered metadata." : monitor.awaiting.isEmpty ? "No security fixes found in covered checks." : "Nothing to install right now.", systemImage: "tray").foregroundStyle(.secondary).padding(.vertical, 30)
-                    }
-                    let installed = findings.filter { $0.installation.domain != "projects" }, dependencies = findings.filter { $0.installation.domain == "projects" }
-                    if !installed.isEmpty && !dependencies.isEmpty { Text("Installed on this Mac · \(installed.count)").font(.headline).padding(.top, 6) }
-                    FindingList(findings: installed)
-                    if !dependencies.isEmpty {
-                        Text("Project dependencies · \(dependencies.count) in \(Set(dependencies.compactMap(\.installation.location)).count) folders").font(.headline).padding(.top, 10)
-                        FindingList(findings: dependencies)
-                    }
-                    if monitor.section == "Security" && !monitor.awaiting.isEmpty {
-                        Text("No fix released yet · \(monitor.awaiting.count)").font(.headline).padding(.top, 10)
-                        Text("You already have the newest release, and the advisories list no fixed version. These don't count as needing attention; \(appName) alerts you when a fixed release ships.").font(.caption).foregroundStyle(.secondary)
-                        ForEach(monitor.awaiting) { FindingCard(finding: $0) }
-                    }
-                }.padding(.horizontal, 28).padding(.bottom, 24)
+                        }.padding(.top, 14).id("findings")
+                        if filter == .waiting {
+                            Text("You already have the newest release, and the advisories list no fixed version. These don't count as needing attention; \(appName) alerts you when a fixed release ships.").font(.callout).foregroundStyle(.secondary)
+                        }
+                        if findings.isEmpty {
+                            Label(filter == nil ? "Nothing needs attention in covered checks." : "None found in covered checks.", systemImage: "tray").foregroundStyle(.secondary).padding(.vertical, 30)
+                        }
+                        let installed = findings.filter { $0.installation.domain != "projects" }, dependencies = findings.filter { $0.installation.domain == "projects" }
+                        if !installed.isEmpty && !dependencies.isEmpty { Text("Installed on this Mac · \(installed.count)").font(.headline).padding(.top, 6) }
+                        FindingList(findings: installed)
+                        if !dependencies.isEmpty {
+                            Text("Project dependencies · \(dependencies.count) in \(Set(dependencies.compactMap(\.installation.location)).count) folders").font(.headline).padding(.top, 10)
+                            FindingList(findings: dependencies)
+                        }
+                    }.padding(.horizontal, 28).padding(.bottom, 24)
+                }
+                // Also when the page opens from the menu bar panel with a tile already chosen.
+                .onReceive(monitor.$filter) { chosen in
+                    if chosen != nil { DispatchQueue.main.async { withAnimation { proxy.scrollTo("findings", anchor: .top) } } }
+                }
             }
         case "History": HistoryView()
         case "Inventory":
@@ -532,6 +579,145 @@ func historyBadge(_ entry: HistoryEntry) -> (String, Color) {
     case .update: return ("UPDATE", entry.resolved != nil ? .secondary : .blue)
     }
 }
+// The top of the Security page: how much of the inventory has no findings, then the findings sorted into the
+// kinds of action they need. Clicking a tile lists its findings below; clicking it again lists everything.
+struct Overview: View {
+    @EnvironmentObject var monitor: Monitor
+    let report: ScanReport
+    var body: some View {
+        let counts = FindingCategory.counts(in: report)
+        VStack(alignment: .leading, spacing: 12) {
+            StackSummary(report: report, counts: counts)
+            Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                GridRow { tiles(Array(FindingCategory.allCases.prefix(3)), counts: counts) }
+                GridRow { tiles(Array(FindingCategory.allCases.suffix(3)), counts: counts) }
+            }
+            HStack(spacing: 4) {
+                Text("Coverage is partial. No finding doesn't mean everything is safe.").foregroundStyle(.secondary)
+                Button("See coverage") { monitor.section = "Coverage" }.buttonStyle(.link)
+            }.font(.caption)
+        }
+    }
+    func tiles(_ categories: [FindingCategory], counts: [FindingCategory: Int]) -> some View {
+        ForEach(categories) { category in
+            CategoryTile(category: category, count: counts[category] ?? 0, selected: monitor.filter == category) {
+                monitor.filter = monitor.filter == category ? nil : category
+            }
+        }
+    }
+}
+// What needs attention, and every inventory item colored by its most urgent finding.
+struct StackSummary: View {
+    @EnvironmentObject var monitor: Monitor
+    let report: ScanReport
+    let counts: [FindingCategory: Int]
+    struct Share: Identifiable { let label: String; let count: Int; let color: Color; var id: String { label } }
+    var body: some View {
+        let items = FindingCategory.items(in: report)
+        let total = report.installations.count
+        let clear = max(0, total - items.values.reduce(0, +)), settled = FindingCategory.settled(in: report)
+        // Items needing no action come first, so the ring's share is the bar's green and gray together.
+        let shares = [Share(label: "No findings", count: clear, color: .green),
+                      Share(label: "Waiting for a fix", count: items[.waiting] ?? 0, color: .gray),
+                      Share(label: "Updates", count: items[.updates] ?? 0, color: .blue),
+                      Share(label: "Fixes or end of support", count: (items[.security] ?? 0) + (items[.unsupported] ?? 0), color: .orange),
+                      Share(label: "Exploited or malicious", count: (items[.exploited] ?? 0) + (items[.malicious] ?? 0), color: alarmRed)]
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 14) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(FindingCategory.attentionTitle(report.attention.count)).font(.title2.weight(.semibold))
+                    if !urgent.isEmpty { Text(urgent).foregroundStyle(.secondary) }
+                    if !report.errors.isEmpty {
+                        Button("\(report.errors.count) check\(report.errors.count == 1 ? "" : "s") incomplete") { monitor.section = "Coverage" }.buttonStyle(.link).font(.callout)
+                    }
+                }
+                Spacer()
+                SettledRing(fraction: total == 0 ? 1 : Double(settled) / Double(total))
+                Text("\(settled.formatted()) of \(total.formatted())\ninventory items\nneed no action").font(.caption).foregroundStyle(.secondary)
+            }
+            ShareBar(parts: shares.map { ($0.count, $0.color) })
+            HStack(spacing: 14) {
+                ForEach(shares.filter { $0.count > 0 }) { share in
+                    HStack(spacing: 5) { RoundedRectangle(cornerRadius: 2).fill(share.color).frame(width: 8, height: 8); Text(share.label) }
+                }
+            }.font(.caption).foregroundStyle(.secondary)
+        }.modifier(CardStyle())
+    }
+    var urgent: String {
+        let malicious = counts[.malicious] ?? 0, exploited = counts[.exploited] ?? 0
+        return [malicious > 0 ? "\(malicious) malicious package\(malicious == 1 ? "" : "s")" : nil,
+                exploited > 0 ? "\(exploited) actively exploited" : nil].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+// The share of inventory items that need no action, as a ring: those without findings and those only waiting for
+// a fixed release. The percentage rounds down, so 100% means there's nothing left to do.
+struct SettledRing: View {
+    let fraction: Double
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.primary.opacity(0.1), lineWidth: 8)
+            Circle().trim(from: 0, to: fraction).stroke(Color.green, style: StrokeStyle(lineWidth: 8, lineCap: .round)).rotationEffect(.degrees(-90))
+            Text("\(Int((fraction * 100).rounded(.down)))%").font(.system(size: 17, weight: .semibold, design: .rounded))
+        }.frame(width: 70, height: 70)
+    }
+}
+// One bar split in proportion to the counts. A nonzero share is never thinner than a few points, so a single
+// malicious package still shows beside a thousand clean items.
+struct ShareBar: View {
+    let parts: [(Int, Color)]
+    var body: some View {
+        GeometryReader { geometry in
+            let shown = parts.filter { $0.0 > 0 }
+            let widths = ShareBar.widths(shown.map { $0.0 }, in: geometry.size.width - CGFloat(max(0, shown.count - 1)) * 2)
+            HStack(spacing: 2) { ForEach(shown.indices, id: \.self) { Rectangle().fill(shown[$0].1).frame(width: widths[$0]) } }
+        }.frame(height: 10).clipShape(Capsule())
+    }
+    static func widths(_ counts: [Int], in width: CGFloat, minimum: CGFloat = 7) -> [CGFloat] {
+        let total = CGFloat(max(1, counts.reduce(0, +)))
+        var widths = counts.map { max(minimum, width * CGFloat($0) / total) }
+        if let widest = widths.indices.max(by: { widths[$0] < widths[$1] }) { widths[widest] -= widths.reduce(0, +) - width }
+        return widths
+    }
+}
+// One kind of finding: how many, what it means and a button that lists them. Malware and known exploitation are
+// filled red when present, so the most urgent tile stands out; empty tiles are dimmed.
+struct CategoryTile: View {
+    let category: FindingCategory
+    let count: Int
+    let selected: Bool
+    let action: () -> Void
+    var body: some View {
+        let hot = category.urgent && count > 0
+        let ink: Color = hot ? .white : count == 0 ? .secondary : .primary
+        Button { if count > 0 { action() } } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("\(count)").font(.system(size: 30, weight: .semibold, design: .rounded))
+                    Text(category.title).font(.headline)
+                    Text(category.detail).font(.callout).foregroundStyle(hot ? Color.white.opacity(0.9) : .secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .overlay(alignment: .topTrailing) {
+                    Image(systemName: category.symbol).font(.system(size: 30)).foregroundStyle(hot ? Color.white.opacity(0.35) : Color.secondary.opacity(0.3)).padding(14)
+                }
+                Rectangle().fill(hot ? Color.white.opacity(0.25) : Color.primary.opacity(0.08)).frame(height: 1)
+                HStack {
+                    Text(count == 0 ? "None found" : selected ? "Showing below" : "Show items")
+                    Spacer()
+                    Image(systemName: count == 0 ? "checkmark" : selected ? "arrow.down" : "arrow.right")
+                }
+                .font(.callout).foregroundStyle(hot ? Color.white : count == 0 ? Color.secondary : Color.accentColor)
+                .padding(.horizontal, 16).padding(.vertical, 10)
+            }
+            .foregroundStyle(ink)
+            .background(hot ? alarmRed : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.07), lineWidth: selected ? 2.5 : 1))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }.buttonStyle(.plain).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+// A brick red, darker than system red, so white text on it stays readable.
+let alarmRed = Color(red: 0.74, green: 0.22, blue: 0.13)
 struct StatCard: View {
     let number: String; let label: String; let color: Color
     var body: some View {

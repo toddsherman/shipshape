@@ -970,6 +970,30 @@ import Foundation
             expect(branches.contains("3.6") && branches.contains("3.0") && branches.count >= 10, "current OpenSSL index fixture lists release branches")
         }
         if let html = try? String(contentsOfFile: root + "/openssl.txt", encoding: .utf8) { try expect(Rules.openssl(item("openssl", "3.6.4"), html: html)?.fixed == "3.6.5", "current OpenSSL vendor fixture") }
+        let categoryItem = item("vite", "5.0.0")
+        let plain = Finding(source: "osv", installation: categoryItem, kind: .security, fixed: "6.4.4", reason: "", action: "", links: [])
+        var exploitedWaiting = plain; exploitedWaiting.exploited = true; exploitedWaiting.awaitingFix = true
+        var malware = plain; malware.exploited = true; malware.malicious = true
+        var waitingFix = plain; waitingFix.awaitingFix = true
+        let newer = Finding(source: "homebrew-formula", installation: categoryItem, kind: .update, fixed: "6.4.4", reason: "", action: "", links: [])
+        var exploitedUpdate = newer; exploitedUpdate.exploited = true
+        expect(FindingCategory(of: plain) == .security && FindingCategory(of: newer) == .updates, "security fixes and updates have their own tiles")
+        expect(FindingCategory(of: malware) == .malicious, "malware outranks known exploitation")
+        expect(FindingCategory(of: exploitedWaiting) == .exploited, "known exploitation shows even with no fix released")
+        expect(FindingCategory(of: waitingFix) == .waiting && !FindingCategory.waiting.needsAttention, "waiting findings don't need attention")
+        expect(FindingCategory(of: exploitedUpdate) == .updates, "an update is never counted as exploitation")
+        let other = Finding(source: "osv", installation: item("ws", "8.0.0"), kind: .update, fixed: "8.21.0", reason: "", action: "", links: [])
+        let tally = FindingCategory.items(in: ScanReport(installations: [categoryItem, other.installation, item("git", "2.51.0")], findings: [newer, plain, other]))
+        expect(tally == [.security: 1, .updates: 1], "each item counts once, by its most urgent finding")
+        let waitingAndUpdate = ScanReport(installations: [categoryItem, other.installation, item("git", "2.51.0")], findings: [waitingFix, newer])
+        expect(FindingCategory.items(in: waitingAndUpdate) == [.updates: 1], "an item waiting for a fix that also has an update counts as the update")
+        expect(FindingCategory.settled(in: waitingAndUpdate) == 2, "an item with an update still needs action")
+        expect(FindingCategory.settled(in: ScanReport(installations: [categoryItem, item("git", "2.51.0")], findings: [waitingFix])) == 2, "items only waiting for a fix need no action")
+        expect(FindingCategory.settled(in: ScanReport(installations: [categoryItem], findings: [exploitedWaiting])) == 0, "known exploitation with no fix still needs action")
+        let attentionReport = ScanReport(findings: [plain, exploitedWaiting, waitingFix, newer])
+        expect(attentionReport.attention.count == 2 && attentionReport.security.count == 1, "known exploitation with no fix needs attention")
+        expect(FindingCategory.counts(in: attentionReport) == [.security: 1, .exploited: 1, .waiting: 1, .updates: 1], "tile counts")
+        expect(FindingCategory.attentionTitle(1) == "1 item needs attention" && FindingCategory.attentionTitle(0) == "Nothing needs attention", "attention headline")
         print("Passed \(count) rule, failure-retention, notification-fingerprint and scheduling checks")
     }
 }

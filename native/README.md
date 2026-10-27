@@ -1,4 +1,4 @@
-# Shipshape for macOS — 0.3.11 preview
+# Shipshape for macOS — 0.3.12 preview
 
 A native SwiftUI menu bar app for macOS 13 or later, built for Apple silicon and Intel. It watches the developer stack people install to build apps with AI coding tools such as Claude Code and Codex, and shows the easiest way to install each fix. No Python, Node, Homebrew, account or API key is needed to run it.
 
@@ -61,7 +61,7 @@ For a directly downloaded app, one that updates itself leads with opening it, th
 
 Project scans skip app bundles, Homebrew's own folders (`/opt/homebrew`), `/usr`, `/System`, `/Library`, `~/Library` and Go's module cache, so a project folder set high up, even `/`, doesn't pick up package-manager internals as projects. A folder chosen inside one of those is still checked.
 
-Findings whose recommended command is the same, or differs only in what it acts on, appear as one card with one combined command (`brew upgrade a b c`, `rm -rf dir1 dir2`, `npm install next@16.4.1 ai@5.0.52`), followed by each finding's version, reason, location, advisories and any alternatives of its own. All older Homebrew copies share one card, and so do a project's indirect dependencies under its `npm audit fix`. **All commands…** on the Security and Updates tabs lists every recommended Terminal command combined the same way, with each project's commands kept together, to review and copy one at a time or all at once. Commands that can't take several targets, such as `cargo update --precise`, stay one per line. On the developer's Mac, 187 security findings became 44 cards and 28 commands, and 52 updates became 4 cards and 3 commands.
+Findings whose recommended command is the same, or differs only in what it acts on, appear as one card with one combined command (`brew upgrade a b c`, `rm -rf dir1 dir2`, `npm install next@16.4.1 ai@5.0.52`), followed by each finding's version, reason, location, advisories and any alternatives of its own. All older Homebrew copies share one card, and so do a project's indirect dependencies under its `npm audit fix`. **All commands…** on the Security page lists every recommended Terminal command in the list showing, combined the same way, with each project's commands kept together, to review and copy one at a time or all at once. Commands that can't take several targets, such as `cargo update --precise`, stay one per line. On the developer's Mac, 187 security findings became 44 cards and 28 commands, and 52 updates became 4 cards and 3 commands.
 
 Package names and versions are checked against each ecosystem's naming rules and shell-quoted before they appear in a command, and nothing is ever run by the app. Review a command before running it; dependency updates can change behavior.
 

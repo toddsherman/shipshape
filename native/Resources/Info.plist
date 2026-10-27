@@ -1,17 +1,30 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleName</key><string>Shipshape</string>
-<key>CFBundleDisplayName</key><string>Shipshape</string>
-<!-- Kept from pre-release builds so notification permission and settings carry over. -->
-<key>CFBundleIdentifier</key><string>sh.todd.security-monitor</string>
-<key>CFBundleExecutable</key><string>Shipshape</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.3.11</string>
-<key>CFBundleVersion</key><string>22</string>
-<key>LSMinimumSystemVersion</key><string>13.0</string>
-<key>LSUIElement</key><false/>
-<key>NSHighResolutionCapable</key><true/>
-<key>CFBundleIconFile</key><string>AppIcon</string>
-<key>NSHumanReadableCopyright</key><string>Copyright © 2026 Todd Sherman</string>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Shipshape</string>
+	<key>CFBundleExecutable</key>
+	<string>Shipshape</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>sh.todd.security-monitor</string>
+	<key>CFBundleName</key>
+	<string>Shipshape</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.3.12</string>
+	<key>CFBundleVersion</key>
+	<string>23</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<false/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Todd Sherman</string>
+</dict>
+</plist>
