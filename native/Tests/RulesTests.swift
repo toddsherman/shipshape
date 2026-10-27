@@ -353,6 +353,51 @@ import Foundation
         expect(dropped == 2 && candidates.map(\.fixed) == ["4216", "15.0.0_1", "Remove older copy", "4215"],
                "same-release updates are dropped (including an installed rebuild); real updates, rebuilds, removals and security findings stay")
 
+        // Python branches: NVD lists CVE-2026-7210 only as "before 3.13.14", while the others name a fix in each branch.
+        let python = Catalog.byID["python"]!
+        func uvPython(_ version: String) -> Installation {
+            Installation(product: "python", name: "Python (uv)", version: version, path: "/u/cpython-\(version)-macos-aarch64-none", domain: "tools", manager: "uv-python")
+        }
+        let py310 = NVD.finding(uvPython("3.10.20"), product: python, hits: [NVDHit(id: "CVE-2026-0864", fixed: "3.10.21", severity: "MEDIUM"),
+                                                                         NVDHit(id: "CVE-2026-7210", fixed: "3.13.14", severity: "HIGH"), NVDHit(id: "CVE-2023-36632", fixed: nil, severity: "HIGH")])!
+        expect(py310.fixed == "3.10.21" && py310.reason.hasPrefix("3 NVD-listed vulnerabilities affect this version; 1 list no fixed version; 1 lists a fix only in a newer Python (3.13.14)."),
+               "a Python fix stays in the installed branch, and a fix listed only in a newer branch is mentioned")
+        let onlyNewer = NVD.finding(uvPython("3.12.13"), product: python, hits: [NVDHit(id: "CVE-2026-7210", fixed: "3.13.14", severity: "HIGH")])!
+        let curlHits = NVD.finding(Installation(product: "curl", name: "curl", version: "8.10.1", path: "/c", domain: "brew", manager: "brew"), product: Catalog.byID["curl"]!,
+                                   hits: [NVDHit(id: "CVE-1", fixed: "8.10.2", severity: "LOW"), NVDHit(id: "CVE-2", fixed: "8.11.0", severity: "LOW")])!
+        expect(onlyNewer.fixed == "3.13.14" && !onlyNewer.reason.contains("newer") && curlHits.fixed == "8.11.0",
+               "a newer branch is the fix only when the installed branch has none listed; products without branches take the highest fix")
+        let uvFindings = [py310, update(uvPython("3.12.13"), "3.12.14", kind: .security), update(uvPython("3.13.14"), "3.13.15", kind: .security)].map { finding -> Finding in
+            var finding = finding; finding.commands = Commands.commands(for: finding); return finding
+        }
+        let uvGroups = groupByCommand(uvFindings)
+        expect(uvFindings[0].commands?.first?.text == "uv python upgrade 3.10" && uvGroups.count == 1 && uvGroups[0].command?.text == "uv python upgrade 3.10 3.12 3.13"
+               && Commands.commands(for: onlyNewer).first?.text == "uv python install 3.13", "uv upgrades each Python within its branch, in one command; a fix only in a newer branch installs that branch")
+
+        // uv keeps the old patch release after an upgrade; only the newest of each branch and platform is checked.
+        let uvRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-uv-\(UUID().uuidString)").path
+        for folder in ["cpython-3.10.20-macos-aarch64-none/lib/python3.10/site-packages/setuptools-82.0.1.dist-info", "cpython-3.13.14-macos-aarch64-none/lib/python3.13/site-packages/pip-24.0.dist-info",
+                       "cpython-3.13.18-macos-aarch64-none/lib/python3.13/site-packages", "cpython-3.13.14-macos-x86_64-none", "cpython-3.12.13-macos-aarch64-none"] {
+            try FileManager.default.createDirectory(atPath: uvRoot + "/" + folder, withIntermediateDirectories: true)
+        }
+        try Data("Metadata-Version: 2.1\nName: setuptools\nVersion: 82.0.1\n".utf8).write(to: URL(fileURLWithPath: uvRoot + "/cpython-3.10.20-macos-aarch64-none/lib/python3.10/site-packages/setuptools-82.0.1.dist-info/METADATA"))
+        try Data("Metadata-Version: 2.1\nName: pip\nVersion: 24.0\n".utf8).write(to: URL(fileURLWithPath: uvRoot + "/cpython-3.13.14-macos-aarch64-none/lib/python3.13/site-packages/pip-24.0.dist-info/METADATA"))
+        try Data("[externally-managed]\n".utf8).write(to: URL(fileURLWithPath: uvRoot + "/cpython-3.10.20-macos-aarch64-none/lib/python3.10/EXTERNALLY-MANAGED"))
+        try FileManager.default.createSymbolicLink(atPath: uvRoot + "/cpython-3.13-macos-aarch64-none", withDestinationPath: uvRoot + "/cpython-3.13.18-macos-aarch64-none")
+        let uvItems = Inventory.managedPythons(root: uvRoot, manager: "uv-python")
+        expect(uvItems.map { "\($0.name) \($0.version) \($0.manager!)\($0.path.contains("x86_64") ? " x86_64" : "")" }.sorted()
+               == ["Python (uv) 3.10.20 uv-python", "Python (uv) 3.12.13 uv-python", "Python (uv) 3.13.14 uv-python x86_64", "Python (uv) 3.13.14 uv-python-old", "Python (uv) 3.13.18 uv-python", "setuptools 82.0.1 pip-uv"],
+               "older patch releases are old copies, the minor-version link is skipped, and an older copy's packages aren't checked")
+        let oldPatch = uvItems.first { $0.manager == "uv-python-old" }!, uvSetuptools = uvItems.first { $0.name == "setuptools" }!
+        expect(Commands.commands(for: update(oldPatch, "Remove older copy")).first?.text == "uv python uninstall 3.13.14"
+               && Commands.commands(for: update(uvSetuptools, "84.1.0", kind: .security)).first?.text.hasSuffix("/bin/python3.10 -m pip install --upgrade setuptools==84.1.0 --break-system-packages") == true,
+               "an older uv Python is removed with uv, and a package in a Python uv manages gets pip's override")
+        try? FileManager.default.removeItem(atPath: uvRoot)
+        let pyenvRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-pyenv-\(UUID().uuidString)").path
+        for folder in ["3.12.1", "3.12.4"] { try FileManager.default.createDirectory(atPath: pyenvRoot + "/" + folder, withIntermediateDirectories: true) }
+        expect(Inventory.managedPythons(root: pyenvRoot, manager: "pyenv").map(\.manager) == ["pyenv", "pyenv"], "pyenv versions are all chosen on purpose, so none is an old copy")
+        try? FileManager.default.removeItem(atPath: pyenvRoot)
+
         // History: findings open entries, disappear into resolutions, and reappear as new entries.
         let day1 = Date(timeIntervalSince1970: 1_800_000_000), day2 = day1.addingTimeInterval(86_400), day3 = day2.addingTimeInterval(86_400)
         let lockfile = "/work/app/package-lock.json"

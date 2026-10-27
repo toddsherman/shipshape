@@ -306,7 +306,7 @@ enum Scanner {
         var cache = (previous?.nvdCache ?? [:]).filter { Date().timeIntervalSince($0.value.date) < 20 * 3600 }
         let nvdItems = report.installations.filter { item in
             guard let product = Catalog.byID[item.product], product.cpe != nil else { return false }
-            return !Catalog.vendorRules.contains(product.id) && item.manager != "brew-old"
+            return !Catalog.vendorRules.contains(product.id) && item.manager != "brew-old" && item.manager != "uv-python-old"
         }
         var nvdResults: [String: (checked: Int, problems: [String])] = [:]
         var requested = false
@@ -363,6 +363,11 @@ enum Scanner {
                 }
                 record("homebrew-\(kind)", "Homebrew \(kind) metadata", "\(items.count) installations compared with Homebrew's current releases; \(candidates) newer.", url: "https://formulae.brew.sh/")
             } catch { failure("homebrew-\(kind)", "Homebrew \(kind) metadata", error) }
+        }
+        for item in report.installations where item.manager == "uv-python-old" {
+            report.findings.append(Finding(source: "inventory-uv", installation: item, kind: .update, fixed: "Remove older copy",
+                                           reason: "uv keeps the previous patch release after an upgrade, in case a virtual environment was made with it. Environments uv made for this Python's branch use the newer release.",
+                                           action: "Remove it once no virtual environment needs it.", links: ["https://docs.astral.sh/uv/concepts/python-versions/#upgrading-python-versions"]))
         }
         for item in report.installations where item.manager == "brew-old" && !report.findings.contains(where: { $0.installation.path == item.path }) {
             report.findings.append(Finding(source: "inventory-brew", installation: item, kind: .update, fixed: "Remove older copy",

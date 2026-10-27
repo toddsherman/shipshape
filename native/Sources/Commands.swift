@@ -103,7 +103,8 @@ enum Ownership {
     static func targets(_ item: Installation, _ access: FileAccess) -> [String] {
         let parent = (item.path as NSString).deletingLastPathComponent
         switch item.manager ?? "" {
-        case "brew", "brew-old", "brew-python", "cask", "pip", "pip-brew", "npm-global", "bun-global", "pnpm-global", "pipx", "uv-tool", "mise", "gem", "extension": return [parent]
+        case "brew", "brew-old", "brew-python", "cask", "pip", "pip-brew", "pip-uv", "npm-global", "bun-global", "pnpm-global", "pipx", "uv-tool", "uv-python", "uv-python-old",
+             "mise", "gem", "extension": return [parent]
         case "cargo-install", "go-install": return item.location.map { [$0.hasSuffix("/bin") ? $0 : ($0 as NSString).deletingLastPathComponent] } ?? []
         case "npx-cache": return item.location.map { [($0 as NSString).deletingLastPathComponent, $0] } ?? []
         case "mcp": return item.location.map { [$0] } ?? []
@@ -290,9 +291,17 @@ enum Commands {
             return command("cd \"$TMPDIR\" && curl -fLO https://www.python.org/ftp/python/\(fix)/\(file) && spctl --assess --type install \(file) && sudo installer -pkg \(file) -target /",
                            "Downloads python.org's installer, stops unless Apple's notarization check passes, then installs it. Asks for your administrator password.")
                 + [link("https://www.python.org/downloads/release/python-\(fix.replacingOccurrences(of: ".", with: ""))/", "The release page with the macOS installer.", label: "Download from python.org")].compactMap { $0 }
+        // uv upgrades a Python to the newest patch release of its branch, and keeps the old one for virtual
+        // environments made with it. A fix only in a newer branch means installing that branch.
         case "uv-python":
             guard let fix else { return [] }
-            return command("uv python install --reinstall " + fix, "Installs this Python release with uv.")
+            let installed = NVD.branch(item.version), target = NVD.branch(fix)
+            if target == installed {
+                return batch(["uv python upgrade ", ""], installed, "Installs the newest patch release of this Python, and virtual environments uv made with it switch to it. uv keeps the old release; \(appName) then lists it under Updates to remove.")
+            }
+            return command("uv python install " + target, "No Python \(installed) release is listed with every fix, so this installs Python \(target). Move projects to it, then remove \(installed) with uv python uninstall \(installed).")
+        case "uv-python-old":
+            return batch(["uv python uninstall ", ""], item.version, "Removes this older patch release. Check first that no virtual environment was made with it explicitly.")
         case "pyenv":
             guard let fix else { return [] }
             return command("pyenv install " + fix, "Then select it with pyenv global or pyenv local.")
@@ -341,12 +350,16 @@ enum Commands {
         case "pnpm-global":
             if removing { return batch(["pnpm remove -g ", ""], quoted, "Removes the global package.") }
             return fix == nil ? [] : batch(["pnpm add -g ", ""], spec, "Installs the fixed version globally with pnpm.")
-        case "pip", "pip-brew":
+        case "pip", "pip-brew", "pip-uv":
             guard let python = item.location.map(Shell.quote) else { return [] }
-            if removing { return batch([python + " -m pip uninstall -y ", ""], quoted, "Removes the package from this Python installation.") }
+            // Homebrew and uv mark their Pythons as externally managed, and pip refuses to change them without this.
+            let override = item.manager == "pip" ? "" : " --break-system-packages"
+            if removing { return batch([python + " -m pip uninstall -y ", override], quoted, "Removes the package from this Python installation.") }
             guard let fix else { return [] }
-            return batch([python + " -m pip install --upgrade ", item.manager == "pip-brew" ? " --break-system-packages" : ""], Shell.quote(package + "==" + fix),
-                           item.manager == "pip-brew" ? "Homebrew's Python is externally managed, so pip needs this override. A virtual environment is safer for project packages." : "Upgrades the package for this Python installation.")
+            return batch([python + " -m pip install --upgrade ", override], Shell.quote(package + "==" + fix),
+                         item.manager == "pip-brew" ? "Homebrew's Python is externally managed, so pip needs this override. A virtual environment is safer for project packages."
+                         : item.manager == "pip-uv" ? "uv marks the Pythons it manages as externally managed, so pip needs this override. It changes only this Python's own packages, which virtual environments uv makes don't include."
+                         : "Upgrades the package for this Python installation.")
         case "pipx":
             guard let app = safe(item.location) else { return [] }
             if OSV.normalized(package, "PyPI") == OSV.normalized(app, "PyPI") { return command("pipx upgrade " + app, "Upgrades the app and its environment.") }

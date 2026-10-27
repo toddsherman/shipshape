@@ -2,6 +2,12 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.10 — October 27, 2026
+
+- **Python fixes stay in your Python's branch.** NVD lists some fixes only as a release in a newer branch ("before 3.13.14"), and Shipshape used to recommend that for every older Python. Now the fix is the release in the installed branch when NVD lists one, such as 3.12.14 for 3.12.13, and a fix listed only in a newer branch is mentioned on the card.
+- **uv Pythons** are upgraded with `uv python upgrade 3.12`, which installs the newest patch release and moves uv's virtual environments to it, in one command for every branch. The old command reinstalled a release that was already there. uv keeps the previous patch release after an upgrade; it's now listed under Updates as an older copy with `uv python uninstall`, and only the newest patch of each branch is checked.
+- **Packages inside a Python uv manages**, such as its bundled setuptools, get pip's `--break-system-packages` override. uv marks its Pythons as externally managed, so the plain pip command failed. Removing a package from Homebrew's Python gets the same override.
+
 ## 0.3.9 — October 25, 2026
 
 - **Report a problem** on any finding opens a new GitHub issue with the finding's details filled in: what's wrong, room for Terminal output, how it was installed and the command shown. **Send feedback…** in the menu and in Settings does the same for ideas, problems and software Shipshape should check. You review the issue on GitHub and submit it with your own account; Shipshape never posts anything, and your home folder is shown as `~`.

@@ -747,9 +747,9 @@ struct FindingGroupCard: View {
     var findings: [Finding] { group.findings }
     var sameName: Bool { Set(findings.map(\.installation.name)).count == 1 }
     var place: String? { Set(findings.compactMap(\.installation.location)).count == 1 ? findings[0].installation.location : nil }
-    static let labels = ["brew": "Homebrew formulae", "brew-python": "Homebrew formulae", "brew-old": "Older Homebrew copies", "cask": "Homebrew apps",
+    static let labels = ["brew": "Homebrew formulae", "brew-python": "Homebrew formulae", "brew-old": "Older Homebrew copies", "uv-python-old": "Older uv Pythons", "cask": "Homebrew apps",
                          "npm-global": "Global npm packages", "bun-global": "Global Bun packages", "pnpm-global": "Global pnpm packages",
-                         "pip": "Python packages", "pip-brew": "Python packages", "npx-cache": "npx cache", "mise": "mise runtimes"]
+                         "pip": "Python packages", "pip-brew": "Python packages", "pip-uv": "Python packages", "npx-cache": "npx cache", "mise": "mise runtimes"]
     // A project is named by its path inside the chosen project folder, such as shop/backend.
     var title: String {
         if sameName { return findings[0].installation.name }

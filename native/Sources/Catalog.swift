@@ -14,6 +14,7 @@ struct Product {
     var github: (repo: String, packages: [String])? = nil  // the project's own GitHub security advisories
     var download: String? = nil  // vendor download page for directly installed apps
     var feed: String? = nil  // the public Sparkle feed of an app that sets its feed in code instead of in Info.plist
+    var branches = false  // several release branches are supported side by side, such as Python 3.12 and 3.13
 }
 
 enum Catalog {
@@ -27,7 +28,7 @@ enum Catalog {
         Product(id: "node", name: "Node.js", formulae: ["node"], cpe: "nodejs:node.js"),
         Product(id: "bun", name: "Bun", formulae: ["bun"], github: ("oven-sh/bun", ["bun"])),
         Product(id: "deno", name: "Deno", formulae: ["deno"], cpe: "deno:deno"),
-        Product(id: "python", name: "Python", formulae: ["python"], cpe: "python:python"),
+        Product(id: "python", name: "Python", formulae: ["python"], cpe: "python:python", branches: true),
         Product(id: "go", name: "Go", formulae: ["go"], osv: ("Go", "stdlib")),
         Product(id: "rust", name: "Rust", formulae: ["rust"], cpe: "rust-lang:rust"),
         Product(id: "ruby", name: "Ruby", formulae: ["ruby"], cpe: "ruby-lang:ruby"),

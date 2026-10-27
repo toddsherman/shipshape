@@ -374,12 +374,20 @@ enum NVD {
             .filter { Version($0).map { version < $0 } ?? false }.min(by: looseLess)
     }
     static let noFixListed = "No fixed version listed"
+    static func branch(_ version: String) -> String { version.split(separator: ".").prefix(2).joined(separator: ".") }
+    // For a product with several supported branches, the fix is the one in the installed branch, such as 3.12.14
+    // for Python 3.12.13. NVD sometimes lists a fix only as a release in a newer branch ("before 3.13.14"); that
+    // becomes the fix only when nothing in the installed branch is listed, and is mentioned otherwise.
     static func finding(_ item: Installation, product: Product, hits: [NVDHit]) -> Finding? {
         guard !hits.isEmpty else { return nil }
         let unknown = hits.filter { $0.fixed == nil }.count
-        let listed = hits.compactMap(\.fixed).max(by: looseLess), expected = listed == nil ? hits.compactMap(\.expected).max(by: looseLess) : nil
+        let branch = product.branches ? Self.branch(item.version) : nil
+        let fixes = hits.compactMap(\.fixed), inBranch = fixes.filter { branch == nil || Self.branch($0) == branch }
+        let elsewhere = inBranch.isEmpty ? [] : fixes.filter { branch != nil && Self.branch($0) != branch }
+        let listed = (inBranch.isEmpty ? fixes : inBranch).max(by: looseLess), expected = listed == nil ? hits.compactMap(\.expected).max(by: looseLess) : nil
         let count = hits.count == 1 ? "1 NVD-listed vulnerability affects" : "\(hits.count) NVD-listed vulnerabilities affect"
-        let reason = count + " this version" + (unknown > 0 ? "; \(unknown) list no fixed version" : "") + ". NVD can lag vendor advisories"
+        let reason = count + " this version" + (unknown > 0 ? "; \(unknown) list no fixed version" : "")
+            + (elsewhere.isEmpty ? "" : "; \(elsewhere.count) list\(elsewhere.count == 1 ? "s" : "") a fix only in a newer \(product.name) (\(elsewhere.max(by: looseLess)!))") + ". NVD can lag vendor advisories"
             + (item.domain == "brew" ? ", and Homebrew sometimes ships patches without changing the version." : ".")
             + (expected.map { " The advisory text names \($0) as the fix." } ?? "")
         return Finding(source: "nvd:" + product.id, installation: item, kind: .security, fixed: listed ?? expected ?? noFixListed,

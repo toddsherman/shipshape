@@ -248,15 +248,30 @@ enum Inventory {
             items.append(Installation(product: "python", name: "Python (python.org)", version: version, path: path, domain: "tools", manager: "python-org"))
             items += pythonPackages(site: "\(path)/lib/python\(child)/site-packages", interpreter: "\(path)/bin/python\(child)", manager: "pip", label: "python.org Python \(child)")
         }
-        for (root, manager) in [(home + "/.local/share/uv/python", "uv-python"), (home + "/.pyenv/versions", "pyenv")] {
-            for child in children(root) {
-                guard let version = captures("^(?:cpython-)?([0-9]+\\.[0-9]+\\.[0-9]+)(?:-|$)", child).first?[1] else { continue }
-                let branch = version.split(separator: ".").prefix(2).joined(separator: ".")
-                items.append(Installation(product: "python", name: "Python (\(manager == "pyenv" ? "pyenv" : "uv"))", version: version, path: root + "/" + child, domain: "tools", manager: manager))
-                items += pythonPackages(site: "\(root)/\(child)/lib/python\(branch)/site-packages", interpreter: "\(root)/\(child)/bin/python\(branch)", manager: "pip", label: "Python \(version) (\(manager))")
-            }
-        }
+        items += managedPythons(root: home + "/.local/share/uv/python", manager: "uv-python") + managedPythons(root: home + "/.pyenv/versions", manager: "pyenv")
         return (items, errors)
+    }
+    // uv and pyenv keep each Python in its own folder. uv keeps the previous patch release after an upgrade, in case
+    // a virtual environment was made with it, so only the newest patch of each branch is checked; older ones are
+    // listed as old copies. uv marks its Pythons as externally managed, and pip then needs an override.
+    static func managedPythons(root: String, manager: String) -> [Installation] {
+        let found = children(root).compactMap { child in
+            captures("^(?:cpython-)?([0-9]+\\.[0-9]+\\.[0-9]+)(-.*)?$", child).first.map { (child: child, version: $0[1], variant: $0[2]) }
+        }
+        var items: [Installation] = []
+        for (child, version, variant) in found {
+            let branch = NVD.branch(version), name = "Python (\(manager == "pyenv" ? "pyenv" : "uv"))"
+            if manager == "uv-python", let newest = found.filter({ NVD.branch($0.version) == branch && $0.variant == variant }).map(\.version).max(by: looseLess), newest != version {
+                items.append(Installation(product: "python", name: name, version: version, path: root + "/" + child, domain: "tools",
+                                          note: "An older patch release uv kept after upgrading to \(newest).", manager: "uv-python-old"))
+                continue
+            }
+            items.append(Installation(product: "python", name: name, version: version, path: root + "/" + child, domain: "tools", manager: manager))
+            let managed = manager == "uv-python" && fm.fileExists(atPath: "\(root)/\(child)/lib/python\(branch)/EXTERNALLY-MANAGED")
+            items += pythonPackages(site: "\(root)/\(child)/lib/python\(branch)/site-packages", interpreter: "\(root)/\(child)/bin/python\(branch)", manager: managed ? "pip-uv" : "pip",
+                                    label: "Python \(version) (\(manager))")
+        }
+        return items
     }
 
     // mise keeps each runtime in installs/<tool>/<version>. Alias symlinks such as "22" or "latest" are
