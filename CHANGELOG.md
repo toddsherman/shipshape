@@ -2,6 +2,11 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.11 — October 27, 2026
+
+- **Shipshape has a Dock icon** and a regular app menu, alongside its menu bar icon. Clicking the Dock icon opens its window again after you close it.
+- **Links that open a web page show the pointing-hand cursor:** each advisory ID, Open website, the Download buttons and Open in GitHub. Advisory IDs are now separate links, with Copy on their right-click menu.
+
 ## 0.3.10 — October 27, 2026
 
 - **Python fixes stay in your Python's branch.** NVD lists some fixes only as a release in a newer branch ("before 3.13.14"), and Shipshape used to recommend that for every older Python. Now the fix is the release in the installed branch when NVD lists one, such as 3.12.14 for 3.12.13, and a fix listed only in a newer branch is mentioned on the card.

@@ -407,7 +407,7 @@ struct Dashboard: View {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack { Text(check.name).fontWeight(.semibold); Spacer(); Text(check.status.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(check.status == "failed" || check.status == "partial" ? Color.orange : .secondary) }
                             Text(check.detail).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                            if let url = check.url, let link = URL(string: url) { Link("Open website", destination: link).font(.caption) }
+                            if let url = check.url, let link = URL(string: url) { Link("Open website", destination: link).font(.caption).linkCursor() }
                         }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
                     }
                     let nvd = (monitor.report?.checks ?? []).filter { $0.status == "checked" && $0.id.hasPrefix("nvd:") }
@@ -564,30 +564,36 @@ struct FindingEvidence: View {
     @State private var reporting = false
     // The lockfile or MCP settings file for project and MCP findings; the install path otherwise.
     var location: String { Inventory.display(finding.installation.sourceFile) }
-    // Advisory IDs, each linked to its own page: the finding's link for it, NVD for CVEs, OSV otherwise.
-    var advisories: AttributedString {
-        var text = AttributedString("Advisories: ")
-        for (index, id) in finding.advisories.enumerated() {
-            if index > 0 { text += AttributedString(", ") }
-            var part = AttributedString(id)
-            let page = finding.links.first { $0.hasPrefix("https://") && $0.hasSuffix("/" + id) }
-                ?? (id.hasPrefix("CVE-") ? "https://nvd.nist.gov/vuln/detail/" + id : "https://osv.dev/vulnerability/" + id)
-            if id.range(of: "^[A-Za-z0-9._:-]+$", options: .regularExpression) != nil { part.link = URL(string: page) }
-            text += part
-        }
-        return text
+    // An advisory's own page: the finding's link for it, NVD for CVEs, OSV otherwise.
+    func page(_ id: String) -> URL? {
+        guard id.range(of: "^[A-Za-z0-9._:-]+$", options: .regularExpression) != nil else { return nil }
+        return URL(string: finding.links.first { $0.hasPrefix("https://") && $0.hasSuffix("/" + id) }
+                   ?? (id.hasPrefix("CVE-") ? "https://nvd.nist.gov/vuln/detail/" + id : "https://osv.dev/vulnerability/" + id))
+    }
+    // Each advisory ID is its own link, so the cursor shows which one a click opens; Copy is on its menu.
+    var advisories: some View {
+        WrappingStack {
+            Text("Advisories:").foregroundStyle(.secondary)
+            ForEach(Array(finding.advisories.enumerated()), id: \.offset) { index, id in
+                HStack(spacing: 0) {
+                    if let url = page(id) { Link(id, destination: url).linkCursor().contextMenu { Button("Copy \(id)") { monitor.copy(id) } } }
+                    else { Text(id).foregroundStyle(.secondary).textSelection(.enabled) }
+                    if index < finding.advisories.count - 1 { Text(",").foregroundStyle(.secondary) }
+                }
+            }
+        }.font(.caption)
     }
     var body: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Location: " + location).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                if !finding.advisories.isEmpty { Text(advisories).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                if !finding.advisories.isEmpty { advisories }
             }
             Spacer()
             HStack(spacing: 16) {
                 Button("Report a problem") { reporting = true }.buttonStyle(.link).font(.caption)
                     .help("Opens a GitHub issue about this finding, filled in for you to check and submit.")
-                if let source = finding.links.first, let url = URL(string: source), url.scheme == "https" { Link("Open website", destination: url).font(.callout) }
+                if let source = finding.links.first, let url = URL(string: source), url.scheme == "https" { Link("Open website", destination: url).font(.callout).linkCursor() }
             }
         }.sheet(isPresented: $reporting) { ReportSheet(finding: finding).environmentObject(monitor) }
     }
@@ -679,7 +685,7 @@ struct FeedbackButtons: View {
                 if issue.shortened { monitor.copy(issue.text) }
                 NSWorkspace.shared.open(issue.url)
                 dismiss()
-            }.buttonStyle(.borderedProminent)
+            }.buttonStyle(.borderedProminent).linkCursor()
         }
     }
 }
@@ -849,7 +855,7 @@ struct UpdateOptionRow: View {
                     styled(Button(copied ? "Copied" : "Copy") { monitor.copy(option.text); flash() }, prominent: primary).frame(minWidth: 70)
                 }
             } else {
-                styled(Button { monitor.perform(option) } label: { Label(option.text, systemImage: symbol) }, prominent: primary)
+                styled(Button { monitor.perform(option) } label: { Label(option.text, systemImage: symbol) }, prominent: primary).linkCursor(option.kind == "link")
             }
             if !option.note.isEmpty { Text(option.note).font(.caption).foregroundStyle(.secondary) }
         }
@@ -857,3 +863,43 @@ struct UpdateOptionRow: View {
     func flash() { copied = true; DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false } }
 }
 func openTrusted(_ address: String) { if let url = URL(string: address) { NSWorkspace.shared.open(url) } }
+// The pointing-hand cursor over controls that open a web page, as in a browser. macOS 15 has it built in;
+// earlier versions push the cursor on hover and pop it on leaving, or when the control goes away.
+struct LinkCursor: ViewModifier {
+    @State private var pushed = false
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 15, *) { content.pointerStyle(.link) } else {
+            content.onHover { inside in
+                guard inside != pushed else { return }
+                pushed = inside
+                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }.onDisappear { if pushed { NSCursor.pop(); pushed = false } }
+        }
+    }
+}
+extension View {
+    @ViewBuilder func linkCursor(_ enabled: Bool = true) -> some View { if enabled { modifier(LinkCursor()) } else { self } }
+}
+// Views in rows that wrap when one is full, like words in a paragraph.
+struct WrappingStack: Layout {
+    var spacing: CGFloat = 4, lineSpacing: CGFloat = 2
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(proposal.width ?? .infinity, subviews).size
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (view, origin) in zip(subviews, arrange(bounds.width, subviews).origins) {
+            view.place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y), proposal: .unspecified)
+        }
+    }
+    private func arrange(_ width: CGFloat, _ subviews: Subviews) -> (origins: [CGPoint], size: CGSize) {
+        var origins: [CGPoint] = [], x: CGFloat = 0, y: CGFloat = 0, row: CGFloat = 0, widest: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0 && x + size.width > width { x = 0; y += row + lineSpacing; row = 0 }
+            origins.append(CGPoint(x: x, y: y))
+            x += size.width + spacing
+            row = max(row, size.height); widest = max(widest, x - spacing)
+        }
+        return (origins, CGSize(width: widest, height: y + row))
+    }
+}
