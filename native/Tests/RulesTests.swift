@@ -1054,6 +1054,10 @@ import Foundation
             expect(info["SURequireSignedFeed"] as? Bool == true && info["SUVerifyUpdateBeforeExtraction"] as? Bool == true, "the feed and each update are verified before use")
             expect((info["SUPublicEDKey"] as? String).map { Data(base64Encoded: $0)?.count == 32 } ?? true, "a public update key, when present, is a 32-byte EdDSA key")
         } else { expect(false, "Info.plist is readable") }
+        expect(FindingCategory.Urgency([.malicious: 1, .updates: 40]) == .actNow && FindingCategory.Urgency([.exploited: 1]) == .actNow
+               && FindingCategory.Urgency([.security: 2, .waiting: 5]) == .fixSoon && FindingCategory.Urgency([.unsupported: 1]) == .fixSoon
+               && FindingCategory.Urgency([.waiting: 3, .updates: 2]) == .nothingUrgent && FindingCategory.Urgency([:]) == .clear,
+               "the summary's status follows the most urgent kind of finding, however few")
         print("Passed \(count) rule, failure-retention, notification-fingerprint and scheduling checks")
     }
 }

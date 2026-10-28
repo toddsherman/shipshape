@@ -2,8 +2,9 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
-## Unreleased
+## 0.3.20 — October 27, 2026
 
+- **The Security summary leads with a status badge instead of the gauge,** set by the most urgent finding: **Act now** for malicious packages or known exploitation, **Fix soon** for security fixes or end of support, **Nothing urgent** when only findings waiting for a fix or updates remain, and **All clear**. A high percentage could look healthy with a malicious package present; the badge can't. The share of your inventory that needs no action is now a caption in the corner, the bar's legend shows each kind's count, and tiles with findings take their bar color: orange for security fixes and end of support, gray for waiting for a fix and blue for updates. Malicious packages and known exploitation are still filled red.
 - **For contributors: `native/scenario.sh` opens Shipshape on made-up findings,** to see the interface in situations such as malicious packages, known exploitation, a clean Mac, failed checks or two hundred findings, without scanning your Mac. The copy is called Shipshape Dev and has an orange icon; its Scenarios menu and menu bar panel switch between scenarios without relaunching. Development builds with their own data folder can turn checks off with `SHIPSHAPE_NO_CHECKS=1`.
 
 ## 0.3.19 — October 27, 2026

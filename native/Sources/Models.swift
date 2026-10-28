@@ -234,6 +234,27 @@ enum FindingCategory: Int, CaseIterable, Identifiable, Comparable {
     static func counts(in report: ScanReport) -> [FindingCategory: Int] {
         report.findings.reduce(into: [:]) { $0[FindingCategory(of: $1), default: 0] += 1 }
     }
+    // The Security summary's status, set by the most urgent kind of finding rather than by how much of the inventory is
+    // clean: one malicious package among hundreds of clean items is still the most urgent thing Shipshape can find.
+    enum Urgency: Int, Comparable {
+        case clear, nothingUrgent, fixSoon, actNow
+        static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
+        init(_ counts: [FindingCategory: Int]) {
+            func has(_ category: FindingCategory) -> Bool { (counts[category] ?? 0) > 0 }
+            if has(.malicious) || has(.exploited) { self = .actNow }
+            else if has(.security) || has(.unsupported) { self = .fixSoon }
+            else if has(.waiting) || has(.updates) { self = .nothingUrgent }
+            else { self = .clear }
+        }
+        var label: String {
+            switch self {
+            case .actNow: return "Act now"
+            case .fixSoon: return "Fix soon"
+            case .nothingUrgent: return "Nothing urgent"
+            case .clear: return "All clear"
+            }
+        }
+    }
     static func attentionTitle(_ count: Int) -> String {
         count == 0 ? "Nothing needs attention" : count == 1 ? "1 item needs attention" : "\(count) items need attention"
     }

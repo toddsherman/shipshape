@@ -697,15 +697,21 @@ struct StackSummary: View {
         let items = FindingCategory.items(in: report)
         let total = report.installations.count
         let clear = max(0, total - items.values.reduce(0, +)), settled = FindingCategory.settled(in: report)
-        // Items needing no action come first, so the ring's share is the bar's green and gray together.
+        let urgency = FindingCategory.Urgency(counts)
+        // Items needing no action come first: green, then gray. Each segment has its tiles' color.
         let shares = [Share(label: "No findings", count: clear, color: .green),
-                      Share(label: "Waiting for a fix", count: items[.waiting] ?? 0, color: .gray),
-                      Share(label: "Updates", count: items[.updates] ?? 0, color: .blue),
-                      Share(label: "Fixes or end of support", count: (items[.security] ?? 0) + (items[.unsupported] ?? 0), color: .orange),
-                      Share(label: "Exploited or malicious", count: (items[.exploited] ?? 0) + (items[.malicious] ?? 0), color: alarmRed)]
+                      Share(label: "Waiting for a fix", count: items[.waiting] ?? 0, color: FindingCategory.waiting.color),
+                      Share(label: "Updates", count: items[.updates] ?? 0, color: FindingCategory.updates.color),
+                      Share(label: "Fixes or end of support", count: (items[.security] ?? 0) + (items[.unsupported] ?? 0), color: FindingCategory.security.color),
+                      Share(label: "Exploited or malicious", count: (items[.exploited] ?? 0) + (items[.malicious] ?? 0), color: FindingCategory.malicious.color)]
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 5) {
+                    // The status, set by the most urgent kind of finding, however few: one malicious package among
+                    // hundreds of clean items is still the most urgent thing Shipshape can find.
+                    Text(urgency.label.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(.white)
+                        .padding(.horizontal, 9).padding(.vertical, 3).background(urgency.color, in: Capsule()).padding(.bottom, 3)
+                        .accessibilityLabel("Status: \(urgency.label)")
                     Text(FindingCategory.attentionTitle(report.attention.count)).font(.title2.weight(.semibold))
                     if !urgent.isEmpty { Text(urgent).foregroundStyle(.secondary) }
                     if !report.errors.isEmpty {
@@ -713,13 +719,21 @@ struct StackSummary: View {
                     }
                 }
                 Spacer()
-                SettledGauge(fraction: total == 0 ? 1 : Double(settled) / Double(total))
-                Text("\(settled.formatted()) of \(total.formatted())\ninventory items\nneed no action").font(.caption).foregroundStyle(.secondary)
+                // How much of the inventory needs no action: no findings, or only findings waiting for a fixed release.
+                // It rounds down, so 100% means there's nothing left to do.
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(total == 0 ? 100 : settled * 100 / total)% need no action").font(.caption.weight(.semibold))
+                    Text("\(settled.formatted()) of \(total.formatted()) inventory items").font(.caption).foregroundStyle(.secondary)
+                }
             }
             ShareBar(parts: shares.map { ($0.count, $0.color) })
             HStack(spacing: 14) {
                 ForEach(shares.filter { $0.count > 0 }) { share in
-                    HStack(spacing: 5) { RoundedRectangle(cornerRadius: 2).fill(share.color).frame(width: 8, height: 8); Text(share.label) }
+                    HStack(spacing: 5) {
+                        RoundedRectangle(cornerRadius: 2).fill(share.color).frame(width: 8, height: 8)
+                        Text(share.label)
+                        Text(share.count.formatted()).foregroundStyle(.primary).monospacedDigit()
+                    }
                 }
             }.font(.caption).foregroundStyle(.secondary)
         }.modifier(CardStyle())
@@ -728,24 +742,6 @@ struct StackSummary: View {
         let malicious = counts[.malicious] ?? 0, exploited = counts[.exploited] ?? 0
         return [malicious > 0 ? "\(malicious) malicious package\(malicious == 1 ? "" : "s")" : nil,
                 exploited > 0 ? "\(exploited) actively exploited" : nil].compactMap { $0 }.joined(separator: " · ")
-    }
-}
-// The share of inventory items that need no action, as a gauge: an arc open at the bottom that fills clockwise from
-// its lower left. Items without findings and those only waiting for a fixed release count. The percentage rounds
-// down, so 100% means there's nothing left to do.
-struct SettledGauge: View {
-    let fraction: Double
-    static let sweep = 0.75  // three quarters of a circle, leaving the gap at the bottom
-    var body: some View {
-        let arc = StrokeStyle(lineWidth: 9, lineCap: .round)
-        ZStack {
-            Group {
-                Circle().trim(from: 0, to: Self.sweep).stroke(Color.primary.opacity(0.1), style: arc)
-                Circle().trim(from: 0, to: Self.sweep * min(max(fraction, 0), 1))
-                    .stroke(AngularGradient(colors: [.green, .teal], center: .center, startAngle: .zero, endAngle: .degrees(360 * Self.sweep)), style: arc)
-            }.rotationEffect(.degrees(135))
-            Text("\(Int((fraction * 100).rounded(.down)))%").font(.system(size: 20, weight: .semibold, design: .rounded))
-        }.frame(width: 80, height: 80)
     }
 }
 // One bar split in proportion to the counts. A nonzero share is never thinner than a few points, so a single
@@ -766,8 +762,9 @@ struct ShareBar: View {
         return widths
     }
 }
-// One kind of finding: how many, what it means and a button that lists them. Malware and known exploitation are
-// filled red when present, so the most urgent tile stands out; empty tiles are dimmed.
+// One kind of finding: how many, what it means and a button that lists them. A tile with findings has its bar color
+// as a stripe and on its count; malware and known exploitation are filled red instead, so they stand out. Empty
+// tiles are dimmed.
 struct CategoryTile: View {
     let category: FindingCategory
     let count: Int
@@ -779,7 +776,7 @@ struct CategoryTile: View {
         Button { if count > 0 { action() } } label: {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("\(count)").font(.system(size: 30, weight: .semibold, design: .rounded))
+                    Text("\(count)").font(.system(size: 30, weight: .semibold, design: .rounded)).foregroundStyle(count > 0 && !hot ? category.color : ink)
                     Text(category.title).font(.headline)
                     Text(category.detail).font(.callout).foregroundStyle(hot ? Color.white.opacity(0.9) : .secondary).fixedSize(horizontal: false, vertical: true)
                 }
@@ -797,7 +794,9 @@ struct CategoryTile: View {
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
             .foregroundStyle(ink)
-            .background(hot ? alarmRed : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            .background(hot ? alarmRed : Color(nsColor: .controlBackgroundColor))
+            .overlay(alignment: .leading) { if count > 0 && !hot { Rectangle().fill(category.color).frame(width: 4) } }
+            .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.07), lineWidth: selected ? 2.5 : 1))
             .contentShape(RoundedRectangle(cornerRadius: 10))
         }.buttonStyle(.plain).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -805,6 +804,27 @@ struct CategoryTile: View {
 }
 // A brick red, darker than system red, so white text on it stays readable.
 let alarmRed = Color(red: 0.74, green: 0.22, blue: 0.13)
+extension FindingCategory {
+    // Each kind of finding's color, on its tile and its segment of the summary bar, so the bar works as the tiles' key.
+    var color: Color {
+        switch self {
+        case .malicious, .exploited: return alarmRed
+        case .security, .unsupported: return .orange
+        case .waiting: return .gray
+        case .updates: return .blue
+        }
+    }
+}
+extension FindingCategory.Urgency {
+    // Dark enough for the status badge's white text in light and dark mode.
+    var color: Color {
+        switch self {
+        case .actNow: return alarmRed
+        case .fixSoon: return Color(red: 0.80, green: 0.40, blue: 0.02)
+        case .nothingUrgent, .clear: return Color(red: 0.16, green: 0.55, blue: 0.27)
+        }
+    }
+}
 struct StatCard: View {
     let number: String; let label: String; let color: Color
     var body: some View {
