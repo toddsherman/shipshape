@@ -4,7 +4,7 @@ Every release is a universal (Apple silicon and Intel) build for macOS 13 or lat
 
 ## Unreleased
 
-- **For contributors: `native/scenario.sh` opens Shipshape on made-up findings,** to see the interface in situations such as malicious packages, known exploitation, a clean Mac, failed checks or two hundred findings, without scanning your Mac. Development builds with their own data folder can turn checks off with `SHIPSHAPE_NO_CHECKS=1`.
+- **For contributors: `native/scenario.sh` opens Shipshape on made-up findings,** to see the interface in situations such as malicious packages, known exploitation, a clean Mac, failed checks or two hundred findings, without scanning your Mac. The copy is called Shipshape Dev and has an orange icon; its Scenarios menu and menu bar panel switch between scenarios without relaunching. Development builds with their own data folder can turn checks off with `SHIPSHAPE_NO_CHECKS=1`.
 
 ## 0.3.19 — October 27, 2026
 

@@ -37,6 +37,32 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         let env = ProcessInfo.processInfo.environment
         return env["SHIPSHAPE_STATE_DIR"] != nil && env["SHIPSHAPE_NO_CHECKS"] == "1"
     }()
+    // The made-up states a scenario preview can switch between: index.tsv in SHIPSHAPE_SCENARIOS lists each one's name,
+    // title and description, and <name>/state.json holds it. Empty outside a preview.
+    struct Scenario: Identifiable { let id: String; let title: String; let detail: String; let file: URL }
+    static let scenarios: [Scenario] = {
+        guard checksOff, let folder = ProcessInfo.processInfo.environment["SHIPSHAPE_SCENARIOS"],
+              let index = try? String(contentsOfFile: folder + "/index.tsv", encoding: .utf8) else { return [] }
+        return index.split(separator: "\n").compactMap { line in
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 3 else { return nil }
+            return Scenario(id: fields[0], title: fields[1], detail: fields[2], file: URL(fileURLWithPath: folder + "/" + fields[0] + "/state.json"))
+        }
+    }()
+    @Published private(set) var scenario = ProcessInfo.processInfo.environment["SHIPSHAPE_SCENARIO"]
+    // Shows a scenario from its original file, so choosing the current one again also resets it.
+    func show(_ scenario: Scenario) {
+        guard Monitor.checksOff, let data = try? Data(contentsOf: scenario.file), let loaded = try? JSONDecoder().decode(SavedState.self, from: data) else {
+            message = "The \(scenario.title) scenario couldn't be read. Run native/scenario.sh again to regenerate it."
+            return
+        }
+        state = loaded
+        self.scenario = scenario.id
+        filter = nil
+        section = "Security"
+        message = nil
+        save()
+    }
     var statusTitle: String {
         if scanning { return "Checking this Mac" }
         if report == nil { return "Ready for your first check" }
@@ -244,10 +270,13 @@ struct ShipshapeApp: App {
     @StateObject private var monitor = Monitor()
     @StateObject private var updates = Updates()
     var body: some Scene {
-        Window(appName, id: "dashboard") {
+        Window(displayName, id: "dashboard") {
             Dashboard().environmentObject(monitor).environmentObject(updates)
         }.defaultSize(width: 1040, height: 760)
-        .commands { CommandGroup(after: .appInfo) { CheckForUpdatesButton(updates: updates) } }
+        .commands {
+            CommandGroup(after: .appInfo) { CheckForUpdatesButton(updates: updates) }
+            if !Monitor.scenarios.isEmpty { CommandMenu("Scenarios") { ScenarioPicker(monitor: monitor, style: .inline) } }
+        }
         MenuBarExtra {
             MenuPanel().environmentObject(monitor)
         } label: {
@@ -264,7 +293,7 @@ struct MenuPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Label(appName, systemImage: "sailboat.fill").font(.headline)
+                Label(displayName, systemImage: "sailboat.fill").font(.headline)
                 Spacer()
                 // Check now, as a refresh button; a spinner takes its place while a check runs.
                 if monitor.scanning { ProgressView().controlSize(.small).frame(width: 22, height: 22) }
@@ -290,8 +319,11 @@ struct MenuPanel: View {
             }
             Divider()
             HStack(spacing: 8) {
-                Button { open() } label: { Text("Open \(appName)").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent)
+                Button { open() } label: { Text("Open \(displayName)").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent)
                 Button("Quit") { NSApp.terminate(nil) }
+            }
+            if !Monitor.scenarios.isEmpty {
+                HStack { Text("Scenario").font(.caption).foregroundStyle(.secondary); ScenarioPicker(monitor: monitor, style: .menu) }
             }
             Text("Checks at launch, daily at 9 a.m. Pacific and when you click \(Image(systemName: "arrow.clockwise.circle"))").font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(18).frame(width: 310)
@@ -317,6 +349,27 @@ struct WindowReader: NSViewRepresentable {
         return view
     }
     func updateNSView(_ view: NSView, context: Context) {}
+}
+// Picks the made-up scenario a preview shows, in the Scenarios menu (inline, with checkmarks) and the menu bar panel.
+struct ScenarioPicker: View {
+    enum Style { case inline, menu }
+    @ObservedObject var monitor: Monitor
+    let style: Style
+    var body: some View {
+        let picker = Picker("Scenario", selection: Binding(get: { monitor.scenario ?? "" }, set: { name in
+            if let scenario = Monitor.scenarios.first(where: { $0.id == name }) { monitor.show(scenario) }
+        })) {
+            ForEach(Monitor.scenarios) { Text($0.title).tag($0.id) }
+        }.labelsHidden()
+        switch style {
+        case .inline:
+            picker.pickerStyle(.inline)
+            Divider()
+            Button("Reset Scenario") { if let current = Monitor.scenarios.first(where: { $0.id == monitor.scenario }) { monitor.show(current) } }
+                .keyboardShortcut("r", modifiers: [.command, .shift]).disabled(monitor.scenario == nil)
+        case .menu: picker.pickerStyle(.menu).fixedSize()
+        }
+    }
 }
 // One kind of finding in the menu bar panel. Clicking it opens the Security page listing them.
 struct CategoryRow: View {
@@ -351,7 +404,7 @@ struct Dashboard: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
-                Label(appName, systemImage: "sailboat.fill").font(.title3.weight(.semibold)).padding(.bottom, 25).padding(.top, 14)
+                Label(displayName, systemImage: "sailboat.fill").font(.title3.weight(.semibold)).padding(.bottom, 25).padding(.top, 14)
                 ForEach(sections, id: \.0) { title, symbol in
                     Button { monitor.section = title; query = ""; if title == "Security" { monitor.filter = nil } } label: {
                         HStack { Image(systemName: symbol).frame(width: 20); Text(title); Spacer(); if title == "Security" && !monitor.attention.isEmpty { Text("\(monitor.attention.count)").font(.caption.weight(.semibold)) } }
@@ -363,6 +416,9 @@ struct Dashboard: View {
                 Text("ON THIS MAC").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                 Text(Host.current().localizedName ?? "This Mac").font(.caption).lineLimit(2)
                 Text("Version \(appVersion) · Preview").font(.caption2).foregroundStyle(.tertiary).padding(.top, 12)
+                if let current = Monitor.scenarios.first(where: { $0.id == monitor.scenario }) {
+                    Text("Scenario: \(current.title)").font(.caption2.weight(.semibold)).foregroundStyle(.orange).help(current.detail)
+                }
             }.padding(20).frame(width: 200).background(Color(nsColor: .controlBackgroundColor))
             Divider()
             VStack(alignment: .leading, spacing: 0) {

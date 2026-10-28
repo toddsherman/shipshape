@@ -1,6 +1,11 @@
 import AppKit
+// make-icon <repository root> [dev]: draws the app icon into native/work/AppIcon.iconset, or with "dev" the orange
+// Shipshape Dev icon into native/work/AppIcon-Dev.iconset, so a development copy is easy to tell apart.
 let root = URL(fileURLWithPath: CommandLine.arguments[1])
-let iconset = root.appendingPathComponent("native/work/AppIcon.iconset")
+let dev = CommandLine.arguments.count > 2 && CommandLine.arguments[2] == "dev"
+let iconset = root.appendingPathComponent(dev ? "native/work/AppIcon-Dev.iconset" : "native/work/AppIcon.iconset")
+let colors = dev ? (NSColor(calibratedRed: 0.55, green: 0.20, blue: 0.04, alpha: 1), NSColor(calibratedRed: 0.93, green: 0.49, blue: 0.13, alpha: 1))
+                 : (NSColor(calibratedRed: 0.09, green: 0.25, blue: 0.33, alpha: 1), NSColor(calibratedRed: 0.16, green: 0.44, blue: 0.48, alpha: 1))
 try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
 for size in [16, 32, 128, 256, 512] {
     for scale in [1, 2] {
@@ -10,7 +15,7 @@ for size in [16, 32, 128, 256, 512] {
         let factor = CGFloat(pixels) / 1024
         let transform = NSAffineTransform(); transform.scale(by: factor); transform.concat()
         let background = NSBezierPath(roundedRect: NSRect(x: 78, y: 78, width: 868, height: 868), xRadius: 190, yRadius: 190)
-        NSGradient(starting: NSColor(calibratedRed: 0.09, green: 0.25, blue: 0.33, alpha: 1), ending: NSColor(calibratedRed: 0.16, green: 0.44, blue: 0.48, alpha: 1))!.draw(in: background, angle: 90)
+        NSGradient(starting: colors.0, ending: colors.1)!.draw(in: background, angle: 90)
         // A sailboat: hull, mast, mainsail and jib, over a line of waves.
         NSColor.white.withAlphaComponent(0.96).setFill(); NSColor.white.withAlphaComponent(0.96).setStroke()
         let hull = NSBezierPath()

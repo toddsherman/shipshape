@@ -1,7 +1,8 @@
 import Foundation
 // Made-up saved states for seeing how the interface looks in different situations: scenarios <output folder>.
-// Writes <folder>/<name>/state.json for each scenario and prints "name: description" lines. native/scenario.sh
-// opens one in a copy of the app with checks turned off, so the made-up findings stay as they are.
+// Writes <folder>/<name>/state.json for each scenario, and index.tsv (name, title, description), which the app's
+// Scenarios menu reads; prints "name: description" lines. native/scenario.sh opens one in a copy of the app with
+// checks turned off, so the made-up findings stay as they are.
 @main struct Scenarios {
     static let home = NSHomeDirectory()
     static let projects = home + "/Projects"
@@ -119,7 +120,11 @@ import Foundation
     struct Scenario {
         let name: String; let description: String; let findings: [Finding]
         var clean = 220; var checks = Scenarios.checks(); var history: [Finding] = []; var current: [Installation] = []; var noReport = false
+        var title: String { Scenarios.titles[name] ?? name }
     }
+    // Menu titles, in menu order.
+    static let titles = ["first-run": "First Run", "all-clear": "All Clear", "waiting-only": "Waiting Only", "typical": "Typical Day", "malware": "Malware",
+                         "exploited": "Known Exploitation", "everything": "Everything", "crowded": "Crowded (200 Findings)", "check-issues": "Check Issues"]
 
     static var all: [Scenario] {
         let manyProjects = ["shop", "agent-tools", "docs-site", "api-server", "mobile", "admin"]
@@ -199,11 +204,14 @@ import Foundation
             FileHandle.standardError.write(Data("Usage: scenarios <output folder>\n".utf8)); exit(2)
         }
         let folder = CommandLine.arguments[1]
+        var index = ""
         for scenario in all {
             let directory = folder + "/" + scenario.name
             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             try JSONEncoder().encode(state(for: scenario)).write(to: URL(fileURLWithPath: directory + "/state.json"), options: .atomic)
+            index += [scenario.name, scenario.title, scenario.description].joined(separator: "\t") + "\n"
             print("\(scenario.name): \(scenario.description)")
         }
+        try index.write(toFile: folder + "/index.tsv", atomically: true, encoding: .utf8)
     }
 }

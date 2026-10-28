@@ -2,6 +2,8 @@ import Foundation
 
 let appName = "Shipshape"  // also CFBundleName in Info.plist, which the build scripts read
 let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+// The name this copy shows for itself: Shipshape, or Shipshape Dev for a development copy whose Info.plist says so.
+let displayName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? appName
 
 enum Fetch {
     // Tests replace the configuration to serve canned responses; the session follows it.
