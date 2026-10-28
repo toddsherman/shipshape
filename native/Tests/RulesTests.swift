@@ -209,7 +209,7 @@ import Foundation
             if store { try Data("receipt".utf8).write(to: URL(fileURLWithPath: contents + "/_MASReceipt/receipt")) }
             try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": bundleID, "CFBundleShortVersionString": "1.0"], format: .xml, options: 0).write(to: URL(fileURLWithPath: contents + "/Info.plist"))
         }
-        let (foundApps, _, skipped) = Inventory.apps(roots: [applications])
+        let (foundApps, _, skipped, _, _) = Inventory.apps(roots: [applications])
         expect(foundApps.map(\.product) == ["vscode"] && skipped == 3, "Chrome and App Store copies are skipped; other catalog apps are found")
         expect(Catalog.ownChannels.contains("claude-desktop") && Catalog.ownChannels.allSatisfy { Catalog.byID[$0] != nil }, "Claude follows its own release channel, and own-channel apps exist in the catalog")
         expect(Catalog.byID["chrome"] == nil && Catalog.excludedCasks.contains("google-chrome") && !Catalog.vendorRules.contains("chrome"), "Chrome has no catalog entry, cask or vendor rule")
@@ -806,10 +806,13 @@ import Foundation
         try makeApp("Tidy", ["CFBundleIdentifier": "com.example.tidy", "CFBundleShortVersionString": "1.2", "CFBundleVersion": "42", "SUFeedURL": "https://example.com/tidy.xml"], sparkle: "1.27.1-3-g05be1d71")
         try makeApp("Plain", ["CFBundleIdentifier": "com.example.plain", "CFBundleShortVersionString": "3.0", "SUFeedURL": "http://example.com/plain.xml"])
         try makeApp("Store", ["CFBundleIdentifier": "com.example.store", "CFBundleShortVersionString": "1.0", "SUFeedURL": "https://example.com/s.xml"], sparkle: "2.0.0", appStore: true)
-        let (sparkleApps, _, appStoreSkipped) = Inventory.apps(roots: [appsRoot])
+        try makeApp("Applet", ["CFBundleName": "Applet", "CFBundleExecutable": "applet"])
+        let (sparkleApps, _, appStoreSkipped, appSignatures, unreadableApps) = Inventory.apps(roots: [appsRoot])
         expect(sparkleApps.map { "\($0.name) \($0.version) \($0.manager!) \($0.build ?? "-") \($0.feed ?? "-")" }
                == ["Tidy 1.2 app 42 https://example.com/tidy.xml", "Sparkle in Tidy 1.27.1 sparkle-framework - -"] && appStoreSkipped == 1,
                "apps with an https feed or a bundled Sparkle are kept; an http feed alone isn't; App Store apps are skipped")
+        expect(appSignatures.map { "\($0.name) \($0.kind.rawValue)" }.sorted() == ["Applet unsigned", "Plain unsigned", "Tidy unsigned"] && unreadableApps == 0,
+               "every app's signature is read, inventoried or not and with or without a bundle ID, except App Store apps; a bundle with no code reads as unsigned")
         let bundled = update(sparkleApps[1], "2.9.2", kind: .security)
         expect(Commands.commands(for: bundled).first.map { $0.kind == "app" && $0.text == "Open Tidy" && $0.target?.hasSuffix("/Tidy.app") == true } == true
                && Commands.action(for: sparkleApps[1], malicious: false, fixed: "2.9.2").hasPrefix("Update Tidy to a release that bundles Sparkle 2.9.2 or later"),
@@ -1061,6 +1064,31 @@ import Foundation
         expect(Quitting.staysInMenuBar(quitFrom: "com.apple.dock") && !Quitting.staysInMenuBar(quitFrom: nil)
                && !Quitting.staysInMenuBar(quitFrom: "com.apple.loginwindow") && !Quitting.staysInMenuBar(quitFrom: "org.sparkle-project.Sparkle.Autoupdate"),
                "only Quit in the Dock keeps Shipshape in the menu bar; the panel's Quit, Command-Q, logging out and updates quit")
+
+        // App signatures: ad-hoc (including linker-signed), unsigned and missing Hardened Runtime are worth a look; Apple's apps never are.
+        func signed(_ identifier: String?, _ flags: UInt32?, team: String? = nil, platform: Int? = nil) -> AppSignature {
+            AppSignature(name: "App", path: "/Applications/App.app", identifier: identifier, flags: flags, team: team, platform: platform)
+        }
+        let unsignedApp = signed(nil, nil), adHocApp = signed("app", 0x2), linkerSigned = signed("app", 0x20002), adHocRuntime = signed("app", 0x10002, team: "ABCDE12345")
+        let developer = signed("com.example.app", 0x10000, team: "ABCDE12345"), noRuntime = signed("com.example.app", 0, team: "ABCDE12345"), appleApp = signed("com.apple.Safari", 0x2000, platform: 26)
+        expect(unsignedApp.kind == .unsigned && unsignedApp.notable && !unsignedApp.hardenedRuntime && unsignedApp.summary == "Unsigned", "no identifier means no signature")
+        expect(adHocApp.kind == .adHoc && adHocApp.lacksRuntime && adHocApp.summary == "Ad-hoc signed · No Hardened Runtime", "the ad-hoc flag")
+        expect(linkerSigned.kind == .adHoc, "linker-signed code is ad hoc, as swiftc and Xcode leave it on Apple silicon")
+        expect(adHocRuntime.kind == .adHoc && adHocRuntime.notable && !adHocRuntime.lacksRuntime && adHocRuntime.team == nil, "ad hoc with the Hardened Runtime is still ad hoc, and names no team")
+        expect(developer.kind == .developer && !developer.notable && developer.summary == "Signed by team ABCDE12345 · Hardened Runtime", "a developer's signature with the Hardened Runtime is unremarkable")
+        expect(noRuntime.notable && noRuntime.lacksRuntime && noRuntime.summary.hasSuffix("No Hardened Runtime"), "a developer's signature without the Hardened Runtime is worth a look")
+        expect(appleApp.kind == .apple && !appleApp.notable && appleApp.summary == "Signed by Apple", "Apple's own apps are never flagged, with or without the Hardened Runtime flag")
+        func named(_ name: String, _ signature: AppSignature) -> AppSignature { AppSignature(name: name, path: "/Applications/\(name).app", kind: signature.kind, team: signature.team, hardenedRuntime: signature.hardenedRuntime) }
+        let note = AppSignature.coverage([named("Zed", developer), named("menu-clock", adHocApp), named("Game", unsignedApp), named("Old Tool", noRuntime), named("Safari", appleApp)])
+        expect(note.hasPrefix("Read the code signatures of 5 apps") && note.contains("Ad-hoc signed, so the signature names no developer: menu-clock.") && note.contains("Unsigned: Game.")
+               && note.contains("without the Hardened Runtime: Old Tool.") && !note.contains("Zed") && !note.contains("Safari") && note.contains("not a finding"),
+               "Coverage names the apps worth a look and says it isn't a finding")
+        expect(AppSignature.coverage([named("Zed", developer)], unreadable: 2).contains("All are signed by a developer or Apple, with the Hardened Runtime. 2 couldn't be read as code."), "a clean Mac says so")
+        // Live reads with Security, on code every Mac has.
+        expect(Inventory.signature(name: "Calculator", path: "/System/Applications/Calculator.app")?.kind == .apple, "Calculator is Apple's")
+        #if arch(arm64)
+        expect(Inventory.signature(name: "rules-tests", path: Bundle.main.executablePath!)?.kind == .adHoc, "this test program is linker-signed, so ad hoc")
+        #endif
         print("Passed \(count) rule, failure-retention, notification-fingerprint and scheduling checks")
     }
 }

@@ -38,6 +38,20 @@ import Foundation
         let prefix = "/opt/homebrew/lib/node_modules"
         return Installation(product: "npm:" + name, name: name, version: version, path: prefix + "/" + name, domain: "packages", ecosystem: "npm", packageName: name, manager: "npm-global", location: prefix)
     }
+    // How the apps in /Applications are signed, for Inventory's Signatures list and Coverage. Most are signed by their developer
+    // with the Hardened Runtime; the made-up ones are the cases worth a look. Team IDs are made up too.
+    static let signatures: [AppSignature] = {
+        func developer(_ name: String, _ team: String, runtime: Bool = true) -> AppSignature {
+            AppSignature(name: name, path: "/Applications/\(name).app", kind: .developer, team: team, hardenedRuntime: runtime)
+        }
+        func other(_ name: String, _ kind: AppSignature.Kind, runtime: Bool = false) -> AppSignature { AppSignature(name: name, path: "/Applications/\(name).app", kind: kind, hardenedRuntime: runtime) }
+        return [developer("Zed", "M7Q2ZK4D9X"), developer("Raycast", "S2KD7L4QPA"), developer("Folx", "N4V8H2T6RB"), developer("Ice", "K9D3W7F2LM"), developer("Visual Studio Code", "U8F3J6P1QZ"),
+                developer("Docker", "9BNSXJN65R"), developer("iTerm", "H7V7XYVQ7D"), developer("Ghostty", "24VZTF6M5V"), developer("Scan Utility", "R5T8Y2U4IO", runtime: false),
+                developer("Serial Monitor", "P3L9K2J7HG", runtime: false), other("Menu Clock", .adHoc), other("Port Watcher", .adHoc, runtime: true), other("Pixel Quest", .unsigned),
+                other("Safari", .apple, runtime: true)]
+    }()
+    // Self-updating apps among them, inventoried for their Sparkle feeds, so the Apps list shows their signing beside the version.
+    static let feedApps = [app("Menu Clock", "1.4.0", id: "dev.example.menu-clock"), app("Serial Monitor", "3.2.1", id: "com.example.serial-monitor")]
     // Packages with nothing found, so the gauge and Inventory have a realistic share of clean items.
     static func clean(_ count: Int) -> [Installation] {
         let names = ["react", "react-dom", "typescript", "zod", "eslint", "prettier", "vitest", "tailwindcss", "postcss", "date-fns", "uuid", "chalk", "commander", "dotenv",
@@ -102,6 +116,7 @@ import Foundation
 
     static func checks(failed: Int = 0, partial: Int = 0) -> [SourceCheck] {
         var list = [SourceCheck(id: "inventory-projects", name: "Project lockfiles", status: "checked", detail: "Read 3 project folders: 6 lockfiles, 412 packages."),
+                    SourceCheck(id: "app-signatures", name: "App signatures", status: "checked", detail: AppSignature.coverage(signatures)),
                     SourceCheck(id: "osv", name: "OSV advisories", status: "checked", detail: "Package versions checked against OSV, including OpenSSF malicious-package reports.", url: "https://osv.dev"),
                     SourceCheck(id: "nvd:openssl", name: "OpenSSL (NVD)", status: "checked", detail: "Checked against NVD."),
                     SourceCheck(id: "homebrew-formula", name: "Homebrew formula metadata", status: "checked", detail: "48 installations compared with Homebrew's current releases.", url: "https://formulae.brew.sh/"),
@@ -181,10 +196,11 @@ import Foundation
         state.lastScheduledDay = Schedule.day(now)
         guard !scenario.noReport else { return state }
         let findings = scenario.findings.sorted(by: Scanner.mostUrgentFirst)
-        var installations = clean(scenario.clean) + scenario.current
+        var installations = clean(scenario.clean) + scenario.current + feedApps
         for item in findings.map(\.installation) where !installations.contains(where: { $0.path == item.path }) { installations.append(item) }
         var report = ScanReport(date: now.addingTimeInterval(-4 * 60), installations: installations, findings: findings, checks: scenario.checks)
         report.domains = ["projects": true, "packages": true, "mcp": true, "tools": true, "brew": true, "apps": true]
+        report.signatures = signatures
         // History: an earlier check three days ago found these, and today's check no longer does.
         var history: [HistoryEntry] = []
         if !scenario.history.isEmpty {

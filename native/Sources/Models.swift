@@ -118,6 +118,59 @@ struct Installation: Codable, Identifiable, Hashable {
     // The app a bundled Sparkle belongs to; its entry is named "Sparkle in <app>".
     var sparkleApp: String? { manager == "sparkle-framework" ? String(name.dropFirst("Sparkle in ".count)) : nil }
 }
+// How an app in /Applications is signed, read from its code signature without opening the app or checking its files
+// against the signature. Apps built on this Mac and some Homebrew casks are ad-hoc signed by design, so this is
+// shown in Inventory and Coverage for information and never becomes a finding.
+struct AppSignature: Codable, Hashable, Identifiable {
+    enum Kind: String, Codable { case apple, developer, adHoc = "ad-hoc", unsigned }
+    var id: String { path }
+    let name: String
+    let path: String
+    let kind: Kind
+    var team: String? = nil        // the signing certificate's team ID, for apps signed by a developer
+    var hardenedRuntime: Bool = false
+    // Worth a look: ad-hoc signed, unsigned, or signed by a developer without the Hardened Runtime. Apple's own apps never are.
+    var notable: Bool { kind == .adHoc || kind == .unsigned || lacksRuntime }
+    var lacksRuntime: Bool { (kind == .developer || kind == .adHoc) && !hardenedRuntime }
+    var label: String {
+        switch kind {
+        case .apple: return "Signed by Apple"
+        case .developer: return team.map { "Signed by team \($0)" } ?? "Signed"
+        case .adHoc: return "Ad-hoc signed"
+        case .unsigned: return "Unsigned"
+        }
+    }
+    // "Ad-hoc signed · No Hardened Runtime"; Apple's apps and unsigned ones have just their label.
+    var summary: String {
+        guard kind == .developer || kind == .adHoc else { return label }
+        return label + (hardenedRuntime ? " · Hardened Runtime" : " · No Hardened Runtime")
+    }
+    // Coverage's note: how many apps were read, and which are ad-hoc signed, unsigned or without the Hardened Runtime.
+    static func coverage(_ signatures: [AppSignature], unreadable: Int = 0) -> String {
+        func names(_ kind: (AppSignature) -> Bool) -> [String] { signatures.filter(kind).map(\.name).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+        let adHoc = names { $0.kind == .adHoc }, unsigned = names { $0.kind == .unsigned }, noRuntime = names { $0.kind == .developer && !$0.hardenedRuntime }
+        var parts = ["Read the code signatures of \(signatures.count) app\(signatures.count == 1 ? "" : "s") in /Applications and your Applications folder."]
+        if !adHoc.isEmpty { parts.append("Ad-hoc signed, so the signature names no developer: \(Alerts.list(adHoc)).") }
+        if !unsigned.isEmpty { parts.append("Unsigned: \(Alerts.list(unsigned)).") }
+        if !noRuntime.isEmpty { parts.append("Signed by a developer without the Hardened Runtime: \(Alerts.list(noRuntime)).") }
+        if adHoc.isEmpty && unsigned.isEmpty && noRuntime.isEmpty { parts.append("All are signed by a developer or Apple, with the Hardened Runtime.") }
+        if unreadable > 0 { parts.append("\(unreadable) couldn't be read as code.") }
+        parts.append("This is for your information, not a finding: apps built on this Mac and some Homebrew casks are ad-hoc signed by design. App Store apps and Google Chrome are skipped.")
+        return parts.joined(separator: " ")
+    }
+}
+extension AppSignature {
+    // From the signing information Security reads: an identifier means there is a signature at all; the code signing flags
+    // (SecCodeSignatureFlags) mark ad hoc (0x2), linker-signed, which is always ad hoc (0x20000), and the Hardened Runtime
+    // (0x10000); a platform identifier marks Apple's own software.
+    init(name: String, path: String, identifier: String?, flags: UInt32?, team: String?, platform: Int?) {
+        let bits = flags ?? 0
+        let adHoc = bits & 0x2 != 0 || bits & 0x20000 != 0
+        let kind: Kind
+        if identifier == nil { kind = .unsigned } else if adHoc { kind = .adHoc } else if (platform ?? 0) != 0 { kind = .apple } else { kind = .developer }
+        self.init(name: name, path: path, kind: kind, team: kind == .developer ? team : nil, hardenedRuntime: kind != .unsigned && bits & 0x10000 != 0)
+    }
+}
 enum FindingKind: String, Codable { case security, unsupported, update }
 // One way to install an update. A Terminal command is copied for the user to run; a link, app or file is
 // opened when the user clicks it. `text` is the command itself or the button's label.
@@ -299,6 +352,7 @@ struct ScanReport: Codable {
     var checks: [SourceCheck] = []
     var domains: [String: Bool] = [:]
     var nvdCache: [String: NVDCacheEntry]? = nil
+    var signatures: [AppSignature]? = nil  // every app read, for Inventory's Signatures list; nil in reports saved before 0.3.22
     var errors: [String] { checks.filter { $0.status == "failed" || $0.status == "partial" }.map { "\($0.name): \($0.detail)" } }
     // Findings with something to install. Those waiting for a fixed release are listed separately.
     var security: [Finding] { findings.filter { $0.kind != .update && $0.awaitingFix != true } }

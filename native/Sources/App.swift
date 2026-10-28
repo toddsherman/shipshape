@@ -415,7 +415,7 @@ struct Dashboard: View {
     @State private var query = ""
     @State private var domain = "all"
     let sections = [("Security", "exclamationmark.shield"), ("History", "clock.arrow.circlepath"), ("Inventory", "desktopcomputer"), ("Coverage", "checklist"), ("Settings", "gearshape")]
-    let domains = [("all", "All"), ("projects", "Projects"), ("packages", "Packages"), ("mcp", "MCP"), ("tools", "Runtimes"), ("brew", "Homebrew"), ("apps", "Apps")]
+    let domains = [("all", "All"), ("projects", "Projects"), ("packages", "Packages"), ("mcp", "MCP"), ("tools", "Runtimes"), ("brew", "Homebrew"), ("apps", "Apps"), ("signatures", "Signatures")]
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
@@ -525,16 +525,26 @@ struct Dashboard: View {
         case "History": HistoryView()
         case "Inventory":
             let items = (monitor.report?.installations ?? []).filter { (domain == "all" || $0.domain == domain) && (query.isEmpty || ($0.name + $0.path + $0.note).localizedCaseInsensitiveContains(query)) }
+            // An app that is ad-hoc signed, unsigned or without the Hardened Runtime says so beside its version.
+            let notable = Dictionary((monitor.report?.signatures ?? []).filter(\.notable).map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
             VStack(spacing: 10) {
                 Picker("Show", selection: $domain) { ForEach(domains, id: \.0) { Text($0.1).tag($0.0) } }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 28)
-                TextField("Search software, package, project or path", text: $query).textFieldStyle(.roundedBorder).padding(.horizontal, 28)
-                Text("\(items.count) items").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 28)
-                List(items) { item in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack { Text(item.name).fontWeight(.medium); Spacer(); Text(item.version).monospaced() }
-                        Text(item.note.isEmpty ? item.path : item.note).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2)
-                    }.padding(.vertical, 4)
-                }.listStyle(.inset)
+                TextField(domain == "signatures" ? "Search apps, team IDs or paths" : "Search software, package, project or path", text: $query).textFieldStyle(.roundedBorder).padding(.horizontal, 28)
+                if domain == "signatures" { SignatureList(signatures: monitor.report?.signatures, query: query) }
+                else {
+                    Text("\(items.count) items").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 28)
+                    List(items) { item in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(item.name).fontWeight(.medium)
+                                Spacer()
+                                if item.manager == "app", let signature = notable[item.path] { Text(signature.summary).font(.caption).foregroundStyle(.orange) }
+                                Text(item.version).monospaced()
+                            }
+                            Text(item.note.isEmpty ? item.path : item.note).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2)
+                        }.padding(.vertical, 4)
+                    }.listStyle(.inset)
+                }
             }
         case "Coverage":
             ScrollView {
@@ -544,6 +554,7 @@ struct Dashboard: View {
                             HStack { Text(check.name).fontWeight(.semibold); Spacer(); Text(check.status.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(check.status == "failed" || check.status == "partial" ? Color.orange : .secondary) }
                             Text(check.detail).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                             if let url = check.url, let link = URL(string: url) { Link("Open website", destination: link).font(.caption).linkCursor() }
+                            if check.id == "app-signatures" { Button("Show every app's signature") { query = ""; domain = "signatures"; monitor.section = "Inventory" }.buttonStyle(.link).font(.caption) }
                         }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
                     }
                     let nvd = (monitor.report?.checks ?? []).filter { $0.status == "checked" && $0.id.hasPrefix("nvd:") }
@@ -606,6 +617,44 @@ struct Dashboard: View {
                     Button("Send feedback…") { monitor.feedbackOpen = true }
                 }
             }.padding(.horizontal, 28).padding(.bottom, 24)
+        }
+    }
+}
+// Inventory's Signatures list: how each app in /Applications and your Applications folder is signed, with the apps worth
+// a look first. It's informational; none of it counts as needing attention.
+struct SignatureList: View {
+    let signatures: [AppSignature]?
+    let query: String
+    @State private var filter = "all"
+    func shown(_ all: [AppSignature]) -> [AppSignature] {
+        let kept = all.filter { signature in
+            let kind = filter == "all" || (filter == "ad-hoc" ? signature.kind == .adHoc || signature.kind == .unsigned : signature.lacksRuntime)
+            return kind && (query.isEmpty || [signature.name, signature.path, signature.summary].joined(separator: " ").localizedCaseInsensitiveContains(query))
+        }
+        return kept.sorted { ($0.notable ? 0 : 1, $0.name.lowercased()) < ($1.notable ? 0 : 1, $1.name.lowercased()) }
+    }
+    var body: some View {
+        let all = signatures ?? []
+        let adHoc = all.filter { $0.kind == .adHoc || $0.kind == .unsigned }.count, noRuntime = all.filter(\.lacksRuntime).count
+        let rows = shown(all)
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Show", selection: $filter) {
+                Text("All apps · \(all.count)").tag("all")
+                Text("Ad-hoc or unsigned · \(adHoc)").tag("ad-hoc")
+                Text("No Hardened Runtime · \(noRuntime)").tag("runtime")
+            }.pickerStyle(.segmented).labelsHidden().fixedSize()
+            Text("For your information: an ad-hoc signature names no developer, and the Hardened Runtime protects an app from code injection. Apps built on this Mac and some Homebrew casks are ad-hoc signed by design, so nothing here counts as needing attention. App Store apps and Google Chrome are skipped.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.padding(.horizontal, 28)
+        if signatures == nil {
+            Label("App signatures appear here after the next check.", systemImage: "tray").foregroundStyle(.secondary).padding(.vertical, 30).frame(maxHeight: .infinity, alignment: .top)
+        } else {
+            List(rows) { signature in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack { Text(signature.name).fontWeight(.medium); Spacer(); Text(signature.summary).font(.callout).foregroundStyle(signature.notable ? Color.orange : .secondary) }
+                    Text(Inventory.display(signature.path)).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                }.padding(.vertical, 4)
+            }.listStyle(.inset)
         }
     }
 }

@@ -2,6 +2,10 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## Unreleased
+
+- **Inventory shows how each app is signed.** A new **Signatures** list reads the code signature of every app in Applications and your own Applications folder, and says whether it's signed by a developer (with the team ID), signed by Apple, ad-hoc signed or unsigned, and whether it has the Hardened Runtime. Apps that are ad-hoc signed, unsigned or without the Hardened Runtime come first and have their own filters, the **Apps** list notes them beside the version, and **Coverage** names them. This is for your information, not a finding: apps built on your Mac and some Homebrew casks are ad-hoc signed by design. Signatures are read with macOS's Security framework, in milliseconds per app, without opening the apps or sending anything anywhere; App Store apps and Google Chrome are skipped, as everywhere else. Requested in [#1](https://github.com/toddsherman/shipshape/issues/1).
+
 ## 0.3.21 — October 27, 2026
 
 - **Quit in the Dock keeps Shipshape in the menu bar.** It closes the dashboard and removes the Dock icon, and checks carry on; opening the dashboard from the menu bar brings the icon back. The same goes for quitting from the Command-Tab switcher. Quit in the menu bar panel, Command-Q, logging out and restarting still quit.

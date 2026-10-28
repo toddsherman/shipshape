@@ -16,6 +16,7 @@ Shipshape is a free, open-source Mac app, in the menu bar and the Dock, for peop
 - **MCP servers** configured for Claude Code, Claude, Codex, Cursor, Windsurf, VS Code and Gemini CLI.
 - **AI coding tools and runtimes:** Claude Code, Codex CLI, Gemini CLI, Copilot CLI, OpenCode, Node, Bun, Deno, Python, Go and more, however they were installed.
 - **Homebrew** formulae and casks, including old copies left on disk, and common developer apps.
+- **App signatures**, for your information: Inventory lists which apps are ad-hoc signed, unsigned or without the Hardened Runtime, and Coverage names them. They aren't findings, since apps built on your Mac and some Homebrew casks are ad-hoc signed by design.
 
 Advisories come from [OSV](https://osv.dev) (including OpenSSF malicious-package reports), [NVD](https://nvd.nist.gov), vendor security pages and GitHub security advisories, with [CISA's Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) raising priority. Google Chrome and Mac App Store apps are left out, since they update themselves. The full coverage table and its limits are in [native/README.md](native/README.md).
 
