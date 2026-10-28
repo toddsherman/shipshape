@@ -276,7 +276,6 @@ struct MenuPanel: View {
             HStack {
                 Button(monitor.scanning ? "Checking…" : "Check now") { monitor.check() }.disabled(monitor.scanning)
                 Spacer()
-                Button("Send feedback…") { monitor.feedbackOpen = true; open() }.buttonStyle(.link)
                 Button("Quit") { NSApp.terminate(nil) }
             }
             Text("At launch, daily at 9 a.m. Pacific and when you click Check now").font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -516,7 +515,7 @@ struct Dashboard: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Feedback").font(.headline)
-                    Text("Ideas, problems and software \(appName) should check go to its GitHub repository as issues, which are public. You review each one on GitHub and submit it with your own account. For a finding that's wrong, use Report a problem on its card.").foregroundStyle(.secondary)
+                    Text("Ideas, problems and software \(appName) should check go to its GitHub repository as issues, which are public. You review each one on GitHub and submit it with your own account. For a finding that's wrong, use the bug button (Report a problem) on its card.").foregroundStyle(.secondary)
                     Button("Send feedback…") { monitor.feedbackOpen = true }
                 }
             }.padding(.horizontal, 28).padding(.bottom, 24)
@@ -759,6 +758,7 @@ struct FindingEvidence: View {
     @EnvironmentObject var monitor: Monitor
     let finding: Finding
     @State private var reporting = false
+    @State private var copied = false
     // The lockfile or MCP settings file for project and MCP findings; the install path otherwise.
     var location: String { Inventory.display(finding.installation.sourceFile) }
     // An advisory's own page: the finding's link for it, NVD for CVEs, OSV otherwise.
@@ -780,20 +780,45 @@ struct FindingEvidence: View {
             }
         }.font(.caption)
     }
+    // The location as a path to copy: the full path when it is one, since "~" means nothing outside a shell.
+    var locationPath: String { finding.installation.sourceFile.hasPrefix("/") ? finding.installation.sourceFile : location }
+    // The location on disk, for Show in Finder, when it is a path that still exists.
+    var locationURL: URL? {
+        let path = finding.installation.sourceFile
+        return path.hasPrefix("/") && FileManager.default.fileExists(atPath: path) ? URL(fileURLWithPath: path) : nil
+    }
     var body: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Location: " + location).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                HStack(spacing: 6) {
+                    Text("Location: " + location).foregroundStyle(.secondary).textSelection(.enabled)
+                    Button { monitor.copy(locationPath); flash() } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }
+                        .help(copied ? "Copied" : "Copy \(locationPath)").accessibilityLabel("Copy location")
+                    if let url = locationURL {
+                        Button { showInFinder(url) } label: { Image(systemName: "folder") }.help("Show in Finder").accessibilityLabel("Show in Finder")
+                    }
+                }.font(.caption).buttonStyle(.borderless)
                 if !finding.advisories.isEmpty { advisories }
             }
             Spacer()
-            HStack(spacing: 16) {
-                Button("Report a problem") { reporting = true }.buttonStyle(.link).font(.caption)
-                    .help("Opens a GitHub issue about this finding, filled in for you to check and submit.")
+            HStack(spacing: 14) {
+                Button { reporting = true } label: { Image(systemName: "ladybug") }.buttonStyle(.borderless).font(.callout).foregroundStyle(Color.accentColor)
+                    .help("Report a problem: opens a GitHub issue about this finding, filled in for you to check and submit.").accessibilityLabel("Report a problem")
                 if let source = finding.links.first, let url = URL(string: source), url.scheme == "https" { Link("Open website", destination: url).font(.callout).linkCursor() }
             }
         }.sheet(isPresented: $reporting) { ReportSheet(finding: finding).environmentObject(monitor) }
     }
+    func flash() { copied = true; DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false } }
+}
+// Shows a location in a Finder window. A folder opens in its own window; a file, or a bundle such as an app, is
+// selected in a window of its folder, so nothing is opened or launched. Finder won't open a window at a folder
+// inside an app (Folx.app/Contents/Frameworks/Sparkle.framework), so such a folder is selected in its parent.
+func showInFinder(_ url: URL) {
+    let path = url.path, parent = url.deletingLastPathComponent().path
+    var folder: ObjCBool = false
+    if FileManager.default.fileExists(atPath: path, isDirectory: &folder), folder.boolValue, !NSWorkspace.shared.isFilePackage(atPath: path),
+       NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path) { return }
+    NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: parent)
 }
 // Report a problem with one finding: the issue's text, editable, before it opens on GitHub.
 struct ReportSheet: View {
@@ -830,7 +855,7 @@ struct FeedbackSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Send feedback").font(.title3.weight(.semibold))
-            Text("This opens a new issue on GitHub with your text filled in, for you to check and submit with your GitHub account. Issues are public. For a finding that's wrong, use Report a problem on its card instead.")
+            Text("This opens a new issue on GitHub with your text filled in, for you to check and submit with your GitHub account. Issues are public. For a finding that's wrong, use the bug button (Report a problem) on its card instead.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Picker("About", selection: $kind) { ForEach(Feedback.Kind.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
             FeedbackField(label: "Title", text: $title)

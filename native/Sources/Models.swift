@@ -220,7 +220,7 @@ enum FindingCategory: Int, CaseIterable, Identifiable, Comparable {
     }
     var symbol: String {
         switch self {
-        case .malicious: return "ladybug"
+        case .malicious: return "microbe"
         case .exploited: return "flame"
         case .security: return "exclamationmark.shield"
         case .unsupported: return "calendar.badge.exclamationmark"

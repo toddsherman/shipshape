@@ -1,5 +1,5 @@
 name: Wrong or missing finding
-description: Shipshape reported something incorrectly, or missed a known fix. The Report a problem link on a finding fills this in for you.
+description: Shipshape reported something incorrectly, or missed a known fix. The bug button (Report a problem) on a finding fills this in for you.
 labels: [accuracy]
 body:
   - type: markdown

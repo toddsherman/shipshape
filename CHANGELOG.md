@@ -2,6 +2,12 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.15 — October 27, 2026
+
+- **Report a problem is a bug button** on each finding, beside Open website. It opens the same filled-in GitHub issue.
+- **Each finding's location has Copy and Show in Finder buttons.** Copy puts the full path on the clipboard. Show in Finder opens a folder in its own window, or selects a file or app in its folder without opening it.
+- **The menu bar panel no longer has Send feedback;** it's in Settings. Malicious packages now use a microbe icon, so the bug only means Report a problem.
+
 ## 0.3.14 — October 27, 2026
 
 - **Shipshape updates itself.** When a new version is out, it shows the release notes; **Install Update** downloads it, checks that it's signed by Shipshape's developer, then quits, replaces and reopens the app, with no dragging into Applications. It checks once a day (turn that off in Settings) and whenever you choose **Check for Updates…** in the app menu or Settings. Updates use [Sparkle](https://sparkle-project.org) with signed disk images and a signed feed attached to each GitHub release. This version still needs one manual download; later ones arrive this way.
