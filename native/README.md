@@ -1,4 +1,4 @@
-# Shipshape for macOS — 0.3.19 preview
+# Shipshape for macOS — 0.3.20 preview
 
 A native SwiftUI app for macOS 13 or later, in the menu bar and the Dock, built for Apple silicon and Intel. It watches the developer stack people install to build apps with AI coding tools such as Claude Code and Codex, and shows the easiest way to install each fix. No Python, Node, Homebrew, account or API key is needed to run it.
 
@@ -99,7 +99,7 @@ bash native/notarize.sh security-monitor-notary
 bash native/appcast.sh
 ```
 
-To try a development build without touching the installed app's saved results, launch it with `SHIPSHAPE_STATE_DIR` set to another folder, for example `open -n --env SHIPSHAPE_STATE_DIR=/tmp/shipshape-state dist/Shipshape.app`. Without it, a development build uses and changes the installed app's data. The name and version come from `native/Resources/Info.plist`; the build, packaging and notarization scripts read them from there, and `appName` in `Feeds.swift` is the name shown in the app. The notary keychain profile keeps its original name. Without `SIGN_IDENTITY`, the build uses an ad-hoc signature for local development only. Tests cover version ordering, vendor range rules, each lockfile format, MCP command parsing, OSV alias handling and fix selection, NVD range and platform evaluation, command quoting and routing, failed-check retention, notification fingerprints and Pacific-time scheduling.
+`bash native/scenario.sh NAME` opens a copy of the app on made-up findings (`native/Tests/Scenarios.swift`: first-run, all-clear, waiting-only, typical, malware, exploited, everything, crowded and check-issues), with `SHIPSHAPE_STATE_DIR` set to a fresh copy of the scenario and `SHIPSHAPE_NO_CHECKS=1`, which turns off the launch, daily and Check now checks when a state folder is set. To try a development build without touching the installed app's saved results, launch it with `SHIPSHAPE_STATE_DIR` set to another folder, for example `open -n --env SHIPSHAPE_STATE_DIR=/tmp/shipshape-state dist/Shipshape.app`. Without it, a development build uses and changes the installed app's data. The name and version come from `native/Resources/Info.plist`; the build, packaging and notarization scripts read them from there, and `appName` in `Feeds.swift` is the name shown in the app. The notary keychain profile keeps its original name. Without `SIGN_IDENTITY`, the build uses an ad-hoc signature for local development only. Tests cover version ordering, vendor range rules, each lockfile format, MCP command parsing, OSV alias handling and fix selection, NVD range and platform evaluation, command quoting and routing, failed-check retention, notification fingerprints and Pacific-time scheduling.
 
 For a command-line scan with the same engine (pass an output file and any project folders):
 

@@ -417,17 +417,20 @@ enum Scanner {
         if let homebrew = report.findings.first(where: { $0.blocked != nil && Ownership.homebrewManagers.contains($0.installation.manager ?? "") })?.blocked {
             record("ownership", "Homebrew ownership", homebrew + " Its findings are listed without commands.", status: "manual")
         }
-        report.findings.sort { a, b in
-            if (a.malicious == true) != (b.malicious == true) { return a.malicious == true }
-            if a.exploited != b.exploited { return a.exploited }
-            if (a.kind == .update) != (b.kind == .update) { return a.kind != .update }
-            if (a.installation.domain == "projects") != (b.installation.domain == "projects") { return b.installation.domain == "projects" }
-            let x = severityRank[a.severity ?? ""] ?? 0, y = severityRank[b.severity ?? ""] ?? 0
-            if x != y { return x > y }
-            return a.installation.name.localizedCaseInsensitiveCompare(b.installation.name) == .orderedAscending
-        }
+        report.findings.sort(by: mostUrgentFirst)
         report.date = Date()
         return report
+    }
+    // The order findings are listed in: malware, known exploitation, then fixes before updates, installed software
+    // before project dependencies, higher severity first, then by name.
+    static func mostUrgentFirst(_ a: Finding, _ b: Finding) -> Bool {
+        if (a.malicious == true) != (b.malicious == true) { return a.malicious == true }
+        if a.exploited != b.exploited { return a.exploited }
+        if (a.kind == .update) != (b.kind == .update) { return a.kind != .update }
+        if (a.installation.domain == "projects") != (b.installation.domain == "projects") { return b.installation.domain == "projects" }
+        let x = severityRank[a.severity ?? ""] ?? 0, y = severityRank[b.severity ?? ""] ?? 0
+        if x != y { return x > y }
+        return a.installation.name.localizedCaseInsensitiveCompare(b.installation.name) == .orderedAscending
     }
 
     // A final check on every update: never offer a "newer" release that is the installed one written differently,

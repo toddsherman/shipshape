@@ -21,3 +21,5 @@ jobs:
         run: xcrun swiftc -swift-version 5 -parse-as-library -typecheck -F "$(bash native/sparkle.sh)" native/Sources/*.swift
       - name: Type-check the appcast tool
         run: xcrun swiftc -swift-version 5 -parse-as-library -typecheck native/Release/*.swift
+      - name: Type-check the scenario generator
+        run: xcrun swiftc -swift-version 5 -parse-as-library -typecheck native/Sources/{Models,Catalog,Lockfiles,Inventory,Advisories,Commands,Feeds}.swift native/Tests/Scenarios.swift

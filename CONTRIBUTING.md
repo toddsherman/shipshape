@@ -17,6 +17,15 @@ bash native/test.sh                  # rule, parser, command and history tests
 bash native/build.sh                 # ad-hoc signed dist/Shipshape.app, for local use only
 ```
 
+To see how the interface looks in different situations without touching your Mac's results, open a scenario of made-up findings:
+
+```sh
+bash native/scenario.sh              # lists them: first-run, all-clear, waiting-only, typical, malware, exploited, everything, crowded, check-issues
+bash native/scenario.sh malware      # opens one; run it again with another name to switch
+```
+
+It builds a copy called Shipshape Dev, with its own settings and data, and opens it with checks turned off, so it never scans your Mac or replaces the made-up findings. The scenarios are defined in `native/Tests/Scenarios.swift`.
+
 Run your build with its own data folder, so it doesn't share saved results with an installed copy:
 
 ```sh

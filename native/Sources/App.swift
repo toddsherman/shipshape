@@ -31,6 +31,12 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     var projectFolders: [String] { state.projectFolders ?? [] }
     var history: [HistoryEntry] { state.history ?? [] }
     var stale: Bool { report.map { Date().timeIntervalSince($0.date) > 36 * 3600 } ?? true }
+    // A scenario preview (native/scenario.sh) shows a made-up saved state as it is: with SHIPSHAPE_NO_CHECKS=1 beside
+    // SHIPSHAPE_STATE_DIR, no check runs at launch, on schedule or from Check now, so its findings aren't replaced.
+    static let checksOff: Bool = {
+        let env = ProcessInfo.processInfo.environment
+        return env["SHIPSHAPE_STATE_DIR"] != nil && env["SHIPSHAPE_NO_CHECKS"] == "1"
+    }()
     var statusTitle: String {
         if scanning { return "Checking this Mac" }
         if report == nil { return "Ready for your first check" }
@@ -104,6 +110,7 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     // Every launch, including at login, starts a fresh check once the network is up. After 30 seconds it
     // checks anyway; sources that can't be reached are reported as usual and earlier findings are kept.
     private func checkAtLaunch() {
+        guard !Monitor.checksOff else { return }
         let path = NWPathMonitor()
         path.pathUpdateHandler = { [weak self] update in
             guard update.status == .satisfied else { return }
@@ -150,9 +157,10 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         } catch { message = "The latest result could not be saved: \(error.localizedDescription)" }
     }
     func checkSchedule() {
-        if state.report != nil && Schedule.isDue(now: Date(), lastDay: state.lastScheduledDay) { check() }
+        if !Monitor.checksOff, state.report != nil && Schedule.isDue(now: Date(), lastDay: state.lastScheduledDay) { check() }
     }
     func check() {
+        guard !Monitor.checksOff else { message = "Checks are off in this scenario preview, so its made-up findings stay as they are."; return }
         guard !scanning else { return }
         message = nil
         state.lastAttempt = Date()
