@@ -200,7 +200,63 @@ struct Finding: Codable, Identifiable {
     var expectedFix: String? = nil    // fix version named only in an advisory's description
     var awaitingFix: Bool? = nil      // newest release installed and no fixed release yet: nothing to install
     var blocked: String? = nil        // why this account can't make the change; its commands are left out (see Ownership)
+    // When each advisory was first published, by ID, and the IDs that name an issue already listed (a CVE beside its
+    // GHSA), with the ID that has the date. CISA's date is when it listed a matching CVE as exploited. They're shown
+    // only, never part of the fingerprint, so a changed date never alerts again.
+    var published: [String: Date]? = nil
+    var sameIssue: [String: String]? = nil
+    var exploitedSince: Date? = nil
     var fingerprint: String { [id, installation.version, kind.rawValue, fixed, advisories.sorted().joined(separator: ","), String(exploited)].joined(separator: "|") }
+}
+// Dates from advisory sources: timestamps with or without a time zone (NVD leaves it out and means UTC) and with or
+// without fractional seconds, and plain dates (CISA's), read as noon UTC so they show the same day in every time zone.
+func advisoryDate(_ text: String?) -> Date? {
+    guard let text, let match = captures("^([0-9]{4}-[0-9]{2}-[0-9]{2})(?:T([0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?)?$", text).first else { return nil }
+    let time = match[2].isEmpty ? "12:00:00" : match[2]
+    let zone = match[3].isEmpty ? "Z" : match[3].count == 5 ? String(match[3].prefix(3)) + ":" + String(match[3].suffix(2)) : match[3]
+    return ISO8601DateFormatter().date(from: match[1] + "T" + time + zone)
+}
+extension Finding {
+    // An advisory's own page: the finding's link for it, NVD for CVEs, OSV otherwise.
+    func page(_ id: String) -> URL? {
+        guard id.range(of: "^[A-Za-z0-9._:-]+$", options: .regularExpression) != nil else { return nil }
+        return URL(string: links.first { $0.hasPrefix("https://") && $0.hasSuffix("/" + id) }
+                   ?? (id.hasPrefix("CVE-") ? "https://nvd.nist.gov/vuln/detail/" + id : "https://osv.dev/vulnerability/" + id))
+    }
+    // The source's own page, when it isn't one of the advisory links already on the card: Homebrew's page for an
+    // update, the release schedule for end of support, a vendor's security page.
+    var sourcePage: URL? {
+        guard let first = links.first, first.hasPrefix("https://"), let url = URL(string: first), url.host != nil else { return nil }
+        return advisories.contains { page($0)?.absoluteString == first } ? nil : url
+    }
+    var sourceSite: String { (sourcePage?.host ?? "").replacingOccurrences(of: "^www\\.", with: "", options: .regularExpression) }
+    // What hovering an advisory ID shows. A CVE beside its GHSA gets the GHSA's date, said to be the GHSA's: the CVE itself
+    // may have come out earlier.
+    func publishedNote(for id: String) -> String? {
+        let primary = sameIssue?[id] ?? id
+        guard let date = published?[primary] else { return nil }
+        let day = date.formatted(date: .abbreviated, time: .omitted)
+        if primary != id { return "Same issue as \(primary), published \(day)" }
+        return (id.hasPrefix("MAL-") ? "Reported " : "Published ") + day
+    }
+    // The reason, followed by when its advisory came out (the newest, when there are several) and when CISA listed it
+    // as exploited. Within 30 days it also says how long ago.
+    func reasonWithDates(now: Date = Date()) -> String {
+        func when(_ date: Date) -> String {
+            let day = date.formatted(date: .abbreviated, time: .omitted)
+            return now.timeIntervalSince(date) < 30 * 86_400 ? day + ", " + RelativeDateTimeFormatter().localizedString(for: date, relativeTo: now) : day
+        }
+        var notes: [String] = []
+        let dates = (published ?? [:]).values
+        if let newest = dates.max() {
+            let verb = malicious == true ? "Reported" : "Published"
+            notes.append(dates.count == 1 ? "\(verb) \(when(newest))." : "The newest was \(verb.lowercased()) \(when(newest)).")
+        }
+        if exploited, let since = exploitedSince { notes.append("CISA listed it as exploited on \(since.formatted(date: .abbreviated, time: .omitted)).") }
+        guard !notes.isEmpty else { return reason }
+        guard let last = reason.last else { return notes.joined(separator: " ") }
+        return reason + (".…!?".contains(last) ? " " : ". ") + notes.joined(separator: " ")
+    }
 }
 // Findings whose recommended Terminal command is the same, or built from the same template (brew upgrade a,
 // brew upgrade b), are shown as one card with one combined command. Groups keep the list's order, so a group
@@ -332,6 +388,7 @@ struct NVDHit: Codable, Hashable {
     let fixed: String?
     let severity: String?
     var expected: String? = nil  // "before X" from the description when no fixed version is listed
+    var published: Date? = nil   // when NVD published the CVE, which can be later than the vendor's advisory
 }
 struct NVDCacheEntry: Codable {
     let date: Date

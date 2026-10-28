@@ -92,7 +92,7 @@ enum Rules {
     // above an advisory's patched release never matches, even when the published range is open-ended.
     static func github(_ item: Installation, advisories: [[String: Any]], packages: Set<String>, source: String, action: String) throws -> Finding? {
         guard let version = Version(item.version) else { throw MonitorError(message: "Unrecognized \(item.name) version") }
-        var ids: [String] = [], links: [String] = [], titles: [String] = [], fixed = "0"
+        var ids: [String] = [], links: [String] = [], titles: [String] = [], fixed = "0", dates: [(id: String, aliases: [String], published: Date?)] = []
         for advisory in advisories {
             if advisory["withdrawn_at"] is String { continue }
             guard let vulnerabilities = advisory["vulnerabilities"] as? [[String: Any]] else { throw MonitorError(message: "\(item.name) advisory schema changed") }
@@ -109,12 +109,15 @@ enum Rules {
                       let id = advisory["ghsa_id"] as? String, let link = advisory["html_url"] as? String else { throw MonitorError(message: "A matching \(item.name) advisory has no unambiguous fixed version") }
                 fixed = higher(fixed, patchedText)
                 ids.append(advisory["cve_id"] as? String ?? id)
+                dates.append((advisory["cve_id"] as? String ?? id, [], advisoryDate(advisory["published_at"] as? String)))
                 links.append(link)
                 titles.append(advisory["summary"] as? String ?? id)
             }
         }
         guard !ids.isEmpty else { return nil }
-        return Finding(source: source, installation: item, kind: .security, fixed: fixed, reason: titles.joined(separator: "; "), action: action, links: Array(Set(links)).sorted(), advisories: Array(Set(ids)).sorted())
+        var finding = Finding(source: source, installation: item, kind: .security, fixed: fixed, reason: titles.joined(separator: "; "), action: action, links: Array(Set(links)).sorted(), advisories: Array(Set(ids)).sorted())
+        OSV.dates(&finding, dates)
+        return finding
     }
     static func postgres(_ item: Installation, html: String) throws -> Finding? {
         guard let installed = Version(item.version), installed.major >= 10 else { throw MonitorError(message: "PostgreSQL branch needs manual review") }
@@ -402,14 +405,27 @@ enum Scanner {
             if report.findings.contains(where: { $0.advisories.contains { $0.hasPrefix("CVE-") } }) {
                 guard let obj = try await Fetch.json("https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json") as? [String: Any],
                       let rows = obj["vulnerabilities"] as? [[String: Any]], !rows.isEmpty else { throw MonitorError(message: "CISA catalog could not be parsed") }
-                let known = Set(rows.compactMap { $0["cveID"] as? String })
-                for i in report.findings.indices { report.findings[i].exploited = !known.isDisjoint(with: report.findings[i].advisories) }
+                var listed: [String: Date] = [:]
+                // A listing without a readable date still counts as exploited; it just shows no date.
+                for row in rows {
+                    guard let id = row["cveID"] as? String else { continue }
+                    let added = advisoryDate(row["dateAdded"] as? String) ?? .distantPast
+                    listed[id] = min(listed[id] ?? added, added)
+                }
+                for i in report.findings.indices {
+                    let dates = report.findings[i].advisories.compactMap { listed[$0] }
+                    report.findings[i].exploited = !dates.isEmpty
+                    report.findings[i].exploitedSince = dates.filter { $0 != .distantPast }.min()
+                }
             }
             record("kev", "Known exploitation", "CISA CVE identifiers are matched only after version matching. This is prioritization, not proof of exploitation on this Mac.", url: "https://www.cisa.gov/known-exploited-vulnerabilities-catalog")
         } catch {
             failure("kev", "Known exploitation", error)
             for index in report.findings.indices {
-                if previous?.findings.contains(where: { $0.id == report.findings[index].id && $0.exploited }) == true { report.findings[index].exploited = true }
+                if let earlier = previous?.findings.first(where: { $0.id == report.findings[index].id && $0.exploited }) {
+                    report.findings[index].exploited = true
+                    report.findings[index].exploitedSince = earlier.exploitedSince
+                }
             }
         }
         record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven packages in projects, global installs (including cargo install, go install and Ruby gems), Python environments, the npx cache and pinned MCP servers, plus GitHub Actions in project workflows. Editor extensions: Microsoft's list of extensions removed as malware, impersonation or untrustworthy. Self-updating apps: their own Sparkle update feeds, and the Sparkle version bundled inside them, against Sparkle's advisories. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries. Excluded by design: Google Chrome and Mac App Store apps. Not covered: vulnerabilities in editor extensions, CocoaPods, containers and images, unpinned MCP servers that npx hasn't cached, GitHub Actions pinned to branches or bare commits, software outside the catalog and arbitrary install paths.", status: "manual")

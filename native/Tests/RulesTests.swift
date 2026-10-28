@@ -1089,6 +1089,54 @@ import Foundation
         #if arch(arm64)
         expect(Inventory.signature(name: "rules-tests", path: Bundle.main.executablePath!)?.kind == .adHoc, "this test program is linker-signed, so ad hoc")
         #endif
+
+        // Advisory dates: parsed from each source's format, shown once per issue, and never part of the fingerprint.
+        let iso = ISO8601DateFormatter()
+        expect(advisoryDate("2025-10-09T18:22:03Z") == iso.date(from: "2025-10-09T18:22:03Z") && advisoryDate("2025-10-09T18:22:03.123Z") == iso.date(from: "2025-10-09T18:22:03Z")
+               && advisoryDate("2021-02-15T13:15:12.560") == iso.date(from: "2021-02-15T13:15:12Z") && advisoryDate("2025-10-09T20:22:03+0200") == iso.date(from: "2025-10-09T18:22:03Z"),
+               "OSV, GitHub, NVD (no time zone means UTC) and offset timestamps")
+        expect(advisoryDate("2025-03-18") == iso.date(from: "2025-03-18T12:00:00Z") && advisoryDate("March 18") == nil && advisoryDate(nil) == nil, "CISA's plain dates are noon UTC; anything else is no date")
+        let datedVulns = ["GHSA-a": OSV.Vuln(id: "GHSA-a", summary: "Cert issue", aliases: ["PYSEC-1", "CVE-2026-1"], severity: "HIGH", fixed: ["PyPI|pip": ["26.2.2"]], published: advisoryDate("2025-01-10T00:00:00Z")),
+                          "GHSA-b": OSV.Vuln(id: "GHSA-b", summary: "Other", aliases: [], severity: "MODERATE", fixed: ["PyPI|pip": ["26.3.0"]], published: advisoryDate("2026-10-20T08:00:00Z"))]
+        let osvDated = OSV.findings(for: [pip], matches: [osvKey: ["GHSA-a", "GHSA-b"]], vulns: datedVulns).first!
+        let jan10 = advisoryDate("2025-01-10T00:00:00Z")!.formatted(date: .abbreviated, time: .omitted), oct20 = advisoryDate("2026-10-20T08:00:00Z")!.formatted(date: .abbreviated, time: .omitted)
+        expect(osvDated.published?.count == 2 && osvDated.sameIssue == ["CVE-2026-1": "GHSA-a"], "each issue has one date; its CVE points at it")
+        expect(osvDated.publishedNote(for: "GHSA-a") == "Published " + jan10 && osvDated.publishedNote(for: "CVE-2026-1") == "Same issue as GHSA-a, published " + jan10
+               && osvDated.publishedNote(for: "GHSA-zzz") == nil, "hovering an ID shows its date, or its issue's")
+        let today = advisoryDate("2026-10-27T08:00:00Z")!
+        let weekAgo = RelativeDateTimeFormatter().localizedString(for: advisoryDate("2026-10-20T08:00:00Z")!, relativeTo: today)
+        let newestNote = " The newest was published \(oct20), \(weekAgo)."
+        expect(osvDated.reasonWithDates(now: today) == osvDated.reason + newestNote, "the card's sentence names the newest date, with how long ago within 30 days")
+        expect(osvDated.reasonWithDates(now: advisoryDate("2027-06-01")!).hasSuffix("The newest was published " + oct20 + "."), "older than 30 days: the date alone")
+        var single = osvDated; single.published = ["GHSA-a": advisoryDate("2025-01-10T00:00:00Z")!]; single.reason = "1 published advisory: Cert issue"
+        expect(single.reasonWithDates(now: today) == "1 published advisory: Cert issue. Published " + jan10 + ".", "one advisory: its date, after a period the reason lacked")
+        var reported = malicious; reported.published = ["MAL-2026-1": advisoryDate("2026-01-05")!]
+        expect(reported.reasonWithDates(now: today).hasSuffix("Reported " + advisoryDate("2026-01-05")!.formatted(date: .abbreviated, time: .omitted) + ".")
+               && reported.publishedNote(for: "MAL-2026-1")?.hasPrefix("Reported ") == true, "a malicious-package report says Reported")
+        var listedExploited = single; listedExploited.exploited = true; listedExploited.exploitedSince = advisoryDate("2025-03-18")
+        expect(listedExploited.reasonWithDates(now: today).hasSuffix(" CISA listed it as exploited on " + advisoryDate("2025-03-18")!.formatted(date: .abbreviated, time: .omitted) + "."), "known exploitation gives CISA's date")
+        expect(osvFinding.reasonWithDates() == osvFinding.reason && osvDated.fingerprint == { var f = osvDated; f.published = nil; f.sameIssue = nil; f.exploitedSince = Date(); return f }().fingerprint,
+               "no dates leaves the reason as it was; dates never change the fingerprint")
+        let oldJSON = try JSONEncoder().encode(osvFinding)
+        try expect(JSONDecoder().decode(Finding.self, from: oldJSON).published == nil, "findings saved without dates still load")
+        var datedCVE = cve(#"{"vulnerable":true,"criteria":"cpe:2.3:a:haxx:curl:*:*:*:*:*:*:*:*","versionEndExcluding":"8.6.0"}"#); datedCVE["published"] = "2026-02-01T10:15:00.000"
+        let nvdDated = NVD.finding(Installation(product: "curl", name: "curl", version: "8.5.0", path: "/opt/homebrew/Cellar/curl/8.5.0", domain: "brew", package: "curl", manager: "brew"),
+                                   product: Catalog.byID["curl"]!, hits: [NVD.evaluate(datedCVE, cpe: "haxx:curl", version: v)!])!
+        expect(nvdDated.published == ["CVE-2026-9": advisoryDate("2026-02-01T10:15:00Z")!], "NVD's published date")
+        let datedAdvisories = opencodeAdvisories.map { advisory -> [String: Any] in var a = advisory; a["published_at"] = "2026-05-02T16:00:00Z"; return a }
+        try expect(Rules.github(item("opencode", "1.1.9"), advisories: datedAdvisories, packages: ["opencode-ai", "opencode"], source: "opencode", action: "")?.published == ["GHSA-old": advisoryDate("2026-05-02T16:00:00Z")!],
+               "GitHub repository advisories' published_at")
+        let actionsDated = GitHubActions.advisories(try JSONSerialization.jsonObject(with: Data(#"{"vulns":[{"id":"GHSA-x","published":"2025-03-14T22:00:00Z","aliases":["CVE-2025-30066"],"affected":[{"package":{"name":"o/a"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}]}"#.utf8)) as! [String: Any], name: "o/a")
+        let actionFinding = GitHubActions.finding(Installation(product: "x", name: "o/a", version: "v1.0.0", path: "/w/.github/workflows/ci.yml#o/a", domain: "projects", ecosystem: "GitHub Actions", packageName: "o/a", manager: "actions", location: "/w"), advisories: actionsDated)
+        expect(actionFinding?.published == ["GHSA-x": advisoryDate("2025-03-14T22:00:00Z")!] && actionFinding?.sameIssue == ["CVE-2025-30066": "GHSA-x"], "GitHub Actions advisories' dates and aliases")
+        // Open …: hidden when it's one of the advisory links; otherwise named by its site.
+        expect(osvDated.sourcePage == nil && nvdDated.sourcePage == nil, "an advisory's own page isn't offered twice")
+        let brewUpdate = Finding(source: "homebrew-formula", installation: item("git", "2.51.0"), kind: .update, fixed: "2.51.1", reason: "", action: "", links: ["https://formulae.brew.sh/formula/git"])
+        let postgresPage = Finding(source: "postgres", installation: item("postgresql", "16.13"), kind: .security, fixed: "16.15", reason: "", action: "",
+                                   links: ["https://www.postgresql.org/support/security/16/"], advisories: ["CVE-2026-12345"])
+        expect(brewUpdate.sourceSite == "formulae.brew.sh" && postgresPage.sourceSite == "postgresql.org"
+               && Finding(source: "x", installation: item("x", "1"), kind: .update, fixed: "2", reason: "", action: "", links: ["http://example.com/"]).sourcePage == nil,
+               "a source page is named by its site, without www; non-https pages aren't offered")
         print("Passed \(count) rule, failure-retention, notification-fingerprint and scheduling checks")
     }
 }
