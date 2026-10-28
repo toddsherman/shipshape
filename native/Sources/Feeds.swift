@@ -282,13 +282,14 @@ enum Scanner {
             } catch { failure("github-actions", "GitHub Actions (OSV)", error) }
         }
         // Apps already at their newest release, from their Sparkle feed or Homebrew's cask data.
-        var currentApps = Set<String>()
+        var currentApps = Set<String>(), freshApps: [String: SparkleFeeds.Release] = [:]
         // Sparkle feeds name the newest release of self-updating apps, including apps outside the catalog.
         if report.installations.contains(where: { $0.feed != nil }) {
             progress("Checking Sparkle update feeds")
-            let (found, current, read, unreadable) = await SparkleFeeds.findings(report.installations, skipping: Set(report.findings.map(\.installation.path)))
+            let (found, current, fresh, read, unreadable) = await SparkleFeeds.findings(report.installations, skipping: Set(report.findings.map(\.installation.path)))
             report.findings += found
             currentApps.formUnion(current)
+            freshApps = fresh
             record("sparkle-feeds", "Sparkle update feeds", "\(read) self-updating apps' own update feeds checked for newer releases."
                    + (unreadable > 0 ? " \(unreadable) feed\(unreadable == 1 ? "" : "s") couldn't be read; those apps still check for updates themselves." : ""), url: "https://sparkle-project.org/documentation/publishing/")
         }
@@ -379,7 +380,7 @@ enum Scanner {
 
         let waiting = Dictionary((previous?.awaiting ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         markAwaiting(&report.findings, newest: newestFormulae, waiting: waiting)
-        markSparkleAwaiting(&report.findings, currentApps: currentApps, waiting: Set(waiting.keys))
+        markSparkleAwaiting(&report.findings, currentApps: currentApps, fresh: freshApps, waiting: Set(waiting.keys))
         let skipped = dropSameReleaseUpdates(&report.findings)
         if skipped > 0 {
             record("same-release", "Update sanity check", "\(skipped) update\(skipped == 1 ? "" : "s") skipped because the newer version was the installed release written differently.", status: "checked")
@@ -447,21 +448,29 @@ enum Scanner {
     // "No fix released yet", and becomes an ordinary finding again, with an alert, once a newer release appears.
     // One that was waiting keeps waiting until something shows a newer release, so an update feed that can't be
     // read this time doesn't pass for a new release.
-    static func markSparkleAwaiting(_ findings: inout [Finding], currentApps: Set<String>, waiting: Set<String> = []) {
-        // Apps with a newer release: from their feed or Homebrew, or a fixed release of the app itself.
+    // A bundled Sparkle is fixed only by a newer release of its app, so it needs attention only when such a release
+    // has been out long enough for the app's own updater to have offered it (SparkleFeeds.settled). Otherwise it
+    // waits: the app is current, its newer release is still reaching copies, or Shipshape can't see its feed.
+    static func markSparkleAwaiting(_ findings: inout [Finding], currentApps: Set<String>, fresh: [String: SparkleFeeds.Release] = [:], waiting: Set<String> = []) {
+        // Apps with a newer release: from their feed or Homebrew, or a fixed release of the app itself. A feed that dates
+        // its newer releases as too recent outranks Homebrew, which gives no dates.
         let newer = Set(findings.filter { $0.kind == .update || ($0.kind == .security && $0.awaitingFix != true && $0.fixed.first?.isNumber == true) }.map(\.installation.path))
+            .subtracting(fresh.keys)
         for index in findings.indices {
             let finding = findings[index], item = finding.installation
             guard finding.kind == .security, finding.malicious != true, let name = item.sparkleApp, let app = item.location, !newer.contains(app) else { continue }
-            // Nothing shows whether the app is current: it sets its feed in code, or the feed couldn't be read.
-            guard currentApps.contains(app) || waiting.contains(finding.id) else {
-                findings[index].action = "Update \(name) to a release that bundles " + (finding.fixed.first?.isNumber == true ? "Sparkle \(finding.fixed) or later" : "a fixed Sparkle")
-                    + ". Shipshape can't tell whether one is out, because it couldn't find or read \(name)'s update feed. If you have the newest \(name), only its developer can update Sparkle, so let them know."
-                continue
-            }
             findings[index].awaitingFix = true
             findings[index].fixed = finding.fixed.first?.isNumber == true ? "\(finding.fixed), not in \(name) yet" : "No fix released yet"
-            findings[index].action = "You have the newest \(name), and it still bundles Sparkle \(item.version). Only its developer can update Sparkle, so let them know. Shipshape alerts you when a newer \(name) is released."
+            if let release = fresh[app] {
+                let day = release.date.map { " on " + $0.formatted(.dateTime.month(.abbreviated).day()) } ?? ""
+                findings[index].action = "\(name) \(release.version ?? release.build) came out\(day), and it may bundle a newer Sparkle. \(name) installs its own updates, usually within days. "
+                    + "If it hasn't after a week, this moves to Needs attention. Only \(name)'s developer can update the Sparkle it bundles."
+            } else if currentApps.contains(app) || waiting.contains(finding.id) {
+                findings[index].action = "You have the newest \(name), and it still bundles Sparkle \(item.version). Only its developer can update Sparkle, so let them know. Shipshape alerts you when a newer \(name) is released."
+            } else {
+                findings[index].action = "Shipshape can't see whether a newer \(name) is out, because it couldn't find or read \(name)'s update feed. \(name) updates itself; "
+                    + "if you have the newest \(name), only its developer can update the Sparkle it bundles, so let them know."
+            }
         }
     }
 

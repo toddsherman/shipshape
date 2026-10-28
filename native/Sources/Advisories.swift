@@ -215,7 +215,12 @@ enum EditorExtensions {
 // release by build number (sparkle:version, compared with the app's CFBundleVersion as Sparkle does) and
 // usually a readable version. Beta channels, other platforms and releases needing a newer macOS are skipped.
 enum SparkleFeeds {
-    struct Release: Equatable { var build: String; var version: String?; var minimumSystem: String? }
+    struct Release: Equatable {
+        var build: String; var version: String?; var minimumSystem: String?
+        var date: Date? = nil              // pubDate
+        var rollout: TimeInterval? = nil   // sparkle:phasedRolloutInterval: copies get the release in seven groups this far apart
+        var hardware: [String]? = nil      // sparkle:hardwareRequirements, such as arm64
+    }
     final class Reader: NSObject, XMLParserDelegate {
         var releases: [Release] = []
         private var inItem = false, current = Release(build: ""), element = "", text = "", skip = false
@@ -244,10 +249,13 @@ enum SparkleFeeds {
                 case "version": if !value.isEmpty { current.build = value }
                 case "shortVersionString": if !value.isEmpty { current.version = value }
                 case "minimumSystemVersion": current.minimumSystem = value
+                case "phasedRolloutInterval": current.rollout = TimeInterval(value)
+                case "hardwareRequirements": current.hardware = value.split(whereSeparator: { $0 == "," || $0 == " " }).map(String.init)
                 case "channel": skip = true
                 default: break
                 }
             }
+            if name == "pubDate" { current.date = SparkleFeeds.date(value) }
             if name == "item" {
                 inItem = false
                 if !skip && !current.build.isEmpty { releases.append(current) }
@@ -265,10 +273,47 @@ enum SparkleFeeds {
         if let x = Version(a), let y = Version(b) { return x < y }
         return looseLess(a, b)
     }
-    // The newest release this Mac can install, if any.
-    static func newest(_ releases: [Release], system: String = ProcessInfo.processInfo.operatingSystemVersionString) -> Release? {
+    static func date(_ text: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        for format in ["EEE, dd MMM yyyy HH:mm:ss Z", "EEE, dd MMM yyyy HH:mm:ss zzz", "dd MMM yyyy HH:mm:ss Z", "EEE, d MMM yyyy HH:mm:ss Z"] {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: text) { return date }
+        }
+        return nil
+    }
+    static let machine: String = {
+        #if arch(arm64)
+        return "arm64"
+        #else
+        return "x86_64"
+        #endif
+    }()
+    // Releases this Mac can install: its macOS is new enough and its processor is one the release lists, if any.
+    static func installable(_ releases: [Release], system: String, machine: String = machine) -> [Release] {
         let macOS = captures("([0-9]+(?:\\.[0-9]+)*)", system).first?[1] ?? "99"
-        return releases.filter { $0.minimumSystem.map { !older(macOS, $0) } ?? true }.max { older($0.build, $1.build) }
+        return releases.filter { ($0.minimumSystem.map { !older(macOS, $0) } ?? true) && ($0.hardware.map { $0.contains(machine) } ?? true) }
+    }
+    // The newest release this Mac can install, if any.
+    static func newest(_ releases: [Release], system: String = ProcessInfo.processInfo.operatingSystemVersionString, machine: String = machine) -> Release? {
+        installable(releases, system: system, machine: machine).max { older($0.build, $1.build) }
+    }
+    // A self-updating app installs a new release itself, but not the moment its feed lists it: Sparkle checks about
+    // daily, may wait to install until the app quits, and phased rollouts reach copies in seven groups. So a newer
+    // release counts as something to install once it has been out a week, or through its whole rollout.
+    static let grace: TimeInterval = 7 * 86_400
+    static func settled(_ release: Release, now: Date = Date()) -> Bool {
+        guard let date = release.date else { return true }
+        return now.timeIntervalSince(date) >= max(grace, 7 * (release.rollout ?? 0))
+    }
+    // The newest of the app's newer releases when all of them are too recent to count yet; nil when the app is
+    // current or a newer release has been out long enough.
+    static func fresh(_ item: Installation, releases: [Release], system: String = ProcessInfo.processInfo.operatingSystemVersionString,
+                      machine: String = machine, now: Date = Date()) -> Release? {
+        guard let installed = item.build ?? Optional(item.version) else { return nil }
+        let newer = installable(releases, system: system, machine: machine).filter { older(installed, $0.build) }
+        guard !newer.isEmpty, !newer.contains(where: { settled($0, now: now) }) else { return nil }
+        return newer.max { older($0.build, $1.build) }
     }
     static func finding(_ item: Installation, releases: [Release], system: String = ProcessInfo.processInfo.operatingSystemVersionString) -> Finding? {
         guard let installed = item.build ?? Optional(item.version), let release = newest(releases, system: system), older(installed, release.build) else { return nil }
@@ -282,9 +327,10 @@ enum SparkleFeeds {
         guard let installed = item.build ?? Optional(item.version), let release = newest(releases, system: system) else { return false }
         return !older(installed, release.build)
     }
-    static func findings(_ items: [Installation], skipping paths: Set<String>) async -> (findings: [Finding], current: Set<String>, read: Int, unreadable: Int) {
+    static func findings(_ items: [Installation], skipping paths: Set<String>) async
+        -> (findings: [Finding], current: Set<String>, fresh: [String: Release], read: Int, unreadable: Int) {
         let apps = items.filter { $0.feed != nil && !paths.contains($0.path) }
-        var findings: [Finding] = [], current = Set<String>(), read = 0, unreadable = 0
+        var findings: [Finding] = [], current = Set<String>(), fresh: [String: Release] = [:], read = 0, unreadable = 0
         await withTaskGroup(of: (Installation, Data?).self) { group in
             for app in apps { group.addTask { (app, try? await Fetch.data(app.feed!, limit: 5_000_000)) } }
             for await (app, data) in group {
@@ -292,10 +338,13 @@ enum SparkleFeeds {
                 let releases = Self.releases(data)
                 if releases.isEmpty { unreadable += 1; continue }
                 read += 1
-                if let finding = finding(app, releases: releases) { findings.append(finding) } else if Self.current(app, releases: releases) { current.insert(app.path) }
+                if let finding = finding(app, releases: releases) {
+                    findings.append(finding)
+                    if let release = Self.fresh(app, releases: releases) { fresh[app.path] = release }
+                } else if Self.current(app, releases: releases) { current.insert(app.path) }
             }
         }
-        return (findings, current, read, unreadable)
+        return (findings, current, fresh, read, unreadable)
     }
 }
 

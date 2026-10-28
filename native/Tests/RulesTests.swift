@@ -837,9 +837,9 @@ import Foundation
                && !SparkleFeeds.current(currentApp, releases: [], system: "Version 27.0 (Build 27A1)"), "an app is current only when its feed offers nothing newer")
         var otherApps = sparkleFindings
         Scanner.markSparkleAwaiting(&otherApps, currentApps: ["/Applications/Rectangle.app"])
-        expect(otherApps.first?.awaitingFix == nil && Commands.commands(for: otherApps[0]).first?.text == "Open Folx"
-               && otherApps[0].action == "Update Folx to a release that bundles Sparkle 2.6.4 or later. Shipshape can't tell whether one is out, because it couldn't find or read Folx's update feed. If you have the newest Folx, only its developer can update Sparkle, so let them know.",
-               "an app that can't be shown current keeps its Open button, and the card says Shipshape can't tell")
+        expect(otherApps.first?.awaitingFix == true && Commands.commands(for: otherApps[0]).isEmpty
+               && otherApps[0].action.hasPrefix("Shipshape can't see whether a newer Folx is out, because it couldn't find or read Folx's update feed."),
+               "an app whose feed can't be read waits instead of needing attention, and the card says Shipshape can't see")
         Scanner.markSparkleAwaiting(&sparkleFindings, currentApps: ["/Applications/Folx.app"])
         let waitingSparkle = sparkleFindings[0]
         expect(waitingSparkle.awaitingFix == true && waitingSparkle.fixed == "2.6.4, not in Folx yet" && waitingSparkle.action.hasPrefix("You have the newest Folx, and it still bundles Sparkle 1.20.0")
@@ -865,6 +865,46 @@ import Foundation
         var itermFindings = [itermFix, itermSparkle]
         Scanner.markSparkleAwaiting(&itermFindings, currentApps: [], waiting: [itermSparkle.id])
         expect(itermFindings[1].awaitingFix == nil, "a fixed release of the app itself also counts as a newer release")
+
+        // A newer release counts once the app's own updater has had time to offer it: a week, or a whole phased rollout.
+        let datedFeed = Data("""
+        <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><pubDate>Mon, 01 Jan 2024 00:00:00 +0000</pubDate>
+          <item><title>New</title><pubDate>Wed, 28 Oct 2026 00:27:10 +0000</pubDate><sparkle:version>22530</sparkle:version><sparkle:shortVersionString>26.1023.51421</sparkle:shortVersionString>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements><enclosure url="https://example.com/n.zip"/></item>
+          <item><title>Phased</title><pubDate>Tue, 20 Oct 2026 00:00:00 GMT</pubDate><sparkle:version>22400</sparkle:version><sparkle:phasedRolloutInterval>172800</sparkle:phasedRolloutInterval>
+            <enclosure url="https://example.com/p.zip"/></item>
+          <item><title>Current</title><pubDate>Tue, 27 Oct 2026 15:50:31 +0000</pubDate><sparkle:version>22391</sparkle:version><enclosure url="https://example.com/c.zip"/></item>
+        </channel></rss>
+        """.utf8)
+        let dated = SparkleFeeds.releases(datedFeed)
+        let october28 = Date(timeIntervalSince1970: 1_793_150_000)  // Oct 28, 2026, about an hour after the newest release
+        expect(dated.count == 3 && dated[0].date == Date(timeIntervalSince1970: 1_793_147_230) && dated[0].hardware == ["arm64"] && dated[1].rollout == 172_800
+               && dated[1].date == Date(timeIntervalSince1970: 1_792_454_400), "feed items keep their date, phased rollout interval and processor requirement; the channel's date is ignored")
+        let codexInstalled = Installation(product: "codex-app", name: "Codex", version: "26.1023.50603", path: "/Applications/ChatGPT.app", domain: "apps", manager: "app", build: "22391")
+        expect(SparkleFeeds.fresh(codexInstalled, releases: [dated[0], dated[2]], system: "Version 27.0", machine: "arm64", now: october28)?.build == "22530",
+               "a release from an hour ago is too recent to count")
+        expect(SparkleFeeds.fresh(codexInstalled, releases: [dated[0], dated[2]], system: "Version 27.0", machine: "arm64", now: october28.addingTimeInterval(8 * 86_400)) == nil,
+               "after a week it counts")
+        expect(SparkleFeeds.fresh(codexInstalled, releases: dated, system: "Version 27.0", machine: "arm64", now: october28)?.build == "22530"
+               && SparkleFeeds.fresh(codexInstalled, releases: dated, system: "Version 27.0", machine: "arm64", now: october28.addingTimeInterval(7 * 86_400)) == nil,
+               "a phased rollout two days apart takes fourteen days to reach every copy; then it counts")
+        let olderCodex = Installation(product: "codex-app", name: "Codex", version: "26.1021.31345", path: "/Applications/ChatGPT.app", domain: "apps", manager: "app", build: "21828")
+        expect(SparkleFeeds.fresh(olderCodex, releases: [dated[0], dated[2], SparkleFeeds.Release(build: "22000", version: "26.1022", minimumSystem: nil, date: Date(timeIntervalSince1970: 1_792_000_000))],
+                                  system: "Version 27.0", machine: "arm64", now: october28) == nil, "an older newer release that has been out for weeks makes the update count")
+        expect(SparkleFeeds.newest([dated[0], dated[2]], system: "Version 27.0", machine: "x86_64")?.build == "22391"
+               && SparkleFeeds.current(codexInstalled, releases: [dated[0], dated[2]], system: "Version 27.0") == (SparkleFeeds.machine != "arm64"),
+               "a release for Apple silicon only isn't newer on an Intel Mac")
+        let codexSparkle = Finding(source: "osv", installation: Installation(product: "swifturl:github.com/sparkle-project/Sparkle", name: "Sparkle in Codex", version: "2.9.1",
+                                   path: "/Applications/ChatGPT.app/Contents/Frameworks/Sparkle.framework", domain: "apps", ecosystem: "SwiftURL", packageName: "github.com/sparkle-project/Sparkle",
+                                   manager: "sparkle-framework", location: "/Applications/ChatGPT.app"), kind: .security, fixed: "2.9.2", reason: "", action: "", links: [])
+        let codexUpdate = Finding(source: "sparkle-feed", installation: codexInstalled, kind: .update, fixed: "26.1023.51421", reason: "", action: "", links: [])
+        var freshCodex = [codexSparkle, codexUpdate], settledCodex = [codexSparkle, codexUpdate]
+        Scanner.markSparkleAwaiting(&freshCodex, currentApps: [], fresh: ["/Applications/ChatGPT.app": dated[0]])
+        Scanner.markSparkleAwaiting(&settledCodex, currentApps: [])
+        expect(freshCodex[0].awaitingFix == true && freshCodex[0].fixed == "2.9.2, not in Codex yet" && freshCodex[0].action.hasPrefix("Codex 26.1023.51421 came out on Oct 2")
+               && freshCodex[1].kind == .update && ScanReport(findings: freshCodex).attention.isEmpty,
+               "a bundled Sparkle waits while the app's newer release is too recent, and the app's update stays listed")
+        expect(settledCodex[0].awaitingFix == nil && ScanReport(findings: settledCodex).attention.count == 1, "once the newer release counts, the bundled Sparkle needs attention")
 
         // Alerts: a Sparkle that stops waiting means a new app release, which may or may not bundle a newer Sparkle.
         let folxAlert = Alerts.findings([folxReleased[0]], released: [waitingSparkle.id])
@@ -1006,7 +1046,7 @@ import Foundation
                                         length: 2_750_261, signature: String(repeating: "A", count: 86) + "==", notes: releaseNotes + "]]>"))
         expect(feedXML.contains("<enclosure url=\"https://github.com/toddsherman/shipshape/releases/download/v1.2.0/Shipshape-1.2.0.dmg\" length=\"2750261\"")
                && feedXML.contains("<pubDate>Thu, 01 Jan 1970 00:00:00 +0000</pubDate>"), "appcast enclosure and date")
-        expect(SparkleFeeds.releases(Data(feedXML.utf8)) == [SparkleFeeds.Release(build: "30", version: "1.2.0", minimumSystem: "13.0")],
+        expect(SparkleFeeds.releases(Data(feedXML.utf8)) == [SparkleFeeds.Release(build: "30", version: "1.2.0", minimumSystem: "13.0", date: Date(timeIntervalSince1970: 0))],
                "Shipshape's own Sparkle feed reader understands its appcast, even with ]]> in the notes")
         if let info = NSDictionary(contentsOfFile: root + "/../Resources/Info.plist") as? [String: Any] {
             expect(info["SUFeedURL"] as? String == Appcast.feed, "the app reads the appcast attached to the latest GitHub release")

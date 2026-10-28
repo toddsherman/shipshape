@@ -214,7 +214,7 @@ enum FindingCategory: Int, CaseIterable, Identifiable, Comparable {
         case .exploited: return "Attackers are using these flaws now. Fix these first."
         case .security: return "A released version fixes a published advisory."
         case .unsupported: return "These versions no longer get security fixes."
-        case .waiting: return "You have the newest release. \(appName) alerts you when a fix ships."
+        case .waiting: return "Nothing you can install fixes these yet. \(appName) alerts you when a fix ships."
         case .updates: return "Newer releases with no confirmed security fix."
         }
     }

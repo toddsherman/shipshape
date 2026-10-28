@@ -423,7 +423,7 @@ struct Dashboard: View {
                             AllCommandsButton(findings: findings)
                         }.padding(.top, 14).id("findings")
                         if filter == .waiting {
-                            Text("You already have the newest release, and the advisories list no fixed version. These don't count as needing attention; \(appName) alerts you when a fixed release ships.").font(.callout).foregroundStyle(.secondary)
+                            Text("Nothing you can install fixes these yet: you have the newest release and no fixed one is out, or the app that bundles the affected code hasn't shipped a fix to you yet. These don't count as needing attention; \(appName) alerts you when a fix is out.").font(.callout).foregroundStyle(.secondary)
                         }
                         if findings.isEmpty {
                             Label(filter == nil ? "Nothing needs attention in covered checks." : "None found in covered checks.", systemImage: "tray").foregroundStyle(.secondary).padding(.vertical, 30)
