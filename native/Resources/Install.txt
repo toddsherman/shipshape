@@ -1,4 +1,4 @@
-Shipshape 0.3.13 — macOS preview
+Shipshape 0.3.14 — macOS preview
 
 Requires macOS 13 or later. Includes Apple silicon and Intel binaries.
 
@@ -14,7 +14,7 @@ NVD and vendor advisories, including reports of malicious packages.
 Each finding shows the installed and fixed versions, its evidence and the
 easiest way to install the fix: a Terminal command to copy, a download
 page, or the app's own updater. The app never runs commands or changes
-software itself.
+other software itself.
 
 A fresh check runs each time the app opens, daily at 9 a.m. Pacific while
 the app is running, and when you click Check now. Missed checks catch up
@@ -40,6 +40,11 @@ settings are read for server commands only, never keys or environment
 variables. No account or API key is needed. Exported reports include
 local paths and package names.
 
-The preview does not update itself. Install a new signed build to receive
-new rules. To uninstall, turn off Start at login, quit the app, and move
+Updates
+Shipshape checks for a new version of itself once a day. It shows the
+release notes; Install Update downloads it, checks that it's signed by
+Shipshape's developer, then quits, replaces and reopens the app. Nothing
+is installed until you click. The daily check can be turned off in Settings.
+
+To uninstall, turn off Start at login, quit the app, and move
 it to Trash. Its Application Support data can be removed separately.

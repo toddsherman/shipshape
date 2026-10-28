@@ -2,6 +2,10 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.14 — October 27, 2026
+
+- **Shipshape updates itself.** When a new version is out, it shows the release notes; **Install Update** downloads it, checks that it's signed by Shipshape's developer, then quits, replaces and reopens the app, with no dragging into Applications. It checks once a day (turn that off in Settings) and whenever you choose **Check for Updates…** in the app menu or Settings. Updates use [Sparkle](https://sparkle-project.org) with signed disk images and a signed feed attached to each GitHub release. This version still needs one manual download; later ones arrive this way.
+
 ## 0.3.13 — October 27, 2026
 
 - **Claude is no longer reported as out of date when its own updater says it's current.** Claude picks its release channel per device and organization, and some channels follow a version line apart from the public one Homebrew lists (3.6556.2 while Homebrew had 4.29.0). Shipshape now leaves Claude's updates to Claude, and Coverage says so.

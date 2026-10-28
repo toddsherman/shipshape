@@ -234,10 +234,12 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
 @main
 struct ShipshapeApp: App {
     @StateObject private var monitor = Monitor()
+    @StateObject private var updates = Updates()
     var body: some Scene {
         Window(appName, id: "dashboard") {
-            Dashboard().environmentObject(monitor)
+            Dashboard().environmentObject(monitor).environmentObject(updates)
         }.defaultSize(width: 1040, height: 760)
+        .commands { CommandGroup(after: .appInfo) { CheckForUpdatesButton(updates: updates) } }
         MenuBarExtra {
             MenuPanel().environmentObject(monitor)
         } label: {
@@ -326,6 +328,7 @@ struct CategoryRow: View {
 
 struct Dashboard: View {
     @EnvironmentObject var monitor: Monitor
+    @EnvironmentObject var updates: Updates
     @Environment(\.openWindow) private var openWindow
     @State private var query = ""
     @State private var domain = "all"
@@ -496,9 +499,17 @@ struct Dashboard: View {
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 10) {
+                    Text("Updates").font(.headline)
+                    Text("\(appName) checks GitHub for a new version of itself once a day and shows it with its release notes. Install Update downloads it, checks that it's signed by \(appName)'s developer, then quits, replaces and reopens \(appName). Nothing is installed until you click.").foregroundStyle(.secondary)
+                    Toggle("Check for updates automatically", isOn: $updates.automatic).disabled(!Updates.enabled)
+                    Button("Check for Updates…") { updates.check() }.disabled(!updates.canCheck)
+                    if !Updates.enabled { Text("This build doesn't check for updates.").font(.caption).foregroundStyle(.secondary) }
+                }
+                Divider()
+                VStack(alignment: .leading, spacing: 10) {
                     Text("Local data & privacy").font(.headline)
-                    Text("No account, cloud inventory, analytics or AI service. Package names and versions go to OSV, product versions to NVD, and release lookups to Homebrew and vendors. Private package names in your lockfiles are included in OSV queries. MCP settings are read for server commands only; environment variables and keys are ignored.").foregroundStyle(.secondary)
-                    Text("Update commands are shown for you to copy and run; the app never installs, removes or changes anything itself. This preview does not update itself.").foregroundStyle(.secondary)
+                    Text("No account, cloud inventory, analytics or AI service. Package names and versions go to OSV, product versions to NVD, release lookups to Homebrew and vendors, and \(appName)'s own update check to GitHub. Private package names in your lockfiles are included in OSV queries. MCP settings are read for server commands only; environment variables and keys are ignored.").foregroundStyle(.secondary)
+                    Text("Update commands are shown for you to copy and run; \(appName) never installs, removes or changes other software. The only thing it installs is its own update, when you click Install Update.").foregroundStyle(.secondary)
                     Text("History is kept on this Mac with the latest result, up to the newest \(History.limit.formatted()) entries.").foregroundStyle(.secondary)
                     HStack { Button("Open local data") { monitor.openData() }; Button("Export report…") { monitor.export() }.disabled(monitor.report == nil) }
                 }

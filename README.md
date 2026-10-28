@@ -21,8 +21,8 @@ Shipshape checks when it opens, daily at 9 a.m. Pacific and whenever you click *
 
 ## Principles
 
-- **It never changes your Mac.** Shipshape shows commands for you to review and run; it doesn't run them. It only offers commands your account can run, and never suggests `sudo` for package managers.
-- **No account, API key, analytics or cloud inventory.** Your inventory stays on your Mac. Package names and versions are sent to OSV, product versions to NVD, and release lookups to Homebrew, vendors and self-updating apps' own update feeds. That includes private package names in your lockfiles.
+- **It never changes your software.** Shipshape shows commands for you to review and run; it doesn't run them. It only offers commands your account can run, and never suggests `sudo` for package managers. The one thing it installs is its own update, when you click Install Update.
+- **No account, API key, analytics or cloud inventory.** Your inventory stays on your Mac. Package names and versions are sent to OSV, product versions to NVD, and release lookups to Homebrew, vendors and self-updating apps' own update feeds. That includes private package names in your lockfiles. Shipshape's own update check reads its release feed on GitHub.
 - **Coverage is partial, and it says so.** A check that can't complete is shown as failed, never as "safe." This is an update monitor, not antivirus.
 
 ## Install
@@ -30,6 +30,8 @@ Shipshape checks when it opens, daily at 9 a.m. Pacific and whenever you click *
 Download the latest `Shipshape-<version>.dmg` from [Releases](https://github.com/toddsherman/shipshape/releases), drag Shipshape into Applications and open it. Builds are signed with Developer ID and notarized by Apple. Requires macOS 13 or later on Apple silicon or Intel.
 
 Add the folders that hold your projects, run the first check and turn on notifications. The first check takes a few minutes, because NVD limits requests made without an API key.
+
+From 0.3.14, Shipshape updates itself. When a new version is out, it shows the release notes; **Install Update** downloads it, checks that it's signed by Shipshape's developer, then quits, replaces and reopens the app. You can turn off the daily check in Settings. Copies older than 0.3.14 need one manual download to get there.
 
 ## Build from source
 
@@ -39,7 +41,7 @@ bash native/build.sh
 open dist/Shipshape.app
 ```
 
-There are no third-party dependencies. See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved, [SECURITY.md](SECURITY.md) to report a vulnerability privately, and [CHANGELOG.md](CHANGELOG.md) for what changed.
+The one third-party dependency is [Sparkle](https://sparkle-project.org), which installs Shipshape's own updates; `native/sparkle.sh` downloads its pinned release and checks the checksum. See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved, [SECURITY.md](SECURITY.md) to report a vulnerability privately, and [CHANGELOG.md](CHANGELOG.md) for what changed.
 
 ## License
 

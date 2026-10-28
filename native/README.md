@@ -1,4 +1,4 @@
-# Shipshape for macOS — 0.3.13 preview
+# Shipshape for macOS — 0.3.14 preview
 
 A native SwiftUI menu bar app for macOS 13 or later, built for Apple silicon and Intel. It watches the developer stack people install to build apps with AI coding tools such as Claude Code and Codex, and shows the easiest way to install each fix. No Python, Node, Homebrew, account or API key is needed to run it.
 
@@ -7,6 +7,8 @@ A native SwiftUI menu bar app for macOS 13 or later, built for Apple silicon and
 Copy **Shipshape.app** from the disk image into Applications and open it. Add the folders that hold your projects, run the first check, then enable notifications. Optionally turn on **Start Shipshape when I log in** in Settings. Each Mac builds its own inventory.
 
 Release builds are Developer ID signed and notarized by Apple, with tickets stapled to the disk image and the app. Each release on GitHub includes `SHA256SUMS.txt` with the disk image's checksum. Never disable Gatekeeper to install or distribute a build.
+
+From 0.3.14, Shipshape updates itself with [Sparkle](https://sparkle-project.org). Once a day it reads `appcast.xml` from the latest GitHub release (**Check for Updates…** in the app menu and Settings checks right away). A newer version is shown with its release notes, and nothing is installed until you click **Install Update**. Sparkle then downloads the disk image, verifies its EdDSA signature against the public key in `Info.plist` and its Developer ID signature against the installed copy's, and quits, replaces and reopens Shipshape. The feed itself is signed too, so its notes and links can't be altered. **Check for updates automatically** in Settings turns off the daily check; updates are never installed without the click.
 
 A fresh check runs every time the app opens, including at login, once the network is up (after 30 seconds it checks anyway). Checks also run daily at 9 a.m. America/Los_Angeles while the app is open, and catch up after waking. **Check now** runs one whenever you like; the dashboard footer and menu show the last check's time and how long ago it was ("10:36 AM (5 minutes ago)"). There is no background polling between checks. A first check takes a few minutes because NVD limits requests without an API key; NVD results are reused for 20 hours. Quitting the app stops monitoring.
 
@@ -72,25 +74,27 @@ Package names and versions are checked against each ecosystem's naming rules and
 - **Opening files and apps.** Files open only in your text editor, and only when they are plain, non-executable text files inside a chosen project folder or one of the known MCP settings files. A repo can't turn "Open package.json" into running a script. Apps open only from Applications folders.
 - **No Homebrew code runs.** The Homebrew inventory is read from `Cellar`, `Caskroom`, `opt` and `var/homebrew/pinned` directly. Other programs (`node --version` and similar, `softwareupdate`) run only if this account or root owns them and no one else can change them, with a minimal environment.
 - **Bounded downloads.** Every source has a size limit, enforced while downloading: a larger declared size is refused before the body arrives, and transfers stop as soon as they pass the limit.
+- **Signed updates only.** Shipshape installs an update only when the release's disk image carries both an EdDSA signature from the update key and the same Developer ID, and the feed describing it is signed with the same key. A tampered feed is refused with an error. Sparkle's XPC services, which only sandboxed apps use, are removed from the bundle.
 - **Quoted names and no stray keys.** Package names are quoted in every command, even after validation. An MCP server's arguments are recorded only when every option before the package is known, so an option's value, such as an API key, is never mistaken for a package name.
 
 ## Data and privacy
 
 State lives in `~/Library/Application Support/Shipshape/state.json` (folder 0700, file 0600). It contains local paths, project folders, package names, versions, results and notification fingerprints. There is no analytics, account, remote inventory or AI service.
 
-Package names and versions are sent to OSV, product names and versions to NVD, and release and advisory lookups to Homebrew, GitHub, Node, PostgreSQL and OpenSSL. Self-updating apps' Sparkle feeds are fetched from each app's developer, the same request the app makes when it checks for updates. **Private package names in your lockfiles are included in OSV queries.** MCP settings are read for each server's command and arguments only; environment variables, headers and keys are never kept. Lockfiles are read as text and nothing in a project is run. Exported reports contain local paths and package names, so review them before sharing.
+Package names and versions are sent to OSV, product names and versions to NVD, and release and advisory lookups to Homebrew, GitHub, Node, PostgreSQL and OpenSSL. Self-updating apps' Sparkle feeds are fetched from each app's developer, the same request the app makes when it checks for updates. Shipshape's own update check fetches its feed and, when you install, the disk image from GitHub; the request names Shipshape's and Sparkle's versions, and Sparkle's system profiling is off. **Private package names in your lockfiles are included in OSV queries.** MCP settings are read for each server's command and arguments only; environment variables, headers and keys are never kept. Lockfiles are read as text and nothing in a project is run. Exported reports contain local paths and package names, so review them before sharing.
 
 To uninstall, turn off Start at login, quit the app and move it to Trash. Remove the Application Support folder separately if you no longer need saved results.
 
 ## Development
 
-Requires Xcode or a matching Swift compiler and macOS SDK. No third-party packages are used.
+Requires Xcode or a matching Swift compiler and macOS SDK. The one third-party package is Sparkle, for Shipshape's own updates: `native/sparkle.sh` downloads its pinned release into `native/work`, checks the SHA-256, and the build embeds and signs it.
 
 ```sh
 bash native/test.sh
 SIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)" bash native/build.sh
 SIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)" bash native/package.sh
 bash native/notarize.sh security-monitor-notary
+bash native/appcast.sh
 ```
 
 To try a development build without touching the installed app's saved results, launch it with `SHIPSHAPE_STATE_DIR` set to another folder, for example `open -n --env SHIPSHAPE_STATE_DIR=/tmp/shipshape-state dist/Shipshape.app`. Without it, a development build uses and changes the installed app's data. The name and version come from `native/Resources/Info.plist`; the build, packaging and notarization scripts read them from there, and `appName` in `Feeds.swift` is the name shown in the app. The notary keychain profile keeps its original name. Without `SIGN_IDENTITY`, the build uses an ad-hoc signature for local development only. Tests cover version ordering, vendor range rules, each lockfile format, MCP command parsing, OSV alias handling and fix selection, NVD range and platform evaluation, command quoting and routing, failed-check retention, notification fingerprints and Pacific-time scheduling.
@@ -102,6 +106,8 @@ xcrun swiftc -swift-version 5 -O -parse-as-library native/Sources/{Models,Catalo
 native/work/check native/work/live-scan.json ~/Projects
 ```
 
-Every rebuilt DMG needs its own notarization before sharing. `native/notarize.sh` submits the DMG with a saved notarytool keychain profile, waits for **Accepted**, staples the DMG and app, verifies Gatekeeper acceptance and rewrites the checksum. Run `native/setup-notarization.command` once in Terminal to save the `security-monitor-notary` profile. Never put Apple passwords in source files or shell history. This preview does not update itself; a signed update channel such as Sparkle remains future work.
+Every rebuilt DMG needs its own notarization before sharing. `native/notarize.sh` submits the DMG with a saved notarytool keychain profile, waits for **Accepted**, staples the DMG and app, verifies Gatekeeper acceptance and rewrites the checksum. Run `native/setup-notarization.command` once in Terminal to save the `security-monitor-notary` profile. Never put Apple passwords in source files or shell history.
+
+Updates are signed with an EdDSA key. Run `native/setup-update-key.command` once in Terminal: it creates the key in your login Keychain (account `shipshape`), or reuses it, puts the public half in `Info.plist` as `SUPublicEDKey`, and offers to write a backup to put in your password manager. **Keep that backup.** Installed copies trust only this key, so losing it means everyone has to download the next release by hand. A signed release build refuses to start without `SUPublicEDKey`. After notarizing, `native/appcast.sh` writes `dist/appcast.xml` for the disk image, with its signature and the version's dated `CHANGELOG.md` section as release notes, then signs the feed. Attach `appcast.xml` to the GitHub release with the disk image and `SHA256SUMS.txt`; installed copies read it from the latest release's download link. Development builds launched with `SHIPSHAPE_STATE_DIR` don't check for updates unless `SHIPSHAPE_CHECK_UPDATES=1` is also set.
 
 Primary documentation: [OSV API](https://google.github.io/osv.dev/api/), [NVD CVE API](https://nvd.nist.gov/developers/vulnerabilities), [MenuBarExtra](https://developer.apple.com/documentation/swiftui/menubarextra), [SMAppService](https://developer.apple.com/documentation/servicemanagement/smappservice), [Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).

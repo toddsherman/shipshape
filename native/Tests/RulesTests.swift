@@ -995,6 +995,25 @@ import Foundation
         expect(attentionReport.attention.count == 2 && attentionReport.security.count == 1, "known exploitation with no fix needs attention")
         expect(FindingCategory.counts(in: attentionReport) == [.security: 1, .exploited: 1, .waiting: 1, .updates: 1], "tile counts")
         expect(FindingCategory.attentionTitle(1) == "1 item needs attention" && FindingCategory.attentionTitle(0) == "Nothing needs attention", "attention headline")
+        let changelog = "# Changelog\n\n## Unreleased\n\n- Not out yet.\n\n## 1.2.0 — May 1, 2026\n\n- **Bold** fix for `brew` & <tags>, see [docs](https://example.com/a?b=1&c=2).\nA paragraph.\n\n## 1.1.0 — April 1, 2026\n\n- Older.\n"
+        expect(Appcast.section(changelog, version: "1.2.0") == "- **Bold** fix for `brew` & <tags>, see [docs](https://example.com/a?b=1&c=2).\nA paragraph.", "appcast notes are the version's changelog section")
+        expect(Appcast.section(changelog, version: "1.2") == nil && Appcast.section(changelog, version: "Unreleased") == nil && Appcast.section(changelog, version: "1.3.0") == nil,
+               "only a dated changelog section for the exact version makes a feed")
+        let releaseNotes = Appcast.html(Appcast.section(changelog, version: "1.2.0") ?? "")
+        expect(releaseNotes == "<ul>\n<li><strong>Bold</strong> fix for <code>brew</code> &amp; &lt;tags&gt;, see <a href=\"https://example.com/a?b=1&amp;c=2\">docs</a>.</li>\n</ul>\n<p>A paragraph.</p>",
+               "changelog Markdown becomes escaped HTML")
+        let feedXML = Appcast.xml(.init(name: "Shipshape", version: "1.2.0", build: "30", minimumSystem: "13.0", date: Date(timeIntervalSince1970: 0), download: Appcast.download(name: "Shipshape", version: "1.2.0"),
+                                        length: 2_750_261, signature: String(repeating: "A", count: 86) + "==", notes: releaseNotes + "]]>"))
+        expect(feedXML.contains("<enclosure url=\"https://github.com/toddsherman/shipshape/releases/download/v1.2.0/Shipshape-1.2.0.dmg\" length=\"2750261\"")
+               && feedXML.contains("<pubDate>Thu, 01 Jan 1970 00:00:00 +0000</pubDate>"), "appcast enclosure and date")
+        expect(SparkleFeeds.releases(Data(feedXML.utf8)) == [SparkleFeeds.Release(build: "30", version: "1.2.0", minimumSystem: "13.0")],
+               "Shipshape's own Sparkle feed reader understands its appcast, even with ]]> in the notes")
+        if let info = NSDictionary(contentsOfFile: root + "/../Resources/Info.plist") as? [String: Any] {
+            expect(info["SUFeedURL"] as? String == Appcast.feed, "the app reads the appcast attached to the latest GitHub release")
+            expect(info["SUEnableAutomaticChecks"] as? Bool == true && info["SUAllowsAutomaticUpdates"] as? Bool == false, "updates are checked daily but installed only when someone clicks")
+            expect(info["SURequireSignedFeed"] as? Bool == true && info["SUVerifyUpdateBeforeExtraction"] as? Bool == true, "the feed and each update are verified before use")
+            expect((info["SUPublicEDKey"] as? String).map { Data(base64Encoded: $0)?.count == 32 } ?? true, "a public update key, when present, is a 32-byte EdDSA key")
+        } else { expect(false, "Info.plist is readable") }
         print("Passed \(count) rule, failure-retention, notification-fingerprint and scheduling checks")
     }
 }

@@ -18,4 +18,6 @@ jobs:
       - name: Rule tests
         run: bash native/test.sh
       - name: Type-check the app
-        run: xcrun swiftc -swift-version 5 -parse-as-library -typecheck native/Sources/*.swift
+        run: xcrun swiftc -swift-version 5 -parse-as-library -typecheck -F "$(bash native/sparkle.sh)" native/Sources/*.swift
+      - name: Type-check the appcast tool
+        run: xcrun swiftc -swift-version 5 -parse-as-library -typecheck native/Release/*.swift

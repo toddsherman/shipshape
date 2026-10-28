@@ -10,7 +10,7 @@ Open an issue before starting anything large, so we can agree on the approach.
 
 ## Build and test
 
-You need macOS 13 or later and Xcode (or a matching Swift toolchain and macOS SDK). There are no third-party packages.
+You need macOS 13 or later and Xcode (or a matching Swift toolchain and macOS SDK). The one third-party package is Sparkle, which installs Shipshape's own updates; the build downloads its pinned release once and checks the checksum.
 
 ```sh
 bash native/test.sh                  # rule, parser, command and history tests
