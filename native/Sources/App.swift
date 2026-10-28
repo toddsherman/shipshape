@@ -649,7 +649,7 @@ struct StackSummary: View {
                     }
                 }
                 Spacer()
-                SettledRing(fraction: total == 0 ? 1 : Double(settled) / Double(total))
+                SettledGauge(fraction: total == 0 ? 1 : Double(settled) / Double(total))
                 Text("\(settled.formatted()) of \(total.formatted())\ninventory items\nneed no action").font(.caption).foregroundStyle(.secondary)
             }
             ShareBar(parts: shares.map { ($0.count, $0.color) })
@@ -666,16 +666,22 @@ struct StackSummary: View {
                 exploited > 0 ? "\(exploited) actively exploited" : nil].compactMap { $0 }.joined(separator: " · ")
     }
 }
-// The share of inventory items that need no action, as a ring: those without findings and those only waiting for
-// a fixed release. The percentage rounds down, so 100% means there's nothing left to do.
-struct SettledRing: View {
+// The share of inventory items that need no action, as a gauge: an arc open at the bottom that fills clockwise from
+// its lower left. Items without findings and those only waiting for a fixed release count. The percentage rounds
+// down, so 100% means there's nothing left to do.
+struct SettledGauge: View {
     let fraction: Double
+    static let sweep = 0.75  // three quarters of a circle, leaving the gap at the bottom
     var body: some View {
+        let arc = StrokeStyle(lineWidth: 9, lineCap: .round)
         ZStack {
-            Circle().stroke(Color.primary.opacity(0.1), lineWidth: 8)
-            Circle().trim(from: 0, to: fraction).stroke(Color.green, style: StrokeStyle(lineWidth: 8, lineCap: .round)).rotationEffect(.degrees(-90))
-            Text("\(Int((fraction * 100).rounded(.down)))%").font(.system(size: 17, weight: .semibold, design: .rounded))
-        }.frame(width: 70, height: 70)
+            Group {
+                Circle().trim(from: 0, to: Self.sweep).stroke(Color.primary.opacity(0.1), style: arc)
+                Circle().trim(from: 0, to: Self.sweep * min(max(fraction, 0), 1))
+                    .stroke(AngularGradient(colors: [.green, .teal], center: .center, startAngle: .zero, endAngle: .degrees(360 * Self.sweep)), style: arc)
+            }.rotationEffect(.degrees(135))
+            Text("\(Int((fraction * 100).rounded(.down)))%").font(.system(size: 20, weight: .semibold, design: .rounded))
+        }.frame(width: 80, height: 80)
     }
 }
 // One bar split in proportion to the counts. A nonzero share is never thinner than a few points, so a single

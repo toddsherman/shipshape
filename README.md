@@ -19,7 +19,7 @@ Shipshape is a free, open-source Mac app, in the menu bar and the Dock, for peop
 
 Advisories come from [OSV](https://osv.dev) (including OpenSSF malicious-package reports), [NVD](https://nvd.nist.gov), vendor security pages and GitHub security advisories, with [CISA's Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) raising priority. Google Chrome and Mac App Store apps are left out, since they update themselves. The full coverage table and its limits are in [native/README.md](native/README.md).
 
-The **Security** page opens with an overview: how many items need attention, a ring showing how much of your setup needs no action (items only waiting for a fixed release count as done), and tiles for malicious packages, known exploitation, security fixes, end of support, waiting for a fix and updates. Each tile lists its findings, and the menu bar shows the same counts.
+The **Security** page opens with an overview: how many items need attention, a gauge showing how much of your setup needs no action (items only waiting for a fixed release count as done), and tiles for malicious packages, known exploitation, security fixes, end of support, waiting for a fix and updates. Each tile lists its findings, and the menu bar shows the same counts.
 
 Shipshape checks when it opens, daily at 9 a.m. Pacific and whenever you click **Check now**; the footer shows when the last check ran and how long ago. **History** keeps a log of every recommendation and when it was resolved. If a finding looks wrong, the bug button (**Report a problem**) on its card opens a GitHub issue with its details filled in, for you to review and submit. Next to each finding's location are buttons to copy the path and show it in Finder.
 

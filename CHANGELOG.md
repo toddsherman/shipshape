@@ -2,6 +2,10 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.19 — October 27, 2026
+
+- **The Security summary shows a gauge** instead of a full ring: an arc open at the bottom that fills green to teal with the share of your inventory that needs no action, with the percentage in the middle.
+
 ## 0.3.18 — October 27, 2026
 
 - **A bundled Sparkle no longer needs attention just because its app's feed lists a brand-new release.** Self-updating apps check about daily, may install on quit, and roll releases out in phases, so a feed can list a release the app doesn't offer yet; Codex listed one an hour old. The bundled Sparkle now waits until a newer app release has been out a week (or through its phased rollout), and the card says when it came out. It also waits, instead of needing attention, when Shipshape can't read the app's feed. Releases for Apple silicon only no longer count as newer on an Intel Mac.
