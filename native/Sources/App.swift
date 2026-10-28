@@ -255,7 +255,16 @@ struct MenuPanel: View {
     @State private var panel: NSWindow?
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label(appName, systemImage: "sailboat.fill").font(.headline)
+            HStack {
+                Label(appName, systemImage: "sailboat.fill").font(.headline)
+                Spacer()
+                // Check now, as a refresh button; a spinner takes its place while a check runs.
+                if monitor.scanning { ProgressView().controlSize(.small).frame(width: 22, height: 22) }
+                else {
+                    Button { monitor.check() } label: { Image(systemName: "arrow.clockwise.circle").font(.title2) }
+                        .buttonStyle(.borderless).help("Check now").accessibilityLabel("Check now").frame(width: 22, height: 22)
+                }
+            }
             Text(monitor.statusTitle).font(.title3.weight(.semibold))
             if let progress = monitor.progress { Text(progress).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
             else if let date = monitor.report?.date { LastCheck(date: date, prefix: "Checked ").font(.caption).foregroundStyle(.secondary) }
@@ -272,13 +281,11 @@ struct MenuPanel: View {
                 Button("Some checks need attention") { monitor.section = "Coverage"; open() }.buttonStyle(.link).foregroundStyle(.orange).font(.caption)
             }
             Divider()
-            Button("Open \(appName)") { open() }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
-            HStack {
-                Button(monitor.scanning ? "Checking…" : "Check now") { monitor.check() }.disabled(monitor.scanning)
-                Spacer()
+            HStack(spacing: 8) {
+                Button { open() } label: { Text("Open \(appName)").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent)
                 Button("Quit") { NSApp.terminate(nil) }
             }
-            Text("At launch, daily at 9 a.m. Pacific and when you click Check now").font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Checks at launch, daily at 9 a.m. Pacific and when you click \(Image(systemName: "arrow.clockwise.circle"))").font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(18).frame(width: 310)
         .background(WindowReader { panel = $0 })
         .onReceive(NotificationCenter.default.publisher(for: .init("ShowDashboard"))) { _ in openWindow(id: "dashboard") }

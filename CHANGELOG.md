@@ -2,6 +2,10 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.16 — October 27, 2026
+
+- **The menu bar panel's Check now is a refresh button** in its top-right corner, with a spinner while a check runs, and **Open Shipshape** and **Quit** share one row.
+
 ## 0.3.15 — October 27, 2026
 
 - **Report a problem is a bug button** on each finding, beside Open website. It opens the same filled-in GitHub issue.
