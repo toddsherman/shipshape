@@ -2,6 +2,10 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.17 — October 27, 2026
+
+- **Install Update is one click.** After it downloads and checks the update, Shipshape quits, replaces itself and reopens, instead of stopping at Ready to Install for a second click. This applies to updates from 0.3.17 on; updating to 0.3.17 itself still asks twice.
+
 ## 0.3.16 — October 27, 2026
 
 - **The menu bar panel's Check now is a refresh button** in its top-right corner, with a spinner while a check runs, and **Open Shipshape** and **Quit** share one row.
