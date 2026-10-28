@@ -223,13 +223,6 @@ extension Finding {
         return URL(string: links.first { $0.hasPrefix("https://") && $0.hasSuffix("/" + id) }
                    ?? (id.hasPrefix("CVE-") ? "https://nvd.nist.gov/vuln/detail/" + id : "https://osv.dev/vulnerability/" + id))
     }
-    // The source's own page, when it isn't one of the advisory links already on the card: Homebrew's page for an
-    // update, the release schedule for end of support, a vendor's security page.
-    var sourcePage: URL? {
-        guard let first = links.first, first.hasPrefix("https://"), let url = URL(string: first), url.host != nil else { return nil }
-        return advisories.contains { page($0)?.absoluteString == first } ? nil : url
-    }
-    var sourceSite: String { (sourcePage?.host ?? "").replacingOccurrences(of: "^www\\.", with: "", options: .regularExpression) }
     // What hovering an advisory ID shows. A CVE beside its GHSA gets the GHSA's date, said to be the GHSA's: the CVE itself
     // may have come out earlier.
     func publishedNote(for id: String) -> String? {

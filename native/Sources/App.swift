@@ -963,12 +963,8 @@ struct FindingEvidence: View {
                 if !finding.advisories.isEmpty { advisories }
             }
             Spacer()
-            HStack(spacing: 14) {
-                Button { reporting = true } label: { Image(systemName: "ladybug") }.buttonStyle(.borderless).font(.callout).foregroundStyle(Color.accentColor)
-                    .help("Report a problem: opens a GitHub issue about this finding, filled in for you to check and submit.").accessibilityLabel("Report a problem")
-                // The source's own page, named by its site, unless it's one of the advisory links above.
-                if let url = finding.sourcePage { Link("Open \(finding.sourceSite)", destination: url).font(.callout).linkCursor() }
-            }
+            Button { reporting = true } label: { Image(systemName: "ladybug") }.buttonStyle(.borderless).font(.callout).foregroundStyle(Color.accentColor)
+                .help("Report a problem: opens a GitHub issue about this finding, filled in for you to check and submit.").accessibilityLabel("Report a problem")
         }.sheet(isPresented: $reporting) { ReportSheet(finding: finding).environmentObject(monitor) }
     }
     func flash() { copied = true; DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false } }
