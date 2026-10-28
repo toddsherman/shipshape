@@ -2,7 +2,9 @@
 
 Keep the tools you build with patched.
 
-Shipshape is a free, open-source macOS menu bar app for people who build software on a Mac, especially with AI coding tools like Claude Code and Codex. Those tools install a lot quickly: runtimes, package managers, CLIs, MCP servers, Homebrew libraries and thousands of project dependencies. Shipshape keeps track of all of it and tells you when something has a published security fix or a malicious release. For each one it shows the installed and fixed versions, the evidence, and the easiest way to install the fix for how it got onto your Mac: a Terminal command to copy, a download page, or the app's own updater.
+Shipshape is a free, open-source Mac app, in the menu bar and the Dock, for people who build software on a Mac, especially with AI coding tools like Claude Code and Codex. Those tools install a lot quickly: runtimes, package managers, CLIs, MCP servers, Homebrew libraries and thousands of project dependencies. Shipshape keeps track of all of it and tells you when something has a published security fix or a malicious release. For each one it shows the installed and fixed versions, the evidence, and the easiest way to install the fix for how it got onto your Mac: a Terminal command to copy, a download page, or the app's own updater.
+
+![Shipshape's Security page: 16 items need attention, a ring showing 92% of the inventory needs no action, and tiles for malicious packages and known exploitation in red, then security fixes, end of support, waiting for a fix and updates](docs/shipshape-security.webp)
 
 ## What it checks
 
@@ -17,7 +19,9 @@ Shipshape is a free, open-source macOS menu bar app for people who build softwar
 
 Advisories come from [OSV](https://osv.dev) (including OpenSSF malicious-package reports), [NVD](https://nvd.nist.gov), vendor security pages and GitHub security advisories, with [CISA's Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) raising priority. Google Chrome and Mac App Store apps are left out, since they update themselves. The full coverage table and its limits are in [native/README.md](native/README.md).
 
-Shipshape checks when it opens, daily at 9 a.m. Pacific and whenever you click **Check now**; the footer shows when the last check ran and how long ago. The **History** tab keeps a log of every recommendation and when it was resolved. If a finding looks wrong, **Report a problem** on its card opens a GitHub issue with its details filled in, for you to review and submit.
+The **Security** page opens with an overview: how many items need attention, a ring showing how much of your setup needs no action (items only waiting for a fixed release count as done), and tiles for malicious packages, known exploitation, security fixes, end of support, waiting for a fix and updates. Each tile lists its findings, and the menu bar shows the same counts.
+
+Shipshape checks when it opens, daily at 9 a.m. Pacific and whenever you click **Check now**; the footer shows when the last check ran and how long ago. **History** keeps a log of every recommendation and when it was resolved. If a finding looks wrong, **Report a problem** on its card opens a GitHub issue with its details filled in, for you to review and submit.
 
 ## Principles
 
