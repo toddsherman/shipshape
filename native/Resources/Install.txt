@@ -1,4 +1,4 @@
-Shipshape 0.3.21 — macOS preview
+Shipshape 0.3.22 — macOS preview
 
 Requires macOS 13 or later. Includes Apple silicon and Intel binaries.
 
@@ -15,6 +15,11 @@ Each finding shows the installed and fixed versions, its evidence and the
 easiest way to install the fix: a Terminal command to copy, a download
 page, or the app's own updater. The app never runs commands or changes
 other software itself.
+
+Inventory also shows how each app is signed, for your information:
+which apps are ad-hoc signed, unsigned or without the Hardened Runtime.
+Apps built on your Mac and some Homebrew casks are ad-hoc signed by
+design, so these aren't findings.
 
 A fresh check runs each time the app opens, daily at 9 a.m. Pacific while
 the app is running, and when you click Check now. Missed checks catch up

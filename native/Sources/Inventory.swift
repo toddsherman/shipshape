@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 struct CommandResult { let text: String; let code: Int32 }
 func trustedExecutable(_ path: String, uid: uid_t = getuid()) -> Bool {
@@ -75,9 +76,11 @@ enum Inventory {
             report.domains[domain] = errors.isEmpty
             report.checks.append(SourceCheck(id: id, name: name, status: errors.isEmpty ? "checked" : failed ? "failed" : "partial", detail: errors.isEmpty ? detail : errors.prefix(8).joined(separator: "; ")))
         }
-        let (apps, appErrors, skipped) = self.apps()
+        let (apps, appErrors, skipped, signatures, unreadable) = self.apps()
         add(apps)
         check("inventory-apps", "Developer apps", "apps", appErrors, "Read \(apps.filter { $0.manager == "app" }.count) apps in /Applications and your Applications folder: catalog developer apps, plus self-updating apps with a Sparkle feed or a bundled Sparkle, and the Sparkle version inside \(apps.filter { $0.manager == "sparkle-framework" }.count) of them. Skipped \(skipped) App Store or Google Chrome app\(skipped == 1 ? "" : "s") by design.")
+        report.signatures = signatures
+        report.checks.append(SourceCheck(id: "app-signatures", name: "App signatures", status: "checked", detail: AppSignature.coverage(signatures, unreadable: unreadable)))
         let (brew, brewErrors) = homebrew()
         add(brew)
         check("inventory-brew", "Homebrew inventory", "brew", brewErrors, "Read \(brew.count) installed formula, cask and bundled Python package versions, including retained copies.", failed: true)
@@ -106,9 +109,10 @@ enum Inventory {
         return report
     }
 
-    // App Store apps (those with a Mac App Store receipt) and Google Chrome are skipped by design.
-    static func apps(roots: [String] = ["/Applications", home + "/Applications"]) -> ([Installation], [String], skipped: Int) {
-        var items: [Installation] = [], errors: [String] = [], skipped = 0
+    // App Store apps (those with a Mac App Store receipt) and Google Chrome are skipped by design. Every other app's code
+    // signature is read; `unreadable` counts apps whose bundle Security can't read as code.
+    static func apps(roots: [String] = ["/Applications", home + "/Applications"]) -> ([Installation], [String], skipped: Int, signatures: [AppSignature], unreadable: Int) {
+        var items: [Installation] = [], errors: [String] = [], skipped = 0, signatures: [AppSignature] = [], unreadable = 0
         for root in roots where fm.fileExists(atPath: root) {
             let base = URL(fileURLWithPath: root)
             guard let enumerator = fm.enumerator(at: base, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles], errorHandler: { url, _ in
@@ -117,15 +121,19 @@ enum Inventory {
             while let url = enumerator.nextObject() as? URL {
                 if url.pathExtension == "app" {
                     enumerator.skipDescendants()
-                    guard let data = try? Data(contentsOf: url.appendingPathComponent("Contents/Info.plist")),
-                          let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
-                          let bundleID = info["CFBundleIdentifier"] as? String else { continue }
-                    if Catalog.excludedBundleIDs.contains(bundleID) || fm.fileExists(atPath: url.appendingPathComponent("Contents/_MASReceipt/receipt").path) { skipped += 1; continue }
+                    let data = try? Data(contentsOf: url.appendingPathComponent("Contents/Info.plist"))
+                    let info = data.flatMap { (try? PropertyListSerialization.propertyList(from: $0, format: nil)) as? [String: Any] } ?? [:]
+                    let bundleID = info["CFBundleIdentifier"] as? String
+                    let excluded = bundleID.map { Catalog.excludedBundleIDs.contains($0) } ?? false
+                    if excluded || fm.fileExists(atPath: url.appendingPathComponent("Contents/_MASReceipt/receipt").path) { skipped += 1; continue }
+                    let product = bundleID.flatMap { Catalog.byBundleID[$0] }
+                    let title = (info["CFBundleDisplayName"] ?? info["CFBundleName"]) as? String ?? url.deletingPathExtension().lastPathComponent
+                    // Every app's signature is read, including apps with no bundle ID, such as AppleScript applets and game shortcuts.
+                    if let signature = signature(name: product?.name ?? title, path: url.path) { signatures.append(signature) } else { unreadable += 1 }
+                    guard let bundleID else { continue }
                     let build = info["CFBundleVersion"] as? String
-                    let product = Catalog.byBundleID[bundleID]
                     let feed = (info["SUFeedURL"] as? String).flatMap { $0.hasPrefix("https://") ? $0 : nil } ?? product?.feed
                     let sparkle = sparkleBuild(url.path)
-                    let title = (info["CFBundleDisplayName"] ?? info["CFBundleName"]) as? String ?? url.deletingPathExtension().lastPathComponent
                     // Apps outside the catalog are kept when Sparkle can say something about them: a feed with
                     // their newest release, or a bundled Sparkle with known advisories.
                     guard product != nil || feed != nil || sparkle != nil else { continue }
@@ -143,7 +151,18 @@ enum Inventory {
                 } else if url.pathComponents.count - base.pathComponents.count >= 3 { enumerator.skipDescendants() }
             }
         }
-        return (items, errors, skipped)
+        return (items, errors, skipped, signatures, unreadable)
+    }
+    // An app's signature as Security reads it from the bundle: its flags, team ID and whether it's Apple's. Nothing in the
+    // app is run, and its files aren't checked against the signature, so this takes milliseconds per app.
+    static func signature(name: String, path: String) -> AppSignature? {
+        var code: SecStaticCode?, info: CFDictionary?
+        guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess, let code,
+              SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess, let values = info as? [String: Any] else { return nil }
+        let flags = (values[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value
+        let platform = (values[kSecCodeInfoPlatformIdentifier as String] as? NSNumber)?.intValue
+        return AppSignature(name: name, path: path, identifier: values[kSecCodeInfoIdentifier as String] as? String, flags: flags,
+                            team: values[kSecCodeInfoTeamIdentifier as String] as? String, platform: platform)
     }
 
     // The version of the Sparkle framework bundled in an app, trimmed of build suffixes ("1.27.1-3-g05be1d71",
