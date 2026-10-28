@@ -1129,14 +1129,6 @@ import Foundation
         let actionsDated = GitHubActions.advisories(try JSONSerialization.jsonObject(with: Data(#"{"vulns":[{"id":"GHSA-x","published":"2025-03-14T22:00:00Z","aliases":["CVE-2025-30066"],"affected":[{"package":{"name":"o/a"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}]}"#.utf8)) as! [String: Any], name: "o/a")
         let actionFinding = GitHubActions.finding(Installation(product: "x", name: "o/a", version: "v1.0.0", path: "/w/.github/workflows/ci.yml#o/a", domain: "projects", ecosystem: "GitHub Actions", packageName: "o/a", manager: "actions", location: "/w"), advisories: actionsDated)
         expect(actionFinding?.published == ["GHSA-x": advisoryDate("2025-03-14T22:00:00Z")!] && actionFinding?.sameIssue == ["CVE-2025-30066": "GHSA-x"], "GitHub Actions advisories' dates and aliases")
-        // Open …: hidden when it's one of the advisory links; otherwise named by its site.
-        expect(osvDated.sourcePage == nil && nvdDated.sourcePage == nil, "an advisory's own page isn't offered twice")
-        let brewUpdate = Finding(source: "homebrew-formula", installation: item("git", "2.51.0"), kind: .update, fixed: "2.51.1", reason: "", action: "", links: ["https://formulae.brew.sh/formula/git"])
-        let postgresPage = Finding(source: "postgres", installation: item("postgresql", "16.13"), kind: .security, fixed: "16.15", reason: "", action: "",
-                                   links: ["https://www.postgresql.org/support/security/16/"], advisories: ["CVE-2026-12345"])
-        expect(brewUpdate.sourceSite == "formulae.brew.sh" && postgresPage.sourceSite == "postgresql.org"
-               && Finding(source: "x", installation: item("x", "1"), kind: .update, fixed: "2", reason: "", action: "", links: ["http://example.com/"]).sourcePage == nil,
-               "a source page is named by its site, without www; non-https pages aren't offered")
         print("Passed \(count) rule, failure-retention, notification-fingerprint and scheduling checks")
     }
 }

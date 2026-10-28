@@ -5,7 +5,7 @@ Every release is a universal (Apple silicon and Intel) build for macOS 13 or lat
 ## Unreleased
 
 - **Findings say when their advisory came out.** Each card's explanation ends with the date its advisory was published, or the newest one's when there are several, plus how long ago for anything in the last 30 days. Malicious-package reports say when they were reported, and known exploitation says when CISA listed it. Hover over an advisory ID for its own date; a CVE that's the same issue as a GitHub advisory says so. Dates come from OSV, NVD, GitHub and CISA data Shipshape already downloads, and they never change the order of findings, their urgency or alerts.
-- **Open website is gone where it only repeated an advisory link.** Where a card's source page is something else, such as Homebrew's page for an update or the release schedule for end of support, the link names its site, like **Open formulae.brew.sh**.
+- **Finding cards no longer have an Open website link.** Each advisory ID already links to its own page.
 - **Copy and Show in Finder appear when you hover over a finding's location,** so the line stays uncluttered.
 
 ## 0.3.22 — October 27, 2026
