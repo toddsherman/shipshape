@@ -4,7 +4,7 @@ Keep the tools you build with patched.
 
 Shipshape is a free, open-source Mac app, in the menu bar and the Dock, for people who build software on a Mac, especially with AI coding tools like Claude Code and Codex. Those tools install a lot quickly: runtimes, package managers, CLIs, MCP servers, Homebrew libraries and thousands of project dependencies. Shipshape keeps track of all of it and tells you when something has a published security fix or a malicious release. For each one it shows the installed and fixed versions, the evidence, and the easiest way to install the fix for how it got onto your Mac: a Terminal command to copy, a download page, or the app's own updater.
 
-![Shipshape's Security page: 16 items need attention, a ring showing 92% of the inventory needs no action, and tiles for malicious packages and known exploitation in red, then security fixes, end of support, waiting for a fix and updates](docs/shipshape-security.webp)
+![Shipshape's Security page: 16 items need attention, a gauge showing 92% of the inventory needs no action, and tiles for malicious packages and known exploitation in red, then security fixes, end of support, waiting for a fix and updates](docs/shipshape-security.webp)
 
 ## What it checks
 
