@@ -11,6 +11,7 @@ enum OSV {
         let severity: String?
         let fixed: [String: [String]]  // "ecosystem|name" → fixed versions
         var informational = false      // RustSec "unmaintained" or "notice": not a vulnerability
+        var published: Date? = nil
     }
     static func normalized(_ name: String, _ ecosystem: String) -> String {
         ecosystem == "PyPI" ? name.lowercased().replacingOccurrences(of: "[-_.]+", with: "-", options: .regularExpression) : name
@@ -67,7 +68,8 @@ enum OSV {
         }
         let summary = obj["summary"] as? String ?? (obj["details"] as? String).map { String($0.prefix(160)) } ?? id
         let severity = id.hasPrefix("MAL-") ? "CRITICAL" : ((obj["database_specific"] as? [String: Any])?["severity"] as? String)?.uppercased()
-        return Vuln(id: id, summary: summary, aliases: obj["aliases"] as? [String] ?? [], severity: severity, fixed: fixed, informational: informational)
+        return Vuln(id: id, summary: summary, aliases: obj["aliases"] as? [String] ?? [], severity: severity, fixed: fixed, informational: informational,
+                    published: advisoryDate(obj["published"] as? String))
     }
 
     static func findings(for items: [Installation], matches: [String: [String]], vulns: [String: Vuln]) -> [Finding] {
@@ -98,13 +100,26 @@ enum OSV {
                 ? "OpenSSF's malicious-package database lists this exact version. Assume anything it could reach is exposed."
                 : count + ": " + titles + unpublished
             let advisories = Set(chosen.flatMap { [$0.id] + $0.aliases.filter { $0.hasPrefix("CVE-") } })
-            findings.append(Finding(source: "osv", installation: item, kind: .security,
-                                    fixed: malicious ? "Remove this version" : fixes.max(by: looseLess) ?? "No fixed version published",
-                                    reason: reason, action: Commands.action(for: item, malicious: malicious, fixed: fixes.max(by: looseLess)),
-                                    links: chosen.prefix(4).map { "https://osv.dev/vulnerability/" + $0.id }, advisories: advisories.sorted(),
-                                    severity: malicious ? "CRITICAL" : severity, malicious: malicious ? true : nil))
+            var finding = Finding(source: "osv", installation: item, kind: .security,
+                                  fixed: malicious ? "Remove this version" : fixes.max(by: looseLess) ?? "No fixed version published",
+                                  reason: reason, action: Commands.action(for: item, malicious: malicious, fixed: fixes.max(by: looseLess)),
+                                  links: chosen.prefix(4).map { "https://osv.dev/vulnerability/" + $0.id }, advisories: advisories.sorted(),
+                                  severity: malicious ? "CRITICAL" : severity, malicious: malicious ? true : nil)
+            dates(&finding, chosen.map { ($0.id, $0.aliases, $0.published) })
+            findings.append(finding)
         }
         return findings
+    }
+    // Each advisory's date, and its CVE aliases on the card pointed at it, so a date shows once per issue.
+    static func dates(_ finding: inout Finding, _ advisories: [(id: String, aliases: [String], published: Date?)]) {
+        var published: [String: Date] = [:], same: [String: String] = [:]
+        for advisory in advisories {
+            if let date = advisory.published { published[advisory.id] = date }
+            for alias in advisory.aliases where finding.advisories.contains(alias) && alias != advisory.id && same[alias] == nil && published[alias] == nil { same[alias] = advisory.id }
+        }
+        same = same.filter { published[$0.key] == nil }
+        finding.published = published.isEmpty ? nil : published
+        finding.sameIssue = same.isEmpty ? nil : same
     }
 }
 
@@ -113,7 +128,7 @@ enum OSV {
 // v45 points at the newest 45.x release, so it is affected only if no 45.x release fixes the problem.
 enum GitHubActions {
     struct Range { let introduced: String?; let fixed: String?; let lastAffected: String? }
-    struct Advisory { let id: String; let summary: String; let severity: String?; let aliases: [String]; let ranges: [Range] }
+    struct Advisory { let id: String; let summary: String; let severity: String?; let aliases: [String]; let ranges: [Range]; var published: Date? = nil }
 
     // The version a workflow reference stands for, or nil when it can't be told (a branch or a bare commit).
     static func comparable(_ ref: String) -> (version: String, moving: Bool)? {
@@ -149,7 +164,8 @@ enum GitHubActions {
             }
             let summary = vuln["summary"] as? String ?? id
             let severity = ((vuln["database_specific"] as? [String: Any])?["severity"] as? String)?.uppercased()
-            return ranges.isEmpty ? nil : Advisory(id: id, summary: summary, severity: severity, aliases: vuln["aliases"] as? [String] ?? [], ranges: ranges)
+            return ranges.isEmpty ? nil : Advisory(id: id, summary: summary, severity: severity, aliases: vuln["aliases"] as? [String] ?? [], ranges: ranges,
+                                                   published: advisoryDate(vuln["published"] as? String))
         }
     }
     static func finding(_ item: Installation, advisories: [Advisory]) -> Finding? {
@@ -161,9 +177,11 @@ enum GitHubActions {
         let count = hits.count == 1 ? "1 published advisory" : "\(hits.count) published advisories"
         var reason = count + ": " + hits.prefix(3).map(\.summary).joined(separator: "; ") + (hits.count > 3 ? "; …" : "")
         if moving, let fixed { reason += " @\(item.version) is a moving tag, and no release in that major version fixes this, so the fix means moving to \(fixed) or later." }
-        return Finding(source: "osv-actions", installation: item, kind: .security, fixed: fixed ?? "No fixed version published", reason: reason,
-                       action: Commands.action(for: item, malicious: false, fixed: fixed), links: hits.prefix(4).map { "https://osv.dev/vulnerability/" + $0.id },
-                       advisories: Array(Set(hits.flatMap { [$0.id] + $0.aliases.filter { $0.hasPrefix("CVE-") } })).sorted(), severity: hits.compactMap(\.severity).reduce(nil, worse))
+        var finding = Finding(source: "osv-actions", installation: item, kind: .security, fixed: fixed ?? "No fixed version published", reason: reason,
+                              action: Commands.action(for: item, malicious: false, fixed: fixed), links: hits.prefix(4).map { "https://osv.dev/vulnerability/" + $0.id },
+                              advisories: Array(Set(hits.flatMap { [$0.id] + $0.aliases.filter { $0.hasPrefix("CVE-") } })).sorted(), severity: hits.compactMap(\.severity).reduce(nil, worse))
+        OSV.dates(&finding, hits.map { ($0.id, $0.aliases, $0.published) })
+        return finding
     }
     static func findings(_ items: [Installation]) async throws -> (findings: [Finding], checked: Int, unknown: Int) {
         let actions = items.filter { $0.ecosystem == "GitHub Actions" }
@@ -383,7 +401,7 @@ enum NVD {
             }
             guard hit else { continue }
             if configuration["operator"] as? String == "AND", !platforms.isEmpty, !platforms.contains(where: { $0.contains(":apple:") }) { continue }
-            return NVDHit(id: id, fixed: fixed, severity: severity(cve), expected: fixed == nil ? expectedFix(cve, version: version) : nil)
+            return NVDHit(id: id, fixed: fixed, severity: severity(cve), expected: fixed == nil ? expectedFix(cve, version: version) : nil, published: advisoryDate(cve["published"] as? String))
         }
         return nil
     }
@@ -439,9 +457,11 @@ enum NVD {
             + (elsewhere.isEmpty ? "" : "; \(elsewhere.count) list\(elsewhere.count == 1 ? "s" : "") a fix only in a newer \(product.name) (\(elsewhere.max(by: looseLess)!))") + ". NVD can lag vendor advisories"
             + (item.domain == "brew" ? ", and Homebrew sometimes ships patches without changing the version." : ".")
             + (expected.map { " The advisory text names \($0) as the fix." } ?? "")
-        return Finding(source: "nvd:" + product.id, installation: item, kind: .security, fixed: listed ?? expected ?? noFixListed,
-                       reason: reason, action: "Install the update below, then restart programs that use it.",
-                       links: hits.prefix(3).map { "https://nvd.nist.gov/vuln/detail/" + $0.id }, advisories: hits.map(\.id).sorted(),
-                       severity: hits.reduce(nil) { worse($0, $1.severity) }, expectedFix: expected)
+        var finding = Finding(source: "nvd:" + product.id, installation: item, kind: .security, fixed: listed ?? expected ?? noFixListed,
+                              reason: reason, action: "Install the update below, then restart programs that use it.",
+                              links: hits.prefix(3).map { "https://nvd.nist.gov/vuln/detail/" + $0.id }, advisories: hits.map(\.id).sorted(),
+                              severity: hits.reduce(nil) { worse($0, $1.severity) }, expectedFix: expected)
+        OSV.dates(&finding, hits.map { ($0.id, [], $0.published) })
+        return finding
     }
 }

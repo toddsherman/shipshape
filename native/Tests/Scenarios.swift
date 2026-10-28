@@ -82,7 +82,8 @@ import Foundation
     }
     static func update(_ item: Installation, to version: String, source: String = "homebrew-formula") -> Finding {
         finish(Finding(source: source, installation: item, kind: .update, fixed: version, reason: "Newer release metadata is available. This alone does not establish a security vulnerability.",
-                       action: item.manager == "app" ? "Install the new release with one of the options below." : "Review the release notes, then update with Homebrew.", links: []))
+                       action: item.manager == "app" ? "Install the new release with one of the options below." : "Review the release notes, then update with Homebrew.",
+                       links: item.package.map { ["https://formulae.brew.sh/\(source == "homebrew-cask" ? "cask" : "formula")/\($0)"] } ?? []))
     }
     static func endOfSupport(_ item: Installation, what: String, fixed: String, link: String) -> Finding {
         finish(Finding(source: "endoflife", installation: item, kind: .unsupported, fixed: fixed, reason: "This \(what) branch is past its published end-of-life date.",
@@ -95,21 +96,37 @@ import Foundation
         return finding
     }
     static func stale(_ finding: Finding) -> Finding { var finding = finding; finding.stale = true; return finding }
+    // Publication dates, in days before now, for a finding's advisories in order. A CVE beside a GHSA is the same issue.
+    static func dated(_ finding: Finding, _ days: Int..., cisa: Int? = nil) -> Finding {
+        var finding = finding
+        let primary = finding.advisories.contains { !$0.hasPrefix("CVE-") } ? finding.advisories.filter { !$0.hasPrefix("CVE-") } : finding.advisories
+        var published: [String: Date] = [:], same: [String: String] = [:]
+        for (index, id) in primary.enumerated() { published[id] = now.addingTimeInterval(-Double(days[min(index, days.count - 1)]) * 86_400) }
+        for id in finding.advisories where published[id] == nil { same[id] = primary[0] }
+        finding.published = published
+        finding.sameIssue = same.isEmpty ? nil : same
+        finding.exploitedSince = cisa.map { now.addingTimeInterval(-Double($0) * 86_400) }
+        return finding
+    }
 
     // MARK: A few findings used by several scenarios
-    static let flatmap = malware(npm("shop", "flatmap-stream", "0.1.1", dependency: "transitive"), id: "MAL-2025-20690")
+    static let flatmap = dated(malware(npm("shop", "flatmap-stream", "0.1.1", dependency: "transitive"), id: "MAL-2025-20690"), 3)
     static let vite = security(npm("shop", "vite", "5.0.0", dependency: "dev"), fixed: "6.4.4", severity: "HIGH", ids: ["GHSA-vg6x-rcgg-rjx6", "CVE-2025-30208"],
                                titles: ["Vite bypasses server.fs.deny for raw and import queries", "Vite dev server exposes files outside the project root"], exploited: true)
-    static let lodash = security(npm("shop", "lodash", "4.17.20"), fixed: "4.17.21", severity: "HIGH", ids: ["GHSA-35jh-r3h4-6jhm"], titles: ["Command injection in lodash template"])
+    static let viteDated = dated(vite, 218, cisa: 160)
+    static let lodash = dated(security(npm("shop", "lodash", "4.17.20"), fixed: "4.17.21", severity: "HIGH", ids: ["GHSA-35jh-r3h4-6jhm", "CVE-2021-23337"], titles: ["Command injection in lodash template"]), 1715)
     static let axios = security(npm("shop", "axios", "0.21.1"), fixed: "0.30.0", severity: "HIGH", ids: ["GHSA-jr5f-v2jv-69x6", "GHSA-wf5p-g6vw-rhxx"],
                                 titles: ["axios can leak credentials to absolute URLs", "Cross-site request forgery in axios"])
+    static let axiosDated = dated(axios, 234, 719)
     static let requests = security(pypi("api-server", "requests", "2.25.0"), fixed: "2.32.4", severity: "MODERATE", ids: ["GHSA-9wx4-h78v-vm56"], titles: ["Requests leaks .netrc credentials to third parties"])
+    static let requestsDated = dated(requests, 6)
     static let openssl = security(brew("openssl@3", "3.5.1", product: "openssl"), fixed: "3.5.4", severity: "HIGH", ids: ["CVE-2025-9230", "CVE-2025-9231"],
                                   titles: ["Out-of-bounds read and write in RFC 3211 KEK unwrap", "Timing side channel in SM2 on 64-bit ARM"])
-    static let ffmpeg = waiting(brew("ffmpeg", "9.0.2"), severity: "HIGH", ids: ["CVE-2026-107675", "CVE-2026-107676"], titles: ["Heap overflow in the HEVC decoder", "Use after free in the MOV demuxer"],
-                                action: "You have Homebrew's newest ffmpeg (9.0.2), and no release fixes these yet. Shipshape alerts you when a fixed release is available.")
-    static let folxSparkle = waiting(sparkle(in: "Folx", "1.20.0"), severity: "HIGH", ids: ["GHSA-g3hp-f6mg-559v"], titles: ["Sparkle's installer XPC listener accepts unvalidated connections"],
-                                     fixed: "2.9.2, not in Folx yet", action: "You have the newest Folx, and it still bundles Sparkle 1.20.0. Only its developer can update Sparkle, so let them know. Shipshape alerts you when a newer Folx is released.")
+    static let opensslDated = dated(openssl, 27, 27)
+    static let ffmpeg = dated(waiting(brew("ffmpeg", "9.0.2"), severity: "HIGH", ids: ["CVE-2026-107675", "CVE-2026-107676"], titles: ["Heap overflow in the HEVC decoder", "Use after free in the MOV demuxer"],
+                                action: "You have Homebrew's newest ffmpeg (9.0.2), and no release fixes these yet. Shipshape alerts you when a fixed release is available."), 412, 98)
+    static let folxSparkle = dated(waiting(sparkle(in: "Folx", "1.20.0"), severity: "HIGH", ids: ["GHSA-g3hp-f6mg-559v"], titles: ["Sparkle's installer XPC listener accepts unvalidated connections"],
+                                     fixed: "2.9.2, not in Folx yet", action: "You have the newest Folx, and it still bundles Sparkle 1.20.0. Only its developer can update Sparkle, so let them know. Shipshape alerts you when a newer Folx is released."), 19)
     static let gitUpdate = update(brew("git", "2.51.0"), to: "2.51.1")
     static let zedUpdate = update(app("Zed", "0.210.4", id: "dev.zed.Zed"), to: "0.211.2", source: "homebrew-cask")
     static let nodeUpdate = update(brew("node", "25.8.0"), to: "25.9.0")
@@ -162,17 +179,17 @@ import Foundation
                                                                   fixed: "2.9.2, not in Ice yet", action: "Ice 0.11.13 came out on Oct 27, and it may bundle a newer Sparkle. Ice installs its own updates, usually within days. If it hasn't after a week, this moves to Needs attention. Only Ice's developer can update the Sparkle it bundles."),
                                 gitUpdate, zedUpdate]),
             Scenario(name: "typical", description: "A normal day: a couple of security fixes, updates and waiting items.",
-                     findings: [lodash, requests, ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate], clean: 260),
+                     findings: [lodash, requestsDated, ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate], clean: 260),
             Scenario(name: "malware", description: "Malicious packages in two projects and an MCP server, with a few ordinary fixes.",
                      findings: [flatmap, malware(pypi("api-server", "requessts", "2.31.0"), id: "MAL-2025-41022"),
                                 malware(mcp("@mcp-tools/filesystem-plus", "1.4.2", config: home + "/.cursor/mcp.json"), id: "MAL-2026-1187"),
-                                lodash, axios, gitUpdate]),
+                                lodash, axiosDated, gitUpdate]),
             Scenario(name: "exploited", description: "Known exploitation, with and without a released fix.",
-                     findings: [vite, security(brew("curl", "8.10.1"), fixed: "8.11.1", severity: "CRITICAL", ids: ["CVE-2026-0001"], titles: ["curl heap overflow in SOCKS5 proxy handshake"], exploited: true),
+                     findings: [viteDated, security(brew("curl", "8.10.1"), fixed: "8.11.1", severity: "CRITICAL", ids: ["CVE-2026-0001"], titles: ["curl heap overflow in SOCKS5 proxy handshake"], exploited: true),
                                 { var f = waiting(app("Raycast", "1.104.2", id: "com.raycast.macos"), severity: "CRITICAL", ids: ["CVE-2026-31337"], titles: ["Raycast extension sandbox escape"]); f.exploited = true; return f }(),
-                                openssl, requests, nodeUpdate]),
+                                opensslDated, requestsDated, nodeUpdate]),
             Scenario(name: "everything", description: "Every kind of finding, including blocked and unverified ones, failed checks, and History.",
-                     findings: [flatmap, vite, openssl, lodash, axios, requests,
+                     findings: [flatmap, viteDated, opensslDated, lodash, axiosDated, requestsDated,
                                 security(globalNPM("@anthropic-ai/claude-code", "2.0.10"), fixed: "2.0.31", severity: "HIGH", ids: ["GHSA-x5gv-jw7f-j6xj"], titles: ["Claude Code permission prompt bypass"]),
                                 blocked(security(npm("legacy-portal", "minimist", "1.2.5"), fixed: "1.2.6", severity: "CRITICAL", ids: ["GHSA-xvch-5gv4-984h"], titles: ["Prototype pollution in minimist"]), owner: "sam"),
                                 stale(security(brew("node@20", "20.11.0", product: "node"), fixed: "20.19.5", severity: "HIGH", ids: ["CVE-2025-23166"], titles: ["Node.js crypto error handling crash"])),
@@ -186,7 +203,7 @@ import Foundation
                      current: [npm("shop", "next", "14.2.25"), brew("wget", "1.25.0")]),
             Scenario(name: "crowded", description: "Two hundred findings across six projects, to test long lists and scrolling.", findings: crowded, clean: 300),
             Scenario(name: "check-issues", description: "Three failed and two partial checks, with earlier findings kept as unverified.",
-                     findings: [stale(lodash), stale(openssl), requests, gitUpdate], checks: checks(failed: 3, partial: 2)),
+                     findings: [stale(lodash), stale(opensslDated), requestsDated, gitUpdate], checks: checks(failed: 3, partial: 2)),
         ]
     }
 

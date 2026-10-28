@@ -921,22 +921,18 @@ struct FindingEvidence: View {
     let finding: Finding
     @State private var reporting = false
     @State private var copied = false
+    @State private var hovering = false
     // The lockfile or MCP settings file for project and MCP findings; the install path otherwise.
     var location: String { Inventory.display(finding.installation.sourceFile) }
-    // An advisory's own page: the finding's link for it, NVD for CVEs, OSV otherwise.
-    func page(_ id: String) -> URL? {
-        guard id.range(of: "^[A-Za-z0-9._:-]+$", options: .regularExpression) != nil else { return nil }
-        return URL(string: finding.links.first { $0.hasPrefix("https://") && $0.hasSuffix("/" + id) }
-                   ?? (id.hasPrefix("CVE-") ? "https://nvd.nist.gov/vuln/detail/" + id : "https://osv.dev/vulnerability/" + id))
-    }
-    // Each advisory ID is its own link, so the cursor shows which one a click opens; Copy is on its menu.
+    // Each advisory ID is its own link, so the cursor shows which one a click opens; Copy is on its menu. Hovering one
+    // shows when it was published, which would make the line too long to show for every ID.
     var advisories: some View {
         WrappingStack {
             Text("Advisories:").foregroundStyle(.secondary)
             ForEach(Array(finding.advisories.enumerated()), id: \.offset) { index, id in
                 HStack(spacing: 0) {
-                    if let url = page(id) { Link(id, destination: url).linkCursor().contextMenu { Button("Copy \(id)") { monitor.copy(id) } } }
-                    else { Text(id).foregroundStyle(.secondary).textSelection(.enabled) }
+                    if let url = finding.page(id) { Link(id, destination: url).linkCursor().help(finding.publishedNote(for: id) ?? "").contextMenu { Button("Copy \(id)") { monitor.copy(id) } } }
+                    else { Text(id).foregroundStyle(.secondary).textSelection(.enabled).help(finding.publishedNote(for: id) ?? "") }
                     if index < finding.advisories.count - 1 { Text(",").foregroundStyle(.secondary) }
                 }
             }
@@ -952,21 +948,26 @@ struct FindingEvidence: View {
     var body: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 4) {
+                // Copy and Show in Finder appear while the pointer is over the location. They keep their place when hidden,
+                // so nothing shifts.
                 HStack(spacing: 6) {
                     Text("Location: " + location).foregroundStyle(.secondary).textSelection(.enabled)
-                    Button { monitor.copy(locationPath); flash() } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }
-                        .help(copied ? "Copied" : "Copy \(locationPath)").accessibilityLabel("Copy location")
-                    if let url = locationURL {
-                        Button { showInFinder(url) } label: { Image(systemName: "folder") }.help("Show in Finder").accessibilityLabel("Show in Finder")
-                    }
-                }.font(.caption).buttonStyle(.borderless)
+                    HStack(spacing: 6) {
+                        Button { monitor.copy(locationPath); flash() } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }
+                            .help(copied ? "Copied" : "Copy \(locationPath)").accessibilityLabel("Copy location")
+                        if let url = locationURL {
+                            Button { showInFinder(url) } label: { Image(systemName: "folder") }.help("Show in Finder").accessibilityLabel("Show in Finder")
+                        }
+                    }.opacity(hovering || copied ? 1 : 0).allowsHitTesting(hovering || copied)
+                }.font(.caption).buttonStyle(.borderless).contentShape(Rectangle()).onHover { hovering = $0 }
                 if !finding.advisories.isEmpty { advisories }
             }
             Spacer()
             HStack(spacing: 14) {
                 Button { reporting = true } label: { Image(systemName: "ladybug") }.buttonStyle(.borderless).font(.callout).foregroundStyle(Color.accentColor)
                     .help("Report a problem: opens a GitHub issue about this finding, filled in for you to check and submit.").accessibilityLabel("Report a problem")
-                if let source = finding.links.first, let url = URL(string: source), url.scheme == "https" { Link("Open website", destination: url).font(.callout).linkCursor() }
+                // The source's own page, named by its site, unless it's one of the advisory links above.
+                if let url = finding.sourcePage { Link("Open \(finding.sourceSite)", destination: url).font(.callout).linkCursor() }
             }
         }.sheet(isPresented: $reporting) { ReportSheet(finding: finding).environmentObject(monitor) }
     }
@@ -1086,7 +1087,7 @@ struct FindingCard: View {
             if !finding.installation.note.isEmpty { Text(finding.installation.note).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
             Text("\(finding.installation.version)  →  \(finding.fixed)").font(.system(.callout, design: .monospaced))
             if finding.stale { Label("Previous finding · could not verify on this check", systemImage: "clock.badge.exclamationmark").font(.caption).foregroundStyle(.orange) }
-            Text(finding.reason).font(.callout).foregroundStyle(.secondary)
+            Text(finding.reasonWithDates()).font(.callout).foregroundStyle(.secondary)
             Text(finding.action).font(.callout)
             if let blocked = finding.blocked { BlockedNotice(text: blocked) }
             UpdateOptions(options: finding.commands ?? [])
@@ -1174,7 +1175,7 @@ struct FindingGroupCard: View {
                         Text(itemBadge.0).font(.caption2.weight(.semibold)).foregroundStyle(itemBadge.1)
                     }
                     if finding.stale { Label("Previous finding · could not verify on this check", systemImage: "clock.badge.exclamationmark").font(.caption).foregroundStyle(.orange) }
-                    Text(finding.reason).font(.callout).foregroundStyle(.secondary)
+                    Text(finding.reasonWithDates()).font(.callout).foregroundStyle(.secondary)
                     AlternativeOptions(options: finding.blocked == nil ? Array((finding.commands ?? []).dropFirst()) : finding.commands ?? [])
                     FindingEvidence(finding: finding)
                 }
