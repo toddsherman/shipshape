@@ -530,3 +530,10 @@ struct HTTPStatusError: LocalizedError {
     let status: Int
     var errorDescription: String? { "\(host) returned HTTP \(status)" }
 }
+
+// Quit in the Dock, or in the Command-Tab switcher that the Dock also runs, keeps Shipshape watching from the menu bar:
+// it closes the dashboard and the Dock icon instead of quitting. Every other quit ends it: Quit in the menu bar panel,
+// Command-Q, logging out or restarting (sent by loginwindow) and installing an update.
+enum Quitting {
+    static func staysInMenuBar(quitFrom sender: String?) -> Bool { sender == "com.apple.dock" }
+}

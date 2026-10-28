@@ -2,6 +2,10 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.21 — October 27, 2026
+
+- **Quit in the Dock keeps Shipshape in the menu bar.** It closes the dashboard and removes the Dock icon, and checks carry on; opening the dashboard from the menu bar brings the icon back. The same goes for quitting from the Command-Tab switcher. Quit in the menu bar panel, Command-Q, logging out and restarting still quit.
+
 ## 0.3.20 — October 27, 2026
 
 - **The Security summary leads with a status badge instead of the gauge,** set by the most urgent finding: **Act now** for malicious packages or known exploitation, **Fix soon** for security fixes or end of support, **Nothing urgent** when only findings waiting for a fix or updates remain, and **All clear**. A high percentage could look healthy with a malicious package present; the badge can't. The share of your inventory that needs no action is now a caption in the corner, the bar's legend shows each kind's count, and tiles with findings take their bar color: orange for security fixes and end of support, gray for waiting for a fix and blue for updates. Malicious packages and known exploitation are still filled red.

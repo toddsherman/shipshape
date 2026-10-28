@@ -1058,6 +1058,9 @@ import Foundation
                && FindingCategory.Urgency([.security: 2, .waiting: 5]) == .fixSoon && FindingCategory.Urgency([.unsupported: 1]) == .fixSoon
                && FindingCategory.Urgency([.waiting: 3, .updates: 2]) == .nothingUrgent && FindingCategory.Urgency([:]) == .clear,
                "the summary's status follows the most urgent kind of finding, however few")
+        expect(Quitting.staysInMenuBar(quitFrom: "com.apple.dock") && !Quitting.staysInMenuBar(quitFrom: nil)
+               && !Quitting.staysInMenuBar(quitFrom: "com.apple.loginwindow") && !Quitting.staysInMenuBar(quitFrom: "org.sparkle-project.Sparkle.Autoupdate"),
+               "only Quit in the Dock keeps Shipshape in the menu bar; the panel's Quit, Command-Q, logging out and updates quit")
         print("Passed \(count) rule, failure-retention, notification-fingerprint and scheduling checks")
     }
 }

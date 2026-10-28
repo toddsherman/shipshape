@@ -1,4 +1,4 @@
-Shipshape 0.3.20 — macOS preview
+Shipshape 0.3.21 — macOS preview
 
 Requires macOS 13 or later. Includes Apple silicon and Intel binaries.
 
@@ -20,7 +20,8 @@ A fresh check runs each time the app opens, daily at 9 a.m. Pacific while
 the app is running, and when you click Check now. Missed checks catch up
 after wake. History logs every recommendation and when it was resolved.
 Closing the dashboard leaves Shipshape running in the menu bar and the
-Dock; click either to open it again. Quitting the app stops monitoring.
+Dock; click either to open it again. Quit in the Dock also keeps it in
+the menu bar. Quit in the menu bar panel, or Command-Q, stops monitoring.
 
 Coverage is partial
 Google Chrome and App Store apps are not checked; they update through

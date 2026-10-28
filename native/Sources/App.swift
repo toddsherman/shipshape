@@ -265,8 +265,23 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     func openData() { NSWorkspace.shared.open(folder) }
 }
 
+// Quit in the Dock closes the dashboard and removes the Dock icon instead of quitting (see Quitting); the Dashboard puts
+// the icon back when it opens. The Dock sends Quit as an Apple event, so its sender tells it apart from Command-Q.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminate(_ app: NSApplication) -> NSApplication.TerminateReply {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent, event.eventClass == AEEventClass(kCoreEventClass),
+              event.eventID == AEEventID(kAEQuitApplication) else { return .terminateNow }
+        let pid = event.attributeDescriptor(forKeyword: AEKeyword(keySenderPIDAttr))?.int32Value
+        guard Quitting.staysInMenuBar(quitFrom: pid.flatMap { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier }) else { return .terminateNow }
+        for window in app.windows where window.isVisible && window.canBecomeMain { window.close() }
+        app.setActivationPolicy(.accessory)
+        return .terminateCancel
+    }
+}
+
 @main
 struct ShipshapeApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var monitor = Monitor()
     @StateObject private var updates = Updates()
     var body: some Scene {
@@ -443,6 +458,7 @@ struct Dashboard: View {
             }.frame(maxWidth: .infinity)
         }.frame(minWidth: 900, minHeight: 640)
         .sheet(isPresented: $monitor.feedbackOpen) { FeedbackSheet().environmentObject(monitor) }
+        .onAppear { NSApp.setActivationPolicy(.regular) }
         .onReceive(NotificationCenter.default.publisher(for: .init("ShowDashboard"))) { _ in openWindow(id: "dashboard") }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in monitor.refreshSettings() }
     }
