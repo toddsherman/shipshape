@@ -1,4 +1,4 @@
-# Shipshape for macOS — 0.3.23 preview
+# Shipshape for macOS — 0.3.24 preview
 
 A native SwiftUI app for macOS 13 or later, in the menu bar and the Dock, built for Apple silicon and Intel. It watches the developer stack people install to build apps with AI coding tools such as Claude Code and Codex, and shows the easiest way to install each fix. No Python, Node, Homebrew, account or API key is needed to run it.
 
@@ -46,6 +46,8 @@ CISA's Known Exploited Vulnerabilities catalog raises the priority of any findin
 **Advisory dates.** A card's explanation ends with when its advisory was first published, or the newest one's date when there are several, plus how long ago within 30 days; malicious-package reports say "Reported". Hovering an advisory ID shows its own date, and a CVE listed beside the GitHub advisory for the same issue says which one it matches and gives that advisory's date (the CVE itself may be older), so no date shows twice. Dates come from data each check already downloads: OSV's `published`, NVD's `published` (when NVD published the CVE, which can be days after the vendor's advisory), GitHub's `published_at` and CISA's `dateAdded`. Vendor pages without per-advisory dates (Node, PostgreSQL, OpenSSL) show none. Dates are for display only: they don't affect the order of findings, their urgency or alerts. NVD results cached by an earlier version show dates once the 20-hour cache refreshes.
 
 **Links.** Each advisory ID links to its own page (the source's, NVD for CVEs, OSV otherwise); finding cards have no other web link. Copy and Show in Finder appear while the pointer is over a finding's location.
+
+**Cards.** Text in a finding, summary or Coverage card can be selected and copied (SwiftUI selects one piece of text at a time, such as the explanation or the version line). Each finding has a bug button (**Report a problem**) that opens a filled-in GitHub issue; a card combining several findings under one command also has one in its header, which reports the shared command and every finding in it.
 
 NVD matching uses only explicit version ranges or exact versions on macOS-applicable configurations. Pre-release and unbounded "all versions" entries are ignored. NVD can lag vendor advisories, and Homebrew sometimes ships patches without changing a version, so NVD findings say so.
 

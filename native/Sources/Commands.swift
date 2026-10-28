@@ -523,8 +523,20 @@ enum Feedback {
     static func title(for finding: Finding, problem: Problem) -> String {
         redact("\(finding.installation.name) \(finding.installation.version): \(problem.title)")
     }
+    // A card that combines several findings under one command reports them together: the card's name, then the
+    // command they share and each finding without the command it would have alone.
+    static func title(for findings: [Finding], named name: String, problem: Problem) -> String {
+        guard findings.count > 1 else { return title(for: findings[0], problem: problem) }
+        let kind = findings[0].kind == .update ? "updates" : "findings"
+        return redact("\(name), \(findings.count) \(kind): " + (problem == .other ? "problem with these findings" : problem.title))
+    }
+    static func summary(of findings: [Finding], command: UpdateCommand?) -> String {
+        guard findings.count > 1 else { return summary(of: findings[0]) }
+        let shared = command.map { "- **Shown for all \(findings.count):** " + ($0.kind == nil ? code($0.text) : $0.text) + "\n\n" } ?? ""
+        return redact(shared + findings.map { summary(of: $0, shown: command == nil) }.joined(separator: "\n\n"))
+    }
     // What Shipshape knows about a finding, as a Markdown list for the issue's "The finding" field.
-    static func summary(of finding: Finding) -> String {
+    static func summary(of finding: Finding, shown: Bool = true) -> String {
         let item = finding.installation
         let status = finding.malicious == true ? "malicious package" : finding.awaitingFix == true ? "no fix released yet"
             : finding.kind == .update ? "update" : finding.kind == .unsupported ? "unsupported" : "security fix"
@@ -532,7 +544,7 @@ enum Feedback {
         if !item.note.isEmpty { lines.append("**Installed:** " + item.note) }
         lines.append("**Read from:** " + code(item.sourceFile))
         lines.append("**Found by:** " + [finding.source, item.manager, item.ecosystem].compactMap { $0 }.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }.joined(separator: " · "))
-        if let command = finding.commands?.first { lines.append("**Shown:** " + (command.kind == nil ? code(command.text) : command.text)) }
+        if shown, let command = finding.commands?.first { lines.append("**Shown:** " + (command.kind == nil ? code(command.text) : command.text)) }
         if let blocked = finding.blocked { lines.append("**No command:** " + blocked) }
         if finding.stale { lines.append("**Status:** an earlier finding the last check couldn't verify") }
         if !finding.advisories.isEmpty { lines.append("**Advisories:** " + finding.advisories.joined(separator: ", ")) }

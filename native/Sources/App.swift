@@ -552,10 +552,10 @@ struct Dashboard: View {
                     ForEach((monitor.report?.checks ?? []).filter { $0.status != "checked" || !$0.id.hasPrefix("nvd:") }) { check in
                         VStack(alignment: .leading, spacing: 8) {
                             HStack { Text(check.name).fontWeight(.semibold); Spacer(); Text(check.status.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(check.status == "failed" || check.status == "partial" ? Color.orange : .secondary) }
-                            Text(check.detail).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                            Text(check.detail).font(.callout).foregroundStyle(.secondary)
                             if let url = check.url, let link = URL(string: url) { Link("Open website", destination: link).font(.caption).linkCursor() }
                             if check.id == "app-signatures" { Button("Show every app's signature") { query = ""; domain = "signatures"; monitor.section = "Inventory" }.buttonStyle(.link).font(.caption) }
-                        }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+                        }.textSelection(.enabled).padding(16).frame(maxWidth: .infinity, alignment: .leading).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
                     }
                     let nvd = (monitor.report?.checks ?? []).filter { $0.status == "checked" && $0.id.hasPrefix("nvd:") }
                     if !nvd.isEmpty { Text("Also checked against NVD: " + nvd.map { $0.name.replacingOccurrences(of: " (NVD)", with: "") }.joined(separator: ", ") + ".").font(.callout).foregroundStyle(.secondary).padding(.top, 4) }
@@ -907,10 +907,12 @@ func findingBadge(_ finding: Finding) -> (String, Color) {
     case .update: return ("UPDATE", .blue)
     }
 }
+// Text in a card can be selected and copied, as in a document: a drag, a double-click or Command-A selects within
+// one piece of text at a time, such as the explanation or a version line.
 struct CardStyle: ViewModifier {
     var alert = false
     func body(content: Content) -> some View {
-        content.padding(18).frame(maxWidth: .infinity, alignment: .leading)
+        content.textSelection(.enabled).padding(18).frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(alert ? Color.red.opacity(0.5) : Color.primary.opacity(0.07)))
     }
@@ -965,7 +967,7 @@ struct FindingEvidence: View {
             Spacer()
             Button { reporting = true } label: { Image(systemName: "ladybug") }.buttonStyle(.borderless).font(.callout).foregroundStyle(Color.accentColor)
                 .help("Report a problem: opens a GitHub issue about this finding, filled in for you to check and submit.").accessibilityLabel("Report a problem")
-        }.sheet(isPresented: $reporting) { ReportSheet(finding: finding).environmentObject(monitor) }
+        }.sheet(isPresented: $reporting) { ReportSheet(findings: [finding]).environmentObject(monitor) }
     }
     func flash() { copied = true; DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false } }
 }
@@ -979,31 +981,35 @@ func showInFinder(_ url: URL) {
        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path) { return }
     NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: parent)
 }
-// Report a problem with one finding: the issue's text, editable, before it opens on GitHub.
+// Report a problem with one finding, or with a card of findings that share a command (named as on the card): the
+// issue's text, editable, before it opens on GitHub.
 struct ReportSheet: View {
-    let finding: Finding
+    let findings: [Finding]
+    var name = ""
+    var command: UpdateCommand?
     @State private var problem = Feedback.Problem.fixFailed
     @State private var title = ""
     @State private var details = ""
     @State private var summary = ""
+    func suggestedTitle(_ problem: Feedback.Problem) -> String { Feedback.title(for: findings, named: name, problem: problem) }
     var body: some View {
         // The suggested title follows the choice of problem until it's edited.
         let choice = Binding(get: { problem }, set: { new in
-            if title == Feedback.title(for: finding, problem: problem) { title = Feedback.title(for: finding, problem: new) }
+            if title == suggestedTitle(problem) { title = suggestedTitle(new) }
             problem = new
         })
         VStack(alignment: .leading, spacing: 12) {
-            Text("Report a problem with \(finding.installation.name)").font(.title3.weight(.semibold))
+            Text("Report a problem with \(findings.count == 1 ? findings[0].installation.name : name)").font(.title3.weight(.semibold))
             Text("This opens a new issue on GitHub with the text below filled in, for you to check and submit with your GitHub account. Issues are public, so remove anything private, such as project names. Your home folder is shown as ~.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Picker("What's wrong", selection: choice) { ForEach(Feedback.Problem.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
             FeedbackField(label: "Title", text: $title)
             FeedbackEditor(label: "What happened", prompt: "Paste the Terminal output, or describe what you saw.", text: $details, height: 110)
-            FeedbackEditor(label: "The finding", prompt: "", text: $summary, height: 130)
+            FeedbackEditor(label: findings.count == 1 ? "The finding" : "The findings", prompt: "", text: $summary, height: 130)
             Text(Feedback.system).font(.caption).foregroundStyle(.secondary)
-            FeedbackButtons { Feedback.report(finding, problem: problem, title: title, details: details, summary: summary) }
+            FeedbackButtons { Feedback.report(findings[0], problem: problem, title: title, details: details, summary: summary) }
         }.padding(20).frame(width: 640)
-        .onAppear { if title.isEmpty { title = Feedback.title(for: finding, problem: problem); summary = Feedback.summary(of: finding) } }
+        .onAppear { if title.isEmpty { title = suggestedTitle(problem); summary = Feedback.summary(of: findings, command: command) } }
     }
 }
 // Send feedback: an idea, a question or a problem, or software Shipshape should check.
@@ -1131,6 +1137,7 @@ struct FindingList: View {
 struct FindingGroupCard: View {
     @EnvironmentObject var monitor: Monitor
     let group: FindingGroup
+    @State private var reporting = false
     var findings: [Finding] { group.findings }
     var sameName: Bool { Set(findings.map(\.installation.name)).count == 1 }
     var place: String? { Set(findings.compactMap(\.installation.location)).count == 1 ? findings[0].installation.location : nil }
@@ -1156,6 +1163,9 @@ struct FindingGroupCard: View {
                 Text("\(findings.count) \(findings[0].kind == .update ? "updates" : "findings")" + (findings[0].blocked == nil ? ", one command" : "")).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Text(badge.0).font(.caption2.weight(.bold)).foregroundStyle(badge.1)
+                // Reports the whole card, such as its shared command failing; each finding below keeps its own button.
+                Button { reporting = true } label: { Image(systemName: "ladybug") }.buttonStyle(.borderless).font(.callout).foregroundStyle(Color.accentColor)
+                    .help("Report a problem: opens a GitHub issue about these \(findings.count) findings, filled in for you to check and submit.").accessibilityLabel("Report a problem with all of them")
             }
             if !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
             if let blocked = findings[0].blocked { BlockedNotice(text: blocked) }
@@ -1177,6 +1187,7 @@ struct FindingGroupCard: View {
                 }
             }
         }.modifier(CardStyle(alert: findings.contains { $0.malicious == true }))
+        .sheet(isPresented: $reporting) { ReportSheet(findings: findings, name: title, command: group.command).environmentObject(monitor) }
     }
 }
 // The time of the last check and how long ago it was, kept current while it's on screen.

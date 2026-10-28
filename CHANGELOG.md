@@ -2,6 +2,11 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## Unreleased
+
+- **Text in a card can be selected and copied,** as in a document: drag across an explanation, a version or a note, or double-click a word, then copy it. Each piece of text is selected on its own.
+- **A card that combines several findings under one command has its own bug button,** beside its badge. It reports the whole card: the command they share, then each finding. Each finding in it keeps its own button too.
+
 ## 0.3.23 — October 28, 2026
 
 - **Findings say when their advisory came out.** Each card's explanation ends with the date its advisory was published, or the newest one's when there are several, plus how long ago for anything in the last 30 days. Malicious-package reports say when they were reported, and known exploitation says when CISA listed it. Hover over an advisory ID for its own date; a CVE that's the same issue as a GitHub advisory says so. Dates come from OSV, NVD, GitHub and CISA data Shipshape already downloads, and they never change the order of findings, their urgency or alerts.

@@ -339,6 +339,14 @@ import Foundation
         let shapes = groupByCommand([withCommands(brew("ada-url", "brew-old")), withCommands(brew("curl")), withCommands(brew("brotli", "brew-old")), withCommands(brew("git"))])
         expect(shapes.count == 2 && shapes[0].command?.text == "brew upgrade ada-url brotli && brew cleanup ada-url brotli" && shapes[1].command?.text == "brew upgrade curl git",
                "cards group by command template: older copies of different formulae share one card")
+        let cardReport = Feedback.summary(of: shapes[1].findings, command: shapes[1].command)
+        expect(Feedback.title(for: shapes[1].findings, named: "Homebrew formulae", problem: .fixFailed) == "Homebrew formulae, 2 updates: the fix didn't work"
+               && Feedback.title(for: shapes[1].findings, named: "Homebrew formulae", problem: .other) == "Homebrew formulae, 2 updates: problem with these findings"
+               && Feedback.title(for: [shapes[1].findings[0]], named: "Homebrew formulae", problem: .fixFailed) == Feedback.title(for: shapes[1].findings[0], problem: .fixFailed),
+               "a card's report is titled with its name and count; one finding keeps its own title")
+        expect(cardReport.hasPrefix("- **Shown for all 2:** `brew upgrade curl git`\n\n- **Finding:** curl ") && cardReport.contains("\n\n- **Finding:** git ")
+               && !cardReport.contains("**Shown:**") && Feedback.summary(of: shapes[1].findings, command: nil).components(separatedBy: "**Shown:**").count == 3,
+               "a card's report gives the shared command once, then each finding; without one, each finding keeps its own")
 
         // Versions with text around the number, and a final guard against "updates" to the installed release.
         expect(!looseLess("Build 4215", "4215") && !looseLess("4215", "Build 4215") && looseLess("Build 4215", "4216") && looseLess("r3222", "r3223") && looseLess("v1.2", "1.2.1"),
