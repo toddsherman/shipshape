@@ -2,7 +2,7 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
-## Unreleased
+## 0.3.24 — October 28, 2026
 
 - **Text in a card can be selected and copied,** as in a document: drag across an explanation, a version or a note, or double-click a word, then copy it. Each piece of text is selected on its own.
 - **A card that combines several findings under one command has its own bug button,** beside its badge. It reports the whole card: the command they share, then each finding. Each finding in it keeps its own button too.
