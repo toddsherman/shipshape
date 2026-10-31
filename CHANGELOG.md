@@ -2,7 +2,7 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
-## Unreleased
+## 0.3.26 — October 31, 2026
 
 - **Packages a tool holds back no longer offer a fix that can't work.** npx cache cards now name the tool npx installed. When that tool requires an affected version of a package and its newest release still does, deleting the cache would only bring the package back, so the finding moves to **Waiting for a fix**, says what's holding it back and offers no command. Shipshape alerts you when a release allows the fix. It reads this from the cached install's own files and asks npm for the tool's newest release, which receives the tool's name only. Malicious packages are still flagged for removal, whatever needs them.
 - **The lookout stays at his post.** He now stands beside Check now all the time, smaller and paler, and moves only during a check: he eases into his watch and settles back when it ends. The rest of the time he's a still picture that uses no processor time.
