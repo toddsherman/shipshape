@@ -68,7 +68,7 @@ enum Inventory {
         read(path, limit: limit, followLinks: true).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
     }
 
-    static func collect(projectFolders: [String] = []) -> ScanReport {
+    static func collect(projectFolders: [String] = [], progress: (String) -> Void = { _ in }) -> ScanReport {
         var report = ScanReport()
         var seen = Set<String>()
         func add(_ items: [Installation]) { for item in items where seen.insert(item.path).inserted { report.installations.append(item) } }
@@ -76,21 +76,26 @@ enum Inventory {
             report.domains[domain] = errors.isEmpty
             report.checks.append(SourceCheck(id: id, name: name, status: errors.isEmpty ? "checked" : failed ? "failed" : "partial", detail: errors.isEmpty ? detail : errors.prefix(8).joined(separator: "; ")))
         }
+        progress("Reading apps and how they're signed")
         let (apps, appErrors, skipped, signatures, unreadable) = self.apps()
         add(apps)
         check("inventory-apps", "Developer apps", "apps", appErrors, "Read \(apps.filter { $0.manager == "app" }.count) apps in /Applications and your Applications folder: catalog developer apps, plus self-updating apps with a Sparkle feed or a bundled Sparkle, and the Sparkle version inside \(apps.filter { $0.manager == "sparkle-framework" }.count) of them. Skipped \(skipped) App Store or Google Chrome app\(skipped == 1 ? "" : "s") by design.")
         report.signatures = signatures
         report.checks.append(SourceCheck(id: "app-signatures", name: "App signatures", status: "checked", detail: AppSignature.coverage(signatures, unreadable: unreadable)))
+        progress("Reading what Homebrew has installed")
         let (brew, brewErrors) = homebrew()
         add(brew)
         check("inventory-brew", "Homebrew inventory", "brew", brewErrors, "Read \(brew.count) installed formula, cask and bundled Python package versions, including retained copies.", failed: true)
+        progress("Reading runtimes and AI coding tools")
         let (tools, toolErrors) = runtimes(existing: report.installations)
         add(tools)
         add(mise())
         check("inventory-tools", "Runtimes and AI coding tools", "tools", toolErrors, "Node (standard, nvm, Volta, fnm), Bun, Deno, uv, Go, python.org, uv and pyenv Pythons, runtimes installed with mise, and native installs of Claude Code, OpenCode and Copilot CLI.")
+        progress("Reading global packages")
         let (packages, packageErrors) = globalPackages()
         add(packages)
         check("inventory-packages", "Global packages", "packages", packageErrors, "Read \(packages.count) globally installed npm, Bun, pnpm, pip, pipx, uv tool, cargo, Ruby gem and go install packages, the npx cache, and VS Code, Cursor and Windsurf extensions.")
+        if !projectFolders.isEmpty { progress("Reading lockfiles in \(projectFolders.count) project folder\(projectFolders.count == 1 ? "" : "s")") }
         var lockfiles: [String] = [], mcpFiles: [String] = [], projectErrors: [String] = []
         for folder in projectFolders {
             guard fm.fileExists(atPath: folder) else { projectErrors.append("Cannot read \(display(folder))"); continue }
@@ -101,6 +106,7 @@ enum Inventory {
         check("inventory-projects", "Project dependencies", "projects", projectErrors, projectFolders.isEmpty
               ? "No project folders chosen. Add them in Settings to check your apps' dependencies."
               : "Read \(projectItems.count) package versions from \(lockfiles.count) lockfiles in \(projectFolders.count) project folder\(projectFolders.count == 1 ? "" : "s").")
+        progress("Reading MCP server settings")
         let (servers, mcpErrors) = mcpServers(projectFiles: mcpFiles)
         add(servers)
         check("inventory-mcp", "MCP servers", "mcp", mcpErrors, "Read \(servers.count) package-based MCP servers from Claude Code, Claude, Codex, Cursor, Windsurf, VS Code and Gemini CLI settings.")

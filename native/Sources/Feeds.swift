@@ -200,20 +200,84 @@ struct HomebrewMetadata: Sendable {
     }
 }
 
+// What a running check is doing: a line on this moment, a line on why it takes the time it does or what leaves this Mac,
+// and the whole route with what each finished step found. Steps that don't apply to this Mac drop off the route.
+struct CheckProgress: Equatable {
+    enum State { case waiting, running, finished, failed }
+    struct Step: Identifiable, Equatable {
+        let id: String, title: String
+        var state = State.waiting
+        var result: String? = nil
+    }
+    var steps = [("inventory", "Software on this Mac"), ("vendors", "Vendor security releases"), ("osv", "Package advisories (OSV)"),
+                 ("actions", "GitHub Actions"), ("sparkle", "Sparkle update feeds"), ("extensions", "Editor extensions"),
+                 ("nvd", "National Vulnerability Database"), ("homebrew", "Homebrew releases"), ("apple", "Apple Software Update"),
+                 ("kev", "CISA's exploited list")].map { Step(id: $0.0, title: $0.1) }
+    var now = "Starting the check"
+    var why: String? = nil
+    var findings = 0
+    var running: Int? { steps.firstIndex { $0.state == .running } }
+    mutating func start(_ id: String) { if let index = steps.firstIndex(where: { $0.id == id }) { steps[index].state = .running } }
+    mutating func finish(_ result: String, failed: Bool = false) {
+        guard let running else { return }
+        steps[running].state = failed ? .failed : .finished
+        steps[running].result = result
+    }
+    mutating func skip(_ id: String) { steps.removeAll { $0.id == id } }
+    // "Step 7 of 10 · 8 findings so far"
+    var tally: String {
+        let step = running.map { $0 + 1 } ?? steps.filter { $0.state == .finished || $0.state == .failed }.count
+        return "Step \(max(step, 1)) of \(steps.count) · " + (findings == 0 ? "No findings so far" : Self.count(findings, "finding") + " so far")
+    }
+    static func count(_ number: Int, _ noun: String) -> String { "\(number) \(noun)\(number == 1 ? "" : "s")" }
+    // NVD's line while its step runs, from how many requests are still to make, each about 7.5 seconds with its wait.
+    static func nvdNote(requests: Int) -> String {
+        guard requests > 0 else { return "Using NVD's answers saved by a check in the last 20 hours." }
+        let seconds = Double(requests) * 7.5, minutes = max(Int((seconds / 60).rounded()), 1)
+        return "NVD allows about five requests per 30 seconds, so Shipshape waits between them. "
+            + (seconds < 50 ? "Less than a minute left in this step." : "About \(count(minutes, "minute")) left in this step.")
+    }
+}
+
 enum Scanner {
-    static func run(previous: ScanReport? = nil, projectFolders: [String] = [], progress: @escaping (String) -> Void = { _ in }) async -> ScanReport {
-        progress("Finding developer tools and packages")
-        var report = Inventory.collect(projectFolders: projectFolders)
+    static func run(previous: ScanReport? = nil, projectFolders: [String] = [], progress: @escaping (CheckProgress) -> Void = { _ in }) async -> ScanReport {
+        var live = CheckProgress(), started = 0  // started: how many checks were recorded when the running step began
+        live.start("inventory")
+        live.now = "Looking through this Mac"
+        live.why = "Reading what's installed. Nothing leaves this Mac in this step."
+        progress(live)
+        var report = Inventory.collect(projectFolders: projectFolders) { live.now = $0; progress(live) }
+        func show(_ now: String, why: String? = nil) {
+            live.now = now
+            if let why { live.why = why }
+            live.findings = report.findings.count
+            progress(live)
+        }
+        func begin(_ id: String, _ now: String, why: String? = nil) {
+            started = report.checks.count
+            live.start(id)
+            live.why = why
+            show(now)
+        }
+        // A step with a source that couldn't be read says so; Coverage has the reason.
+        func end(_ result: String) {
+            let failed = report.checks[started...].filter { $0.status == "failed" }.count
+            live.finish(failed == 0 ? result : "\(failed) couldn't be read; see Coverage", failed: failed > 0)
+        }
         func items(_ product: String) -> [Installation] { report.installations.filter { $0.product == product } }
         func record(_ id: String, _ name: String, _ detail: String, url: String? = nil, status: String = "checked") {
             report.checks.append(SourceCheck(id: id, name: name, status: status, detail: detail, url: url))
         }
         func failure(_ id: String, _ name: String, _ error: Error) { record(id, name, error.localizedDescription, status: "failed") }
 
-        progress("Checking vendor security releases")
+        end(CheckProgress.count(report.installations.count, "installation"))
+        begin("vendors", "Checking vendor security releases", why: "Reading each project's published advisories and comparing your versions here on this Mac.")
+        var vendors: [String] = []
         do {
             let installed = items("node")
             if !installed.isEmpty {
+                vendors.append("Node")
+                show("Checking Node security releases")
                 async let releaseData = Fetch.json("https://nodejs.org/dist/index.json")
                 async let scheduleData = Fetch.json("https://raw.githubusercontent.com/nodejs/Release/main/schedule.json")
                 guard let releases = try await releaseData as? [[String: Any]], let schedule = try await scheduleData as? [String: Any] else { throw MonitorError(message: "Invalid Node release data") }
@@ -227,6 +291,8 @@ enum Scanner {
             do {
                 let installed = items(product.id)
                 if !installed.isEmpty {
+                    vendors.append(product.name)
+                    show("Checking \(product.name) security advisories")
                     guard let advisories = try await Fetch.json("https://api.github.com/repos/\(repo)/security-advisories?per_page=100") as? [[String: Any]], advisories.count < 100 else { throw MonitorError(message: "\(product.name) advisory response was invalid or needs pagination") }
                     for item in installed {
                         let finding = product.id == "bun" ? try Rules.bun(item, advisories: advisories)
@@ -240,6 +306,8 @@ enum Scanner {
         do {
             let installed = items("postgresql")
             if !installed.isEmpty {
+                vendors.append("PostgreSQL")
+                show("Checking PostgreSQL security releases")
                 let html = try await Fetch.string("https://www.postgresql.org/support/security/")
                 for item in installed { if let f = try Rules.postgres(item, html: html) { report.findings.append(f) } }
             }
@@ -249,6 +317,10 @@ enum Scanner {
             let installed = items("openssl")
             guard installed.allSatisfy({ Version($0.version) != nil }) else { throw MonitorError(message: "An OpenSSL version uses an unsupported format; review it manually") }
             var indexed: Set<String>? = nil, unpublished: [String] = []
+            if !installed.isEmpty {
+                vendors.append("OpenSSL")
+                show("Checking OpenSSL vulnerabilities")
+            }
             for branch in Set(installed.compactMap { Version($0.version)?.branch }).sorted() {
                 let html: String
                 do { html = try await Fetch.string("https://openssl-library.org/news/vulnerabilities-\(branch)/index.html") }
@@ -270,42 +342,54 @@ enum Scanner {
 
         // Package-level advisories and malicious-package reports for every inventoried package version.
         let packages = report.installations.filter { OSV.key($0) != nil && $0.manager != "brew-old" }
-        progress("Checking \(Set(packages.compactMap(OSV.key)).count) package versions with OSV")
+        let versions = Set(packages.compactMap(OSV.key)).count
+        end(vendors.isEmpty ? "None installed" : vendors.joined(separator: ", "))
+        begin("osv", "Checking \(CheckProgress.count(versions, "package version")) with OSV", why: "OSV receives package names and versions only.")
+        var matched = 0
         do {
             let matches = try await OSV.query(packages)
-            let vulns = try await OSV.details(Set(matches.values.flatMap { $0 }))
+            let ids = Set(matches.values.flatMap { $0 })
+            matched = ids.count
+            if matched > 0 { show("Reading \(matched) matching advisor\(matched == 1 ? "y" : "ies") from OSV") }
+            let vulns = try await OSV.details(ids)
             report.findings += OSV.findings(for: packages, matches: matches, vulns: vulns)
             record("osv", "Package advisories (OSV)", "\(Set(packages.compactMap(OSV.key)).count) package versions across npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven checked, including OpenSSF malicious-package reports.", url: "https://osv.dev/")
         } catch { failure("osv", "Package advisories (OSV)", error) }
+        end(CheckProgress.count(versions, "package version") + ", \(matched) advisor\(matched == 1 ? "y" : "ies")")
         if report.installations.contains(where: { $0.ecosystem == "GitHub Actions" }) {
-            progress("Checking GitHub Actions in workflows")
+            begin("actions", "Checking GitHub Actions in workflows", why: "OSV receives action names and versions only.")
+            var references = 0
             do {
                 let (found, checked, unknown) = try await GitHubActions.findings(report.installations)
                 report.findings += found
+                references = checked
                 record("github-actions", "GitHub Actions (OSV)", "\(checked) action references in project workflows checked against their published affected versions."
                        + (unknown > 0 ? " \(unknown) can't be checked: they point at a branch or a commit with no version comment." : ""), url: "https://osv.dev/list?ecosystem=GitHub%20Actions")
             } catch { failure("github-actions", "GitHub Actions (OSV)", error) }
-        }
+            end(CheckProgress.count(references, "action reference"))
+        } else { live.skip("actions") }
         // Apps already at their newest release, from their Sparkle feed or Homebrew's cask data.
         var currentApps = Set<String>(), freshApps: [String: SparkleFeeds.Release] = [:]
         // Sparkle feeds name the newest release of self-updating apps, including apps outside the catalog.
         if report.installations.contains(where: { $0.feed != nil }) {
-            progress("Checking Sparkle update feeds")
+            begin("sparkle", "Reading apps' own update feeds", why: "Each self-updating app's feed says what its newest release is.")
             let (found, current, fresh, read, unreadable) = await SparkleFeeds.findings(report.installations, skipping: Set(report.findings.map(\.installation.path)))
             report.findings += found
             currentApps.formUnion(current)
             freshApps = fresh
             record("sparkle-feeds", "Sparkle update feeds", "\(read) self-updating apps' own update feeds checked for newer releases."
                    + (unreadable > 0 ? " \(unreadable) feed\(unreadable == 1 ? "" : "s") couldn't be read; those apps still check for updates themselves." : ""), url: "https://sparkle-project.org/documentation/publishing/")
-        }
+            end(CheckProgress.count(read, "feed") + " read" + (unreadable > 0 ? ", \(unreadable) unreadable" : ""))
+        } else { live.skip("sparkle") }
         let extensions = report.installations.filter { $0.manager == "extension" }
         if !extensions.isEmpty {
-            progress("Checking editor extensions")
+            begin("extensions", "Checking \(CheckProgress.count(extensions.count, "editor extension"))", why: "Comparing them with Microsoft's list of extensions removed from its marketplace.")
             do {
                 report.findings += EditorExtensions.findings(extensions, removed: try EditorExtensions.removed(try await Fetch.string(EditorExtensions.source)))
                 record("extensions", "Editor extensions", "\(extensions.count) VS Code, Cursor and Windsurf extensions checked against Microsoft's list of extensions removed from its marketplace as malware, impersonation or untrustworthy. Vulnerabilities in extensions aren't checked; no public database covers them.", url: EditorExtensions.page)
             } catch { failure("extensions", "Editor extensions", error) }
-        }
+            end(CheckProgress.count(extensions.count, "extension"))
+        } else { live.skip("extensions") }
 
         // NVD version ranges for catalog tools and libraries without a vendor rule. Without an API key NVD
         // allows about five requests per 30 seconds, so requests are spaced and results reused for 20 hours.
@@ -314,12 +398,15 @@ enum Scanner {
             guard let product = Catalog.byID[item.product], product.cpe != nil else { return false }
             return !Catalog.vendorRules.contains(product.id) && item.manager != "brew-old" && item.manager != "uv-python-old"
         }
+        // The leading number versions the matching rules; change it when NVD.evaluate changes.
+        func nvdKey(_ item: Installation) -> String { "3|" + Catalog.byID[item.product]!.cpe! + "|" + item.version }
         var nvdResults: [String: (checked: Int, problems: [String])] = [:]
-        var requested = false
+        var requested = false, saved = 0
+        if nvdItems.isEmpty { live.skip("nvd") } else { begin("nvd", "Checking NVD") }
         for (index, item) in nvdItems.enumerated() {
-            // The leading number versions the matching rules; change it when NVD.evaluate changes.
-            let product = Catalog.byID[item.product]!, key = "3|" + product.cpe! + "|" + item.version
-            progress("Checking NVD (\(index + 1) of \(nvdItems.count)): \(product.name)")
+            let product = Catalog.byID[item.product]!, key = nvdKey(item)
+            let requests = Set(nvdItems[index...].map(nvdKey)).filter { cache[$0] == nil }.count
+            show("Checking NVD (\(index + 1) of \(nvdItems.count)): \(product.name) \(item.version)", why: CheckProgress.nvdNote(requests: requests))
             do {
                 var hits = cache[key]?.hits
                 if hits == nil {
@@ -327,7 +414,7 @@ enum Scanner {
                     requested = true
                     hits = try await NVD.hits(cpe: product.cpe!, version: item.version)
                     cache[key] = NVDCacheEntry(date: Date(), hits: hits!)
-                }
+                } else { saved += 1 }
                 if let finding = NVD.finding(item, product: product, hits: hits!) { report.findings.append(finding) }
                 nvdResults[product.id, default: (0, [])].checked += 1
             } catch { nvdResults[product.id, default: (0, [])].problems.append("\(item.version): \(error.localizedDescription)") }
@@ -338,15 +425,17 @@ enum Scanner {
                    url: "https://nvd.nist.gov/products/cpe/search", status: result.problems.isEmpty ? "checked" : "failed")
         }
         report.nvdCache = cache
+        if !nvdItems.isEmpty { end(CheckProgress.count(nvdItems.count, "version") + (saved > 0 ? ", \(saved) from saved answers" : "")) }
 
         // Public Homebrew metadata supplies update candidates, not security verdicts. Cask metadata also says
         // whether each app updates itself and where its vendor page is, which ranks the update options.
-        progress("Checking Homebrew release metadata")
+        begin("homebrew", "Comparing with Homebrew's current releases", why: "Homebrew's public release lists are large, so downloading them can take a moment.")
         var context = CommandContext.detect()
         let formulae = report.installations.filter { $0.manager == "brew" && $0.package != nil }
         let apps = report.installations.filter { ($0.manager == "cask" || $0.manager == "app") && $0.package != nil }
-        var newestFormulae: [String: String] = [:]
+        var newestFormulae: [String: String] = [:], compared = 0, newer = 0
         for (kind, items) in [("formula", formulae), ("cask", apps)] where !items.isEmpty {
+            show("Reading Homebrew's \(kind) list")
             do {
                 let metadata = try await HomebrewMetadata.load(kind)
                 let latest = metadata.latest, builds = metadata.builds
@@ -368,6 +457,8 @@ enum Scanner {
                                                        : "Newer release metadata is available. This alone does not establish a security vulnerability.",
                                                    action: item.manager == "app" ? "Install the new release with one of the options below." : "Review the release notes, then update with Homebrew.", links: ["https://formulae.brew.sh/\(kind)/\(item.package!)"]))
                 }
+                compared += items.count - own.count
+                newer += candidates
                 record("homebrew-\(kind)", "Homebrew \(kind) metadata", "\(items.count - own.count) installations compared with Homebrew's current releases; \(candidates) newer."
                        + (own.isEmpty ? "" : " \(own.map(\.name).joined(separator: ", ")) \(own.count == 1 ? "updates itself" : "update themselves") on a release channel Homebrew doesn't track, so \(own.count == 1 ? "it isn't" : "they aren't") compared."), url: "https://formulae.brew.sh/")
             } catch { failure("homebrew-\(kind)", "Homebrew \(kind) metadata", error) }
@@ -391,18 +482,25 @@ enum Scanner {
             record("same-release", "Update sanity check", "\(skipped) update\(skipped == 1 ? "" : "s") skipped because the newer version was the installed release written differently.", status: "checked")
         }
 
+        end("\(compared) compared, \(newer) newer")
+        begin("apple", "Asking Apple Software Update", why: "Apple's own check can take a minute or more.")
+        var appleUpdates = false
         do {
             let result = try command("/usr/sbin/softwareupdate", ["--list"], timeout: 90)
             guard result.code == 0 else { throw MonitorError(message: "Apple Software Update could not complete; use System Settings") }
             if result.text.contains("* Label:") {
+                appleUpdates = true
                 let os = Installation(product: "macos", name: "Apple software", version: ProcessInfo.processInfo.operatingSystemVersionString, path: "System Settings → Software Update", domain: "apple")
                 report.findings.append(Finding(source: "apple", installation: os, kind: .update, fixed: "Available in System Settings", reason: String(result.text.suffix(3500)), action: "Review Apple's eligible updates, including Command Line Tools for Xcode, and their security notes.", links: ["https://support.apple.com/en-us/100100"]))
             } else if !result.text.contains("No new software available") { throw MonitorError(message: "Apple Software Update returned an unrecognized response") }
             record("apple", "Apple Software Update", "Checked macOS and Command Line Tools update eligibility. This does not verify App Store apps or pending process restarts.", url: "https://support.apple.com/en-us/100100")
         } catch { failure("apple", "Apple Software Update", error) }
+        end(appleUpdates ? "Updates available" : "Nothing new")
 
+        let hasCVEs = report.findings.contains { $0.advisories.contains { $0.hasPrefix("CVE-") } }
+        if hasCVEs { begin("kev", "Checking CISA's list of exploited vulnerabilities", why: "CISA publishes the vulnerabilities known to be used in real attacks.") } else { live.skip("kev") }
         do {
-            if report.findings.contains(where: { $0.advisories.contains { $0.hasPrefix("CVE-") } }) {
+            if hasCVEs {
                 guard let obj = try await Fetch.json("https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json") as? [String: Any],
                       let rows = obj["vulnerabilities"] as? [[String: Any]], !rows.isEmpty else { throw MonitorError(message: "CISA catalog could not be parsed") }
                 var listed: [String: Date] = [:]
@@ -427,6 +525,10 @@ enum Scanner {
                     report.findings[index].exploitedSince = earlier.exploitedSince
                 }
             }
+        }
+        if hasCVEs {
+            let exploited = report.findings.filter(\.exploited).count
+            end(exploited == 0 ? "None of your findings listed" : CheckProgress.count(exploited, "finding") + " listed")
         }
         record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven packages in projects, global installs (including cargo install, go install and Ruby gems), Python environments, the npx cache and pinned MCP servers, plus GitHub Actions in project workflows. Editor extensions: Microsoft's list of extensions removed as malware, impersonation or untrustworthy. Self-updating apps: their own Sparkle update feeds, and the Sparkle version bundled inside them, against Sparkle's advisories. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries. Excluded by design: Google Chrome and Mac App Store apps. Not covered: vulnerabilities in editor extensions, CocoaPods, containers and images, unpinned MCP servers that npx hasn't cached, GitHub Actions pinned to branches or bare commits, software outside the catalog and arbitrary install paths.", status: "manual")
         report.retainUnverified(from: previous)

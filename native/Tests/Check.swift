@@ -8,8 +8,8 @@ import Foundation
             let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
             return try? decoder.decode(ScanReport.self, from: data)
         }
-        let report = await Scanner.run(previous: previous, projectFolders: arguments.filter { !$0.hasSuffix(".json") }) { message in
-            FileHandle.standardError.write(Data((message + "\n").utf8))
+        let report = await Scanner.run(previous: previous, projectFolders: arguments.filter { !$0.hasSuffix(".json") }) { live in
+            FileHandle.standardError.write(Data((live.now + "\n").utf8))
         }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(report)

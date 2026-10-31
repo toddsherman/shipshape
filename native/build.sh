@@ -17,7 +17,7 @@ SDK="$(xcrun --sdk macosx --show-sdk-path)"
 for ARCH in arm64 x86_64; do
   xcrun swiftc -swift-version 5 -O -parse-as-library -target "$ARCH-apple-macos13.0" -sdk "$SDK" \
     -F "$SPARKLE" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-    "$ROOT"/native/Sources/{Models,Catalog,Lockfiles,Inventory,Advisories,Commands,Feeds,Updates,App}.swift \
+    "$ROOT"/native/Sources/{Models,Catalog,Lockfiles,Inventory,Advisories,Commands,Feeds,Updates,Lookout,App}.swift \
     -o "$BUILD/$EXECUTABLE-$ARCH"
 done
 xcrun lipo -create "$BUILD/$EXECUTABLE-arm64" "$BUILD/$EXECUTABLE-x86_64" -output "$APP/Contents/MacOS/$EXECUTABLE"

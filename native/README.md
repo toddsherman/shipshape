@@ -1,4 +1,4 @@
-# Shipshape for macOS — 0.3.24 preview
+# Shipshape for macOS — 0.3.25 preview
 
 A native SwiftUI app for macOS 13 or later, in the menu bar and the Dock, built for Apple silicon and Intel. It watches the developer stack people install to build apps with AI coding tools such as Claude Code and Codex, and shows the easiest way to install each fix. No Python, Node, Homebrew, account or API key is needed to run it.
 
@@ -48,6 +48,8 @@ CISA's Known Exploited Vulnerabilities catalog raises the priority of any findin
 **Links.** Each advisory ID links to its own page (the source's, NVD for CVEs, OSV otherwise); finding cards have no other web link. Copy and Show in Finder appear while the pointer is over a finding's location.
 
 **Cards.** Text in a finding, summary or Coverage card can be selected and copied (SwiftUI selects one piece of text at a time, such as the explanation or the version line). Each finding has a bug button (**Report a problem**) that opens a filled-in GitHub issue; a card combining several findings under one command also has one in its header, which reports the shared command and every finding in it.
+
+**While a check runs.** A check reports its route as it goes (`CheckProgress`): each step's state and what it found, a line on this moment, and a line on why it takes the time it does or what leaves the Mac. The window shows all of it under its heading, and the list folds away; the menu bar panel shows the current step and the count. NVD's step tells the time left from the requests still to make. Steps that don't apply to this Mac leave the route. The lookout (`Lookout.swift`) is drawn in code, so it follows light and dark mode, and it stays still under Reduce Motion. Scenario previews have checks off, so to see either, open the Dev copy with `SHIPSHAPE_STATE_DIR` and without `SHIPSHAPE_NO_CHECKS`.
 
 NVD matching uses only explicit version ranges or exact versions on macOS-applicable configurations. Pre-release and unbounded "all versions" entries are ignored. NVD can lag vendor advisories, and Homebrew sometimes ships patches without changing a version, so NVD findings say so.
 

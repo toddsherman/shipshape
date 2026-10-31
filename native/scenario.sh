@@ -33,7 +33,7 @@ if [ ! -x "$BINARY" ] || [ -n "$(find "$SOURCES" "$ROOT/native/Resources" "$ROOT
   rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
   xcrun swiftc -swift-version 5 -O -parse-as-library -target "$(uname -m)-apple-macos13.0" \
     -F "$SPARKLE" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-    "$SOURCES"/{Models,Catalog,Lockfiles,Inventory,Advisories,Commands,Feeds,Updates,App}.swift -o "$BINARY"
+    "$SOURCES"/{Models,Catalog,Lockfiles,Inventory,Advisories,Commands,Feeds,Updates,Lookout,App}.swift -o "$BINARY"
   cp "$ROOT/native/Resources/Info.plist" "$APP/Contents/Info.plist"
   xcrun swift "$ROOT/native/make-icon.swift" "$ROOT" dev
   iconutil -c icns "$ROOT/native/work/AppIcon-Dev.iconset" -o "$APP/Contents/Resources/AppIcon.icns"

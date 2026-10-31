@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
 final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published var state = SavedState()
     @Published var scanning = false
-    @Published var progress: String? = nil
+    @Published var progress: CheckProgress? = nil
     @Published var message: String? = nil
     @Published var notificationStatus = "Not enabled"
     @Published var loginEnabled = false
@@ -193,11 +193,12 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         if Schedule.calendar.component(.hour, from: Date()) >= 9 { state.lastScheduledDay = Schedule.day(Date()) }
         save()
         scanning = true
+        progress = CheckProgress()
         let previous = state.report, folders = projectFolders
         let wasAwaiting = Set(previous?.awaiting.map(\.id) ?? [])
         task = Task {
             let result = await Task.detached(priority: .utility) {
-                await Scanner.run(previous: previous, projectFolders: folders) { text in Task { @MainActor in self.progress = text } }
+                await Scanner.run(previous: previous, projectFolders: folders) { live in Task { @MainActor in if self.scanning { self.progress = live } } }
             }.value
             state.report = result
             var history = state.history ?? []
@@ -310,16 +311,20 @@ struct MenuPanel: View {
             HStack {
                 Label(displayName, systemImage: "sailboat.fill").font(.headline)
                 Spacer()
-                // Check now, as a refresh button; a spinner takes its place while a check runs.
-                if monitor.scanning { ProgressView().controlSize(.small).frame(width: 22, height: 22) }
+                // Check now, as a refresh button; the lookout takes its place while a check runs, standing a little taller than the row.
+                if monitor.scanning { Lookout().frame(width: 36, height: 36).padding(.vertical, -7) }
                 else {
                     Button { monitor.check() } label: { Image(systemName: "arrow.clockwise.circle").font(.title2) }
                         .buttonStyle(.borderless).help("Check now").accessibilityLabel("Check now").frame(width: 22, height: 22)
                 }
             }
             Text(monitor.statusTitle).font(.title3.weight(.semibold))
-            if let progress = monitor.progress { Text(progress).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
-            else if let date = monitor.report?.date { LastCheck(date: date, prefix: "Checked ").font(.caption).foregroundStyle(.secondary) }
+            if let progress = monitor.progress {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(progress.now).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(progress.tally).font(.caption2).foregroundStyle(.tertiary)
+                }
+            } else if let date = monitor.report?.date { LastCheck(date: date, prefix: "Checked ").font(.caption).foregroundStyle(.secondary) }
             let counts = monitor.report.map { FindingCategory.counts(in: $0) } ?? [:]
             let shown = FindingCategory.allCases.filter { (counts[$0] ?? 0) > 0 }
             if !shown.isEmpty {
@@ -440,12 +445,14 @@ struct Dashboard: View {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(monitor.section).font(.largeTitle.weight(.bold))
-                        Text(monitor.progress ?? subtitle).font(.subheadline).foregroundStyle(.secondary)
+                        Text(monitor.progress?.now ?? subtitle).font(.subheadline).foregroundStyle(monitor.progress == nil ? .secondary : .primary)
+                        if let why = monitor.progress?.why { Text(why).font(.caption).foregroundStyle(.secondary) }
                     }
                     Spacer()
-                    if monitor.scanning { ProgressView().controlSize(.small).padding(.top, 7) }
+                    if monitor.scanning { Lookout().frame(width: 64, height: 64).padding(.top, -10) }
                     Button(monitor.scanning ? "Checking…" : "Check now") { monitor.check() }.buttonStyle(.borderedProminent).disabled(monitor.scanning)
                 }.padding(28)
+                if let progress = monitor.progress { CheckSteps(progress: progress).padding(.horizontal, 28).padding(.bottom, 16) }
                 ForEach([monitor.message].compactMap { $0 }, id: \.self) { Text($0).font(.callout).foregroundStyle(.orange).padding(.horizontal, 28).padding(.bottom, 16).textSelection(.enabled) }
                 if monitor.section != "Settings", monitor.report == nil { welcome }
                 else { content }
@@ -909,6 +916,45 @@ func findingBadge(_ finding: Finding) -> (String, Color) {
 }
 // Text in a card can be selected and copied, as in a document: a drag, a double-click or Command-A selects within
 // one piece of text at a time, such as the explanation or a version line.
+// The route of a running check: each finished step with what it found, the one under way and those still to come. It can
+// be folded away, and stays folded for later checks.
+struct CheckSteps: View {
+    let progress: CheckProgress
+    @AppStorage("checkStepsFolded") private var folded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button { folded.toggle() } label: {
+                HStack {
+                    Text(progress.tally).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: folded ? "chevron.down" : "chevron.up").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain).help(folded ? "Show every step" : "Hide the steps").accessibilityLabel(folded ? "Show every step" : "Hide the steps")
+            if !folded {
+                let half = (progress.steps.count + 1) / 2
+                HStack(alignment: .top, spacing: 24) {
+                    column(Array(progress.steps.prefix(half)))
+                    column(Array(progress.steps.dropFirst(half)))
+                }
+            }
+        }.modifier(CardStyle())
+    }
+    func column(_ steps: [CheckProgress.Step]) -> some View {
+        VStack(alignment: .leading, spacing: 6) { ForEach(steps) { row($0) } }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    func row(_ step: CheckProgress.Step) -> some View {
+        HStack(spacing: 7) {
+            switch step.state {
+            case .finished: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            case .running: Image(systemName: "circle.circle.fill").foregroundStyle(Color.accentColor)
+            case .waiting: Image(systemName: "circle").foregroundStyle(.tertiary)
+            }
+            Text(step.title).fontWeight(step.state == .running ? .semibold : .regular).foregroundStyle(step.state == .waiting ? .secondary : .primary).lineLimit(1).layoutPriority(1)
+            if let result = step.result { Text(result).foregroundStyle(.secondary).lineLimit(1) }
+        }.font(.caption).accessibilityElement(children: .combine)
+    }
+}
 struct CardStyle: ViewModifier {
     var alert = false
     func body(content: Content) -> some View {

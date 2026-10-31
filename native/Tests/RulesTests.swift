@@ -348,6 +348,24 @@ import Foundation
                && !cardReport.contains("**Shown:**") && Feedback.summary(of: shapes[1].findings, command: nil).components(separatedBy: "**Shown:**").count == 3,
                "a card's report gives the shared command once, then each finding; without one, each finding keeps its own")
 
+        // What a running check shows.
+        var live = CheckProgress()
+        expect(live.tally == "Step 1 of 10 · No findings so far" && live.steps.allSatisfy { $0.state == .waiting }, "a check starts with its whole route still to come")
+        live.start("inventory")
+        live.finish("237 installations")
+        live.skip("actions")
+        live.start("vendors")
+        live.findings = 1
+        expect(live.steps.map(\.state).prefix(3) == [.finished, .running, .waiting] && live.steps[0].result == "237 installations" && live.steps.count == 9 && live.tally == "Step 2 of 9 · 1 finding so far",
+               "steps finish in order with what they found, and one that doesn't apply leaves the route")
+        live.finish("1 couldn't be read; see Coverage", failed: true)
+        live.findings = 8
+        expect(live.steps[1].state == .failed && live.running == nil && live.tally == "Step 2 of 9 · 8 findings so far", "a failed step counts as finished and stays marked")
+        expect(CheckProgress.nvdNote(requests: 0) == "Using NVD's answers saved by a check in the last 20 hours."
+               && CheckProgress.nvdNote(requests: 3).hasSuffix("Less than a minute left in this step.")
+               && CheckProgress.nvdNote(requests: 8).hasSuffix("About 1 minute left in this step.")
+               && CheckProgress.nvdNote(requests: 32).hasSuffix("About 4 minutes left in this step."), "NVD's wait is told from the requests still to make")
+
         // Versions with text around the number, and a final guard against "updates" to the installed release.
         expect(!looseLess("Build 4215", "4215") && !looseLess("4215", "Build 4215") && looseLess("Build 4215", "4216") && looseLess("r3222", "r3223") && looseLess("v1.2", "1.2.1"),
                "the first number anywhere in the text is the version")
