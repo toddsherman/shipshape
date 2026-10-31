@@ -200,6 +200,125 @@ enum GitHubActions {
 // Microsoft publishes every extension it removes from the Visual Studio Marketplace, with the reason. Extensions
 // removed as malware, impersonation or untrustworthy are flagged; spam, copyright and owner requests aren't.
 // Cursor, Windsurf and VSCodium install from Open VSX, where the same identifier may belong to someone else.
+// An npx cache folder records what it was asked to run and why each package is there: package.json's dependencies name
+// the tool and package-lock.json has every package's dependency ranges. Together they say whether deleting the folder can
+// help, since the next npx run installs the tool again with only what its dependencies allow. Nothing here is executed.
+enum NpxCache {
+    struct Hold: Equatable {
+        let package: String
+        let tool: String, version: String      // the tool and its version in this cache
+        let dependency: String, range: String  // the tool's own dependency that leads here, and the range it asks for
+        let holder: String, holderVersion: String, allows: String  // the package whose range rules out the fix
+    }
+    struct Release: Equatable { let version: String; let dependencies: [String: String] }
+    static func tools(in folder: String) -> [String] {
+        ((Inventory.json(folder + "/package.json")?["dependencies"] as? [String: Any]) ?? [:]).keys.sorted()
+    }
+    // Whether an npm range allows a version. Nil for what isn't a numeric range, such as a tag or a prerelease: unknown is never a hold.
+    static func allows(_ range: String, _ version: String) -> Bool? {
+        guard let version = Version(version) else { return nil }
+        var alternatives: [String] = []
+        for alternative in range.components(separatedBy: "||") {
+            var clauses: [String] = []
+            for word in alternative.split(whereSeparator: \.isWhitespace) {
+                guard let clause = comparisons(String(word)) else { return nil }
+                clauses.append(clause)
+            }
+            alternatives.append(clauses.isEmpty ? ">=0" : clauses.joined(separator: ","))
+        }
+        return version.matches(alternatives.joined(separator: "||"))
+    }
+    // One word of a range, as the comparisons Version.matches reads: ^1.2.3 is >=1.2.3,<2.0.0.
+    private static func comparisons(_ word: String) -> String? {
+        if word == "*" || word.lowercased() == "x" { return ">=0" }
+        if word.range(of: "^(>=|<=|>|<)v?[0-9]+(\\.[0-9]+)*$", options: .regularExpression) != nil { return word }
+        guard let m = captures("^([\\^~=]?)v?([0-9]+)(?:\\.([0-9]+|[xX*]))?(?:\\.([0-9]+|[xX*]))?$", word).first, let major = Int(m[2]) else { return nil }
+        let minor = Int(m[3]), patch = Int(m[4])
+        let lower = ">=\(major).\(minor ?? 0).\(patch ?? 0)"
+        let nextMinor = minor.map { "<\(major).\($0 + 1).0" } ?? "<\(major + 1).0.0"
+        switch m[1] {
+        case "^":
+            if major > 0 || minor == nil { return lower + ",<\(major + 1).0.0" }
+            if minor! > 0 || patch == nil { return lower + "," + nextMinor }
+            return lower + ",<0.0.\(patch! + 1)"
+        case "~": return lower + "," + nextMinor
+        default: return minor != nil && patch != nil ? "=\(major).\(minor!).\(patch!)" : lower + "," + nextMinor
+        }
+    }
+    static func exact(_ range: String) -> Bool { Version(range.hasPrefix("=") ? String(range.dropFirst()) : range)?.parts.count == 3 }
+    // What rules out `fix`, if anything does for certain: a package whose range excludes it, when that package is the tool
+    // or is pinned to one version all the way down from the tool. A range that merely allows an older copy could resolve
+    // differently next time, so it isn't a hold.
+    static func hold(_ package: String, fix: String, tools: [String], lock: [String: Any]) -> Hold? {
+        guard Version(fix) != nil, let packages = lock["packages"] as? [String: [String: Any]] else { return nil }
+        struct Entry { let name: String, version: String, dependencies: [String: String] }
+        let entries: [Entry] = packages.keys.sorted().compactMap { key in
+            guard let name = key.components(separatedBy: "node_modules/").last, !name.isEmpty, let version = packages[key]?["version"] as? String else { return nil }
+            var dependencies: [String: String] = [:]
+            for field in ["peerDependencies", "optionalDependencies", "dependencies"] { dependencies.merge(packages[key]?[field] as? [String: String] ?? [:]) { $1 } }
+            return Entry(name: name, version: version, dependencies: dependencies)
+        }
+        // The tool and its dependency that pin `name`, following exact versions up from it.
+        func anchor(_ name: String, seen: Set<String>) -> (tool: Entry, head: String)? {
+            for parent in entries where !seen.contains(parent.name) && parent.dependencies[name].map(exact) == true {
+                if tools.contains(parent.name) { return (parent, name) }
+                if let found = anchor(parent.name, seen: seen.union([parent.name])) { return found }
+            }
+            return nil
+        }
+        for holder in entries.sorted(by: { tools.contains($0.name) && !tools.contains($1.name) }) {
+            guard let range = holder.dependencies[package], allows(range, fix) == false else { continue }
+            if tools.contains(holder.name) {
+                return Hold(package: package, tool: holder.name, version: holder.version, dependency: package, range: range, holder: holder.name, holderVersion: holder.version, allows: range)
+            }
+            if let (tool, head) = anchor(holder.name, seen: [holder.name]) {
+                return Hold(package: package, tool: tool.name, version: tool.version, dependency: head, range: tool.dependencies[head]!, holder: holder.name, holderVersion: holder.version, allows: range)
+            }
+        }
+        return nil
+    }
+    // The holds among these findings, by finding. Malicious packages are left out: they're removed whatever needs them.
+    static func holds(in findings: [Finding]) -> [String: Hold] {
+        var holds: [String: Hold] = [:], folders: [String: (tools: [String], lock: [String: Any])] = [:]
+        for finding in findings where finding.installation.manager == "npx-cache" && finding.kind == .security && finding.malicious != true {
+            guard let folder = finding.installation.location, let package = finding.installation.packageName else { continue }
+            if folders[folder] == nil { folders[folder] = (tools(in: folder), Inventory.json(folder + "/package-lock.json") ?? [:]) }
+            holds[finding.id] = hold(package, fix: finding.fixed, tools: folders[folder]!.tools, lock: folders[folder]!.lock)
+        }
+        return holds
+    }
+    // The tool's newest release, from npm's public registry, which receives its name only.
+    static func newest(_ tool: String) async throws -> Release {
+        guard let name = Commands.safe(tool, Commands.namePatterns["npm"]!),
+              let manifest = try await Fetch.json("https://registry.npmjs.org/" + name.replacingOccurrences(of: "/", with: "%2f") + "/latest") as? [String: Any],
+              let version = manifest["version"] as? String else { throw MonitorError(message: "npm's record of \(tool) could not be read") }
+        return Release(version: version, dependencies: manifest["dependencies"] as? [String: String] ?? [:])
+    }
+    // A held package waits for a fix when the tool's newest release asks for the same as the cached one. A newer release
+    // that asks for something else may take the fix, so the finding stays an ordinary one whose command makes npx fetch it.
+    // Without npm's answer nothing shows a newer release, so one that was waiting keeps waiting.
+    static func mark(_ findings: inout [Finding], holds: [String: Hold], newest: [String: Release], waiting: [String: Finding] = [:]) {
+        for index in findings.indices {
+            let id = findings[index].id
+            guard let hold = holds[id] else { continue }
+            guard let release = newest[hold.tool] else {
+                if let old = waiting[id], old.heldBack != nil, old.installation.version == findings[index].installation.version {
+                    findings[index].awaitingFix = true; findings[index].heldBack = old.heldBack; findings[index].action = old.action
+                }
+                continue
+            }
+            guard release.version == hold.version || release.dependencies[hold.dependency] == hold.range else { continue }
+            let requirement = hold.holder == hold.tool ? "\(hold.tool) \(hold.version) requires \(hold.package) \(hold.allows)"
+                : "\(hold.holder) \(hold.holderVersion), pinned by \(hold.tool) \(hold.version), requires \(hold.package) \(hold.allows)"
+            let outlook = (release.version == hold.version ? "\(hold.tool) \(hold.version) is its newest release" : "\(hold.tool)'s newest release, \(release.version), asks for the same")
+                + ", so deleting the npx cache would only bring this back. \(appName) alerts you when a release allows the fix."
+            findings[index].awaitingFix = true
+            findings[index].heldBack = HeldBack(tool: hold.tool, requirement: requirement, outlook: outlook)
+            findings[index].action = requirement + ", which rules out the fix. " + outlook
+        }
+    }
+}
+
 enum EditorExtensions {
     static let source = "https://raw.githubusercontent.com/microsoft/vsmarketplace/main/RemovedPackages.md"
     static let page = "https://github.com/microsoft/vsmarketplace/blob/main/RemovedPackages.md"

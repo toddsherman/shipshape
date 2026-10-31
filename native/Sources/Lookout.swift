@@ -1,45 +1,68 @@
 import SwiftUI
 
-// The lookout in the crow's nest, shown in place of a spinner while a check runs: a man with a telescope watches the
-// horizon to the left, then to the right, on a mast that rocks gently. It's drawn rather than an image, so it takes the
-// color around it in light and dark mode. With Reduce Motion on he stays still and simply faces the other way every few seconds.
+// The lookout in the crow's nest, always at his post beside Check now. While a check runs he watches the horizon through
+// his telescope, to the left and then to the right, on a mast that rocks gently; when it ends he settles back and stands
+// still, and nothing is redrawn until the next check. He's drawn rather than an image, so he takes the color around him in
+// light and dark mode. With Reduce Motion on he doesn't move, and during a check faces the other way every few seconds.
 struct Lookout: View {
+    var watching: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var started: Date?  // when this watch began; nil once he has settled
+    @State private var stopped: Date?  // when the check ended, while he settles
+    private static let ease = 0.7      // seconds to get moving, and to settle back
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
-            LookoutDrawing(time: timeline.date.timeIntervalSinceReferenceDate, still: reduceMotion)
-        }.accessibilityElement().accessibilityLabel("Checking")
+        TimelineView(.animation(minimumInterval: reduceMotion ? 0.5 : 1.0 / 30, paused: started == nil)) { timeline in
+            LookoutDrawing(time: started.map { timeline.date.timeIntervalSince($0) } ?? 0, energy: energy(at: timeline.date), still: reduceMotion)
+        }
+        .opacity(watching ? 1 : 0.6).animation(.easeInOut(duration: Self.ease), value: watching)
+        .accessibilityElement().accessibilityLabel("Checking").accessibilityHidden(!watching)
+        .task(id: watching) {
+            if watching { (started, stopped) = (Date(), nil) }
+            else if started != nil {
+                stopped = Date()
+                try? await Task.sleep(nanoseconds: UInt64(Self.ease * 1_000_000_000))
+                if !Task.isCancelled { (started, stopped) = (nil, nil) }
+            }
+        }
+    }
+    func energy(at date: Date) -> Double {
+        guard let started else { return 0 }
+        let rising = date.timeIntervalSince(started) / Self.ease, falling = stopped.map { 1 - date.timeIntervalSince($0) / Self.ease } ?? 1
+        let level = min(max(min(rising, falling), 0), 1)
+        return level * level * (3 - 2 * level)
     }
 }
 
 // One frame, drawn on a 100-by-100 grid with the mast at x = 50. The mast and rigging are paler so that he stands in front of them.
 struct LookoutDrawing: View {
     let time: Double
-    var still = false
+    var energy = 1.0   // 1 on watch; 0 standing at rest, facing left, which is also how each watch begins
+    var still = false  // Reduce Motion: nothing moves, and he only faces the other way
+    private var motion: Double { still ? 0 : energy }
     private static let watch = 6.0  // seconds to look both ways: two seconds each way and a one-second turn after each
     // Which way he faces: -1 is left and 1 is right. Between them he swings the telescope around past you, so it shortens to nothing halfway.
     var facing: Double {
         let t = time.truncatingRemainder(dividingBy: Self.watch)
         if still { return t < 3 ? -1 : 1 }
         func turn(_ x: Double) -> Double { -cos(.pi * x * x * (3 - 2 * x)) }  // from -1 to 1, easing in and out
+        let looking: Double
         switch t {
-        case ..<2: return -1
-        case ..<3: return turn(t - 2)
-        case ..<5: return 1
-        default: return -turn(t - 5)
+        case ..<2: looking = -1
+        case ..<3: looking = turn(t - 2)
+        case ..<5: looking = 1
+        default: looking = -turn(t - 5)
         }
+        return -1 + (looking + 1) * motion
     }
     var body: some View {
         Canvas { context, size in
             let unit = min(size.width, size.height) / 100
             context.translateBy(x: (size.width - 100 * unit) / 2, y: (size.height - 100 * unit) / 2)
             context.scaleBy(x: unit, y: unit)
-            if !still {
-                // The ship rocks about the foot of the mast.
-                context.translateBy(x: 50, y: 110)
-                context.rotate(by: .degrees(2.2 * sin(time * 2 * .pi / 5)))
-                context.translateBy(x: -50, y: -110)
-            }
+            // The ship rocks about the foot of the mast.
+            context.translateBy(x: 50, y: 110)
+            context.rotate(by: .degrees(2.2 * motion * sin(time * 2 * .pi / 5)))
+            context.translateBy(x: -50, y: -110)
             rigging(context)
             pennant(context)
             sailor(context)
@@ -60,8 +83,8 @@ struct LookoutDrawing: View {
         context.stroke(ropes, with: .foreground, lineWidth: 1.5)
     }
     private func pennant(_ context: GraphicsContext) {
-        let flutter = still ? 0 : time * 2 * .pi * 1.3
-        func wave(_ x: Double) -> Double { sin(flutter - x / 5) * x / 18 * 1.5 }
+        let flutter = time * 2 * .pi * 1.3
+        func wave(_ x: Double) -> Double { (motion * sin(flutter - x / 5) + (1 - motion) * sin(-x / 5)) * x / 18 * 1.5 }
         var flag = Path()
         flag.move(to: CGPoint(x: 51, y: 1))
         for x in stride(from: 3.0, through: 18, by: 3) { flag.addLine(to: CGPoint(x: 51 + x, y: 1 + x / 18 * 4 + wave(x))) }
@@ -95,7 +118,7 @@ struct LookoutDrawing: View {
         var peak = Path()
         peak.move(to: CGPoint(x: 5, y: 24.8)); peak.addLine(to: CGPoint(x: 14, y: 27)); peak.addLine(to: CGPoint(x: 5, y: 28.2)); peak.closeSubpath()
         facingSide.fill(peak, with: .foreground)
-        let tilt = still ? -6.0 : -6 + 3 * sin(time * 2 * .pi / 2.3)
+        let tilt = -6 + 3 * motion * sin(time * 2 * .pi / 2.3)
         var scope = facingSide
         scope.translateBy(x: 5.5, y: 31)
         scope.rotate(by: .degrees(tilt))

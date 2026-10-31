@@ -30,6 +30,11 @@ import Foundation
                      domain: "apps", note: "The update framework bundled inside \(app). It is updated with the app.", ecosystem: "SwiftURL",
                      packageName: "github.com/sparkle-project/Sparkle", manager: "sparkle-framework", location: "/Applications/\(app).app")
     }
+    static func npx(_ name: String, _ version: String, tool: String) -> Installation {
+        let folder = home + "/.npm/_npx/6583fba12287d067"
+        return Installation(product: "npm:" + name, name: name, version: version, path: folder + "/node_modules/" + name, domain: "packages", note: "npm package in the npx cache, for \(tool).",
+                            ecosystem: "npm", packageName: name, manager: "npx-cache", location: folder)
+    }
     static func mcp(_ package: String, _ version: String, config: String) -> Installation {
         Installation(product: "npm:" + package, name: package, version: version, path: config + "#" + package, domain: "mcp", ecosystem: "npm",
                      packageName: package, manager: "mcp", location: config, file: config)
@@ -123,6 +128,18 @@ import Foundation
     static let openssl = security(brew("openssl@3", "3.5.1", product: "openssl"), fixed: "3.5.4", severity: "HIGH", ids: ["CVE-2025-9230", "CVE-2025-9231"],
                                   titles: ["Out-of-bounds read and write in RFC 3211 KEK unwrap", "Timing side channel in SM2 on 64-bit ARM"])
     static let opensslDated = dated(openssl, 27, 27)
+    // Packages a tool run with npx holds back, marked by the same code as a real check.
+    static let heldByTool: [Finding] = {
+        let tool = "@example/docs-server"
+        var findings = [dated(security(npx("@example/sdk", "2.0.0", tool: tool), fixed: "2.3.0", severity: "HIGH", ids: ["GHSA-6prh-2h8m-c8cw"], titles: ["HTTP client transports followed cross-origin redirects"]), 11),
+                        dated(security(npx("@hono/node-server", "1.19.17", tool: tool), fixed: "2.1.3", severity: "MODERATE", ids: ["GHSA-rmxm-3fg6-px4f"], titles: ["serveStatic decodes the request path a second time"]), 3)]
+        func hold(_ package: String, holder: String, version: String, allows: String) -> NpxCache.Hold {
+            NpxCache.Hold(package: package, tool: tool, version: "2.0.4", dependency: holder == tool ? package : holder, range: "2.0.0", holder: holder, holderVersion: version, allows: allows)
+        }
+        NpxCache.mark(&findings, holds: [findings[0].id: hold("@example/sdk", holder: tool, version: "2.0.4", allows: "2.0.0"), findings[1].id: hold("@hono/node-server", holder: "@example/node", version: "2.0.0", allows: "^1.19.9")],
+                      newest: [tool: NpxCache.Release(version: "2.0.4", dependencies: [:])])
+        return findings.map(finish)
+    }()
     static let ffmpeg = dated(waiting(brew("ffmpeg", "9.0.2"), severity: "HIGH", ids: ["CVE-2026-107675", "CVE-2026-107676"], titles: ["Heap overflow in the HEVC decoder", "Use after free in the MOV demuxer"],
                                 action: "You have Homebrew's newest ffmpeg (9.0.2), and no release fixes these yet. Shipshape alerts you when a fixed release is available."), 412, 98)
     static let folxSparkle = dated(waiting(sparkle(in: "Folx", "1.20.0"), severity: "HIGH", ids: ["GHSA-g3hp-f6mg-559v"], titles: ["Sparkle's installer XPC listener accepts unvalidated connections"],
@@ -177,7 +194,7 @@ import Foundation
             Scenario(name: "waiting-only", description: "Nothing to install: only findings waiting for a fix, plus updates.",
                      findings: [ffmpeg, folxSparkle, waiting(sparkle(in: "Ice", "2.8.0"), severity: "MODERATE", ids: ["GHSA-hg88-v3cw-3qrh"], titles: ["Binary delta symlink traversal in Sparkle"],
                                                                   fixed: "2.9.2, not in Ice yet", action: "Ice 0.11.13 came out on Oct 27, and it may bundle a newer Sparkle. Ice installs its own updates, usually within days. If it hasn't after a week, this moves to Needs attention. Only Ice's developer can update the Sparkle it bundles."),
-                                gitUpdate, zedUpdate]),
+                                gitUpdate, zedUpdate] + heldByTool),
             Scenario(name: "typical", description: "A normal day: a couple of security fixes, updates and waiting items.",
                      findings: [lodash, requestsDated, ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate], clean: 260),
             Scenario(name: "malware", description: "Malicious packages in two projects and an MCP server, with a few ordinary fixes.",
@@ -195,7 +212,7 @@ import Foundation
                                 stale(security(brew("node@20", "20.11.0", product: "node"), fixed: "20.19.5", severity: "HIGH", ids: ["CVE-2025-23166"], titles: ["Node.js crypto error handling crash"])),
                                 endOfSupport(brew("node@18", "18.20.4", product: "node"), what: "Node", fixed: "Supported LTS branch", link: "https://nodejs.org/en/about/previous-releases"),
                                 endOfSupport(brew("python@3.9", "3.9.23", product: "python"), what: "Python", fixed: "Python 3.12 or later", link: "https://devguide.python.org/versions/"),
-                                ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate, update(brew("gh", "2.80.0"), to: "2.81.0"), update(brew("jq", "1.7.1"), to: "1.8.0")],
+                                ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate, update(brew("gh", "2.80.0"), to: "2.81.0"), update(brew("jq", "1.7.1"), to: "1.8.0")] + heldByTool,
                      clean: 150, checks: checks(failed: 1, partial: 1),
                      history: [security(npm("shop", "next", "14.0.0"), fixed: "14.2.25", severity: "CRITICAL", ids: ["GHSA-f82v-jwr5-mffw"], titles: ["Authorization bypass in Next.js middleware"]),
                                security(pypi("api-server", "gunicorn", "20.0.4"), fixed: "22.0.0", severity: "HIGH", ids: ["GHSA-w3h3-4rj7-4ph4"], titles: ["Request smuggling in gunicorn"]),

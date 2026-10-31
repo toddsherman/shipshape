@@ -330,6 +330,10 @@ enum Inventory {
                                 note: "Python package in \(label).", ecosystem: "PyPI", packageName: name, manager: manager, location: interpreter)
         }
     }
+    static func npxLabel(_ folder: String) -> String {
+        let tools = NpxCache.tools(in: folder)
+        return "the npx cache" + (tools.isEmpty ? "" : ", for " + tools.joined(separator: ", "))
+    }
     static func nodePackages(root: String, manager: String, location: String?, label: String) -> [Installation] {
         var items: [Installation] = []
         for name in children(root) {
@@ -350,7 +354,7 @@ enum Inventory {
         for (root, npm) in roots { items += nodePackages(root: root, manager: "npm-global", location: npm, label: "global npm (\(display(root)))") }
         items += nodePackages(root: home + "/.bun/install/global/node_modules", manager: "bun-global", location: nil, label: "Bun's global packages")
         for store in children(home + "/Library/pnpm/global") { items += nodePackages(root: "\(home)/Library/pnpm/global/\(store)/node_modules", manager: "pnpm-global", location: nil, label: "pnpm's global packages") }
-        for cache in children(home + "/.npm/_npx") { items += nodePackages(root: "\(home)/.npm/_npx/\(cache)/node_modules", manager: "npx-cache", location: "\(home)/.npm/_npx/\(cache)", label: "the npx cache") }
+        for cache in children(home + "/.npm/_npx") { items += nodePackages(root: "\(home)/.npm/_npx/\(cache)/node_modules", manager: "npx-cache", location: "\(home)/.npm/_npx/\(cache)", label: npxLabel("\(home)/.npm/_npx/\(cache)")) }
         for (root, manager) in [(home + "/.local/pipx/venvs", "pipx"), (home + "/.local/share/uv/tools", "uv-tool")] {
             for tool in children(root) {
                 for lib in children("\(root)/\(tool)/lib") where lib.hasPrefix("python") {

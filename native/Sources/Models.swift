@@ -172,6 +172,13 @@ extension AppSignature {
     }
 }
 enum FindingKind: String, Codable { case security, unsupported, update }
+// Why a fixed version can't be installed: the tool that brought the package in rules it out (see NpxCache). The requirement
+// says what asks for the affected version; the outlook says why deleting the install wouldn't help and what happens next.
+struct HeldBack: Codable, Equatable {
+    let tool: String
+    let requirement: String
+    let outlook: String
+}
 // One way to install an update. A Terminal command is copied for the user to run; a link, app or file is
 // opened when the user clicks it. `text` is the command itself or the button's label.
 struct UpdateCommand: Codable, Hashable {
@@ -200,6 +207,7 @@ struct Finding: Codable, Identifiable {
     var expectedFix: String? = nil    // fix version named only in an advisory's description
     var awaitingFix: Bool? = nil      // newest release installed and no fixed release yet: nothing to install
     var blocked: String? = nil        // why this account can't make the change; its commands are left out (see Ownership)
+    var heldBack: HeldBack? = nil     // a fixed version exists but the tool that needs this package rules it out
     // When each advisory was first published, by ID, and the IDs that name an issue already listed (a CVE beside its
     // GHSA), with the ID that has the date. CISA's date is when it listed a matching CVE as exploited. They're shown
     // only, never part of the fingerprint, so a changed date never alerts again.
@@ -266,9 +274,10 @@ struct FindingGroup: Identifiable {
     }
 }
 // Findings this account can't fix share a card per place and reason, such as one project owned by someone
-// else; others group by their Terminal command or its template; the rest stand alone.
+// else, and so do those one tool holds back; others group by their Terminal command or its template; the rest stand alone.
 func groupKey(_ finding: Finding) -> String {
     if let blocked = finding.blocked { return "blocked|" + (finding.installation.location ?? "") + "|" + blocked }
+    if let held = finding.heldBack { return "held|" + (finding.installation.location ?? "") + "|" + held.tool }
     guard let command = finding.commands?.first, command.kind == nil else { return "finding|" + finding.id }
     if let template = command.template { return "template|" + template.joined(separator: "\u{1}") }
     return "command|" + command.text

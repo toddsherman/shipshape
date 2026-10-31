@@ -213,8 +213,8 @@ struct CheckProgress: Equatable {
                  ("actions", "GitHub Actions"), ("sparkle", "Sparkle update feeds"), ("extensions", "Editor extensions"),
                  ("nvd", "National Vulnerability Database"), ("homebrew", "Homebrew releases"), ("apple", "Apple Software Update"),
                  ("kev", "CISA's exploited list")].map { Step(id: $0.0, title: $0.1) }
-    var now = "Starting the check"
-    var why: String? = nil
+    var now = "Looking through this Mac"
+    var why: String? = "Reading what's installed. Nothing leaves this Mac in this step."
     var findings = 0
     var running: Int? { steps.firstIndex { $0.state == .running } }
     mutating func start(_ id: String) { if let index = steps.firstIndex(where: { $0.id == id }) { steps[index].state = .running } }
@@ -243,8 +243,6 @@ enum Scanner {
     static func run(previous: ScanReport? = nil, projectFolders: [String] = [], progress: @escaping (CheckProgress) -> Void = { _ in }) async -> ScanReport {
         var live = CheckProgress(), started = 0  // started: how many checks were recorded when the running step began
         live.start("inventory")
-        live.now = "Looking through this Mac"
-        live.why = "Reading what's installed. Nothing leaves this Mac in this step."
         progress(live)
         var report = Inventory.collect(projectFolders: projectFolders) { live.now = $0; progress(live) }
         func show(_ now: String, why: String? = nil) {
@@ -342,6 +340,7 @@ enum Scanner {
 
         // Package-level advisories and malicious-package reports for every inventoried package version.
         let packages = report.installations.filter { OSV.key($0) != nil && $0.manager != "brew-old" }
+        let waiting = Dictionary((previous?.awaiting ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let versions = Set(packages.compactMap(OSV.key)).count
         end(vendors.isEmpty ? "None installed" : vendors.joined(separator: ", "))
         begin("osv", "Checking \(CheckProgress.count(versions, "package version")) with OSV", why: "OSV receives package names and versions only.")
@@ -355,6 +354,21 @@ enum Scanner {
             report.findings += OSV.findings(for: packages, matches: matches, vulns: vulns)
             record("osv", "Package advisories (OSV)", "\(Set(packages.compactMap(OSV.key)).count) package versions across npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven checked, including OpenSSF malicious-package reports.", url: "https://osv.dev/")
         } catch { failure("osv", "Package advisories (OSV)", error) }
+        // A package the tool that needs it rules out a fix for: deleting the npx cache would only bring it back.
+        let held = NpxCache.holds(in: report.findings)
+        if !held.isEmpty {
+            let tools = Set(held.values.map(\.tool)).sorted()
+            var newest: [String: NpxCache.Release] = [:]
+            for tool in tools {
+                show("Checking npm for a newer \(tool)", why: "npm receives the tool's name only.")
+                newest[tool] = try? await NpxCache.newest(tool)
+            }
+            NpxCache.mark(&report.findings, holds: held, newest: newest, waiting: waiting)
+            let unread = tools.filter { newest[$0] == nil }
+            record("npx-tools", "Tools in the npx cache", "\(CheckProgress.count(held.count, "flagged package")) in the npx cache \(held.count == 1 ? "is" : "are") required at an affected version by \(tools.joined(separator: ", ")). "
+                   + (unread.isEmpty ? "Each tool's newest release was read from npm, which receives the tool's name only." : "npm's record of \(unread.joined(separator: ", ")) couldn't be read, so whether a newer release allows the fix is unknown."),
+                   url: "https://docs.npmjs.com/cli/commands/npx", status: unread.isEmpty ? "checked" : "partial")
+        }
         end(CheckProgress.count(versions, "package version") + ", \(matched) advisor\(matched == 1 ? "y" : "ies")")
         if report.installations.contains(where: { $0.ecosystem == "GitHub Actions" }) {
             begin("actions", "Checking GitHub Actions in workflows", why: "OSV receives action names and versions only.")
@@ -474,7 +488,6 @@ enum Scanner {
                                            action: "Remove retained copies once nothing depends on them.", links: ["https://docs.brew.sh/Manpage#cleanup-options-formulacask-"]))
         }
 
-        let waiting = Dictionary((previous?.awaiting ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         markAwaiting(&report.findings, newest: newestFormulae, waiting: waiting)
         markSparkleAwaiting(&report.findings, currentApps: currentApps, fresh: freshApps, waiting: Set(waiting.keys))
         let skipped = dropSameReleaseUpdates(&report.findings)

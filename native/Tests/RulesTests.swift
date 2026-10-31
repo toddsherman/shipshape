@@ -366,6 +366,63 @@ import Foundation
                && CheckProgress.nvdNote(requests: 8).hasSuffix("About 1 minute left in this step.")
                && CheckProgress.nvdNote(requests: 32).hasSuffix("About 4 minutes left in this step."), "NVD's wait is told from the requests still to make")
 
+        // What holds a flagged package back in the npx cache.
+        func allows(_ range: String, _ version: String, _ expected: Bool?) -> Bool { NpxCache.allows(range, version) == expected }
+        expect(allows("2.0.0", "2.3.0", false) && allows("=2.0.0", "2.0.0", true) && allows("^1.19.9", "2.1.3", false) && allows("^1.19.9", "1.20.0", true)
+               && allows("^0.3.1", "0.3.9", true) && allows("^0.3.1", "0.4.0", false) && allows("^0.0.3", "0.0.4", false) && allows("^0", "0.9.0", true) && allows("^0.0", "0.1.0", false),
+               "npm's exact and caret ranges")
+        expect(allows("~1.2.3", "1.2.9", true) && allows("~1.2.3", "1.3.0", false) && allows("~1", "1.9.0", true) && allows("1.x", "1.9.0", true) && allows("1.x", "2.0.0", false) && allows("1.2", "1.2.7", true)
+               && allows("*", "9.0.0", true) && allows("", "9.0.0", true) && allows(">=1.0.0 <2.0.0", "1.5.0", true) && allows(">=1.0.0 <2.0.0", "2.0.0", false) && allows("^1.0.0 || ^2.0.0", "2.1.3", true),
+               "npm's tilde, x, comparison and alternative ranges")
+        expect(allows("latest", "2.0.0", nil) && allows("^2.0.0-beta.1", "2.1.0", nil) && allows("^2.0.0", "2.1.0-rc.1", nil) && allows("1.0.0 - 2.0.0", "1.5.0", nil), "tags, prereleases and hyphen ranges are unknown")
+        let lockPackages: [String: [String: Any]] = [
+            "": ["dependencies": ["tool": "^2.0.4"]],
+            "node_modules/tool": ["version": "2.0.4", "dependencies": ["sdk": "2.0.0", "http": "2.0.0", "loose": "^1.0.0", "free": "^2.0.0"]],
+            "node_modules/sdk": ["version": "2.0.0"], "node_modules/free": ["version": "2.0.0"],
+            "node_modules/http": ["version": "2.0.0", "dependencies": ["server": "^1.19.9", "sdk": "^2.0.0"]], "node_modules/server": ["version": "1.19.17"],
+            "node_modules/loose": ["version": "1.2.0", "dependencies": ["old": "^1.0.0"]], "node_modules/old": ["version": "1.0.0"]]
+        let lock: [String: Any] = ["packages": lockPackages]
+        let pin = NpxCache.hold("sdk", fix: "2.3.0", tools: ["tool"], lock: lock), through = NpxCache.hold("server", fix: "2.1.3", tools: ["tool"], lock: lock)
+        expect(pin == NpxCache.Hold(package: "sdk", tool: "tool", version: "2.0.4", dependency: "sdk", range: "2.0.0", holder: "tool", holderVersion: "2.0.4", allows: "2.0.0"), "a version the tool pins is held by the tool")
+        expect(through == NpxCache.Hold(package: "server", tool: "tool", version: "2.0.4", dependency: "http", range: "2.0.0", holder: "http", holderVersion: "2.0.0", allows: "^1.19.9"),
+               "a range that rules out the fix holds when the tool pins the package asking for it")
+        expect(NpxCache.hold("free", fix: "2.1.0", tools: ["tool"], lock: lock) == nil, "a range that allows the fix is no hold")
+        expect(NpxCache.hold("old", fix: "2.0.0", tools: ["tool"], lock: lock) == nil, "a package the tool doesn't pin could resolve differently, so its range is no hold")
+        expect(NpxCache.hold("sdk", fix: "No fixed version published", tools: ["tool"], lock: lock) == nil && NpxCache.hold("sdk", fix: "2.3.0", tools: [], lock: lock) == nil, "no fixed version or no tool, no hold")
+        let cacheFolder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        try FileManager.default.createDirectory(atPath: cacheFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: cacheFolder) }
+        try JSONSerialization.data(withJSONObject: ["dependencies": ["tool": "^2.0.4"], "_npx": ["packages": ["tool"]]]).write(to: URL(fileURLWithPath: cacheFolder + "/package.json"))
+        try JSONSerialization.data(withJSONObject: lock).write(to: URL(fileURLWithPath: cacheFolder + "/package-lock.json"))
+        expect(NpxCache.tools(in: cacheFolder) == ["tool"] && Inventory.npxLabel(cacheFolder) == "the npx cache, for tool" && Inventory.npxLabel(cacheFolder + "/missing") == "the npx cache", "the card names the tool npx ran")
+        func cached(_ name: String, _ version: String, fixed: String, malicious: Bool? = nil) -> Finding {
+            Finding(source: "osv", installation: Installation(product: "npm:" + name, name: name, version: version, path: cacheFolder + "/node_modules/" + name, domain: "packages", ecosystem: "npm", packageName: name, manager: "npx-cache", location: cacheFolder),
+                    kind: .security, fixed: fixed, reason: "", action: "Delete it.", links: [], malicious: malicious)
+        }
+        var heldFindings = [cached("sdk", "2.0.0", fixed: "2.3.0"), cached("server", "1.19.17", fixed: "2.1.3"), cached("free", "2.0.0", fixed: "2.1.0")]
+        let cacheHolds = NpxCache.holds(in: heldFindings + [cached("old", "1.0.0", fixed: "Remove this version", malicious: true)])
+        expect(cacheHolds.count == 2 && cacheHolds[heldFindings[0].id] == pin && cacheHolds[heldFindings[1].id] == through, "holds are read from the cached install, and malicious packages have none")
+        NpxCache.mark(&heldFindings, holds: cacheHolds, newest: ["tool": NpxCache.Release(version: "2.0.4", dependencies: [:])])
+        expect(heldFindings[0].awaitingFix == true && heldFindings[0].heldBack?.tool == "tool" && heldFindings[1].awaitingFix == true && heldFindings[2].awaitingFix == nil
+               && heldFindings[0].action == "tool 2.0.4 requires sdk 2.0.0, which rules out the fix. tool 2.0.4 is its newest release, so deleting the npx cache would only bring this back. Shipshape alerts you when a release allows the fix."
+               && heldFindings[1].heldBack?.requirement == "http 2.0.0, pinned by tool 2.0.4, requires server ^1.19.9", "on the tool's newest release a held package waits for a fix, and says why")
+        expect(Commands.commands(for: heldFindings[0]).isEmpty && !Commands.commands(for: heldFindings[2]).isEmpty && FindingCategory(of: heldFindings[0]) == .waiting, "a held package offers no command and doesn't need attention")
+        let heldCards = groupByCommand(Array(heldFindings.prefix(2)))
+        expect(heldCards.count == 1 && heldCards[0].command == nil, "what one tool holds back shares a card, with no command")
+        expect(Feedback.summary(of: heldFindings[0]).contains("waiting on tool"), "a report says what the finding is waiting on")
+        func marked(_ release: NpxCache.Release?, waiting: [String: Finding] = [:]) -> Finding {
+            var findings = [cached("sdk", "2.0.0", fixed: "2.3.0")]
+            NpxCache.mark(&findings, holds: [findings[0].id: pin!], newest: release.map { ["tool": $0] } ?? [:], waiting: waiting)
+            return findings[0]
+        }
+        let samePin = marked(NpxCache.Release(version: "2.0.5", dependencies: ["sdk": "2.0.0"]))
+        expect(samePin.awaitingFix == true && samePin.heldBack?.outlook.hasPrefix("tool's newest release, 2.0.5, asks for the same") == true, "a newer release that pins the same version still waits")
+        expect(marked(NpxCache.Release(version: "2.0.5", dependencies: ["sdk": "^2.3.0"])).awaitingFix == nil, "a newer release that asks for something else may take the fix, so the command stays")
+        expect(marked(nil).awaitingFix == nil, "without npm's answer a package that wasn't waiting stays an ordinary finding")
+        let carried = marked(nil, waiting: [heldFindings[0].id: heldFindings[0]])
+        expect(carried.awaitingFix == true && carried.heldBack == heldFindings[0].heldBack && carried.action == heldFindings[0].action, "without npm's answer one that was waiting keeps waiting")
+        expect(Alerts.pruned([heldFindings[0].id: "x"], report: { var r = ScanReport(); r.findings = heldFindings; return r }()).isEmpty, "a held package loses its alert record, so it alerts when a release allows the fix")
+
         // Versions with text around the number, and a final guard against "updates" to the installed release.
         expect(!looseLess("Build 4215", "4215") && !looseLess("4215", "Build 4215") && looseLess("Build 4215", "4216") && looseLess("r3222", "r3223") && looseLess("v1.2", "1.2.1"),
                "the first number anywhere in the text is the version")

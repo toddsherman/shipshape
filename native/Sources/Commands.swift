@@ -378,7 +378,7 @@ enum Commands {
             return batch(["go install ", ""], Shell.quote(main + "@latest"), "Rebuilds the program with its newest release" + (item.dependency == "transitive" ? ", which picks up newer dependencies if it has updated them." : "."))
         case "npx-cache":
             guard let directory = item.location else { return [] }
-            return batch(["rm -rf ", ""], Shell.quote(directory), "Deletes this cached npx install. The next npx run downloads the current release.")
+            return batch(["rm -rf ", ""], Shell.quote(directory), "Deletes this cached npx install. The next npx run reinstalls the tool with the newest versions it allows, so this comes back if the tool still asks for an affected version.")
         case "npm":
             if removing { return projectBatch("npm", ["npm uninstall ", ""], quoted, "Removes the package from this project.") }
             if direct, fix != nil { return projectBatch("npm", ["npm install ", dev ? " --save-dev" : ""], spec, "Updates the dependency and package-lock.json.") }
@@ -538,7 +538,7 @@ enum Feedback {
     // What Shipshape knows about a finding, as a Markdown list for the issue's "The finding" field.
     static func summary(of finding: Finding, shown: Bool = true) -> String {
         let item = finding.installation
-        let status = finding.malicious == true ? "malicious package" : finding.awaitingFix == true ? "no fix released yet"
+        let status = finding.malicious == true ? "malicious package" : finding.heldBack != nil ? "waiting on " + finding.heldBack!.tool : finding.awaitingFix == true ? "no fix released yet"
             : finding.kind == .update ? "update" : finding.kind == .unsupported ? "unsupported" : "security fix"
         var lines = ["**Finding:** \(item.name) \(item.version) → \(finding.fixed) (" + [finding.severity, status].compactMap { $0 }.joined(separator: ", ") + ")"]
         if !item.note.isEmpty { lines.append("**Installed:** " + item.note) }

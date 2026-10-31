@@ -311,12 +311,10 @@ struct MenuPanel: View {
             HStack {
                 Label(displayName, systemImage: "sailboat.fill").font(.headline)
                 Spacer()
-                // Check now, as a refresh button; the lookout takes its place while a check runs, standing a little taller than the row.
-                if monitor.scanning { Lookout().frame(width: 36, height: 36).padding(.vertical, -7) }
-                else {
-                    Button { monitor.check() } label: { Image(systemName: "arrow.clockwise.circle").font(.title2) }
-                        .buttonStyle(.borderless).help("Check now").accessibilityLabel("Check now").frame(width: 22, height: 22)
-                }
+                // The lookout stands a little taller than the row. Beside him, Check now as a refresh button.
+                Lookout(watching: monitor.scanning).frame(width: 32, height: 32).padding(.vertical, -5)
+                Button { monitor.check() } label: { Image(systemName: "arrow.clockwise.circle").font(.title2) }
+                    .buttonStyle(.borderless).help("Check now").accessibilityLabel("Check now").frame(width: 22, height: 22).disabled(monitor.scanning)
             }
             Text(monitor.statusTitle).font(.title3.weight(.semibold))
             if let progress = monitor.progress {
@@ -449,10 +447,13 @@ struct Dashboard: View {
                         if let why = monitor.progress?.why { Text(why).font(.caption).foregroundStyle(.secondary) }
                     }
                     Spacer()
-                    if monitor.scanning { Lookout().frame(width: 64, height: 64).padding(.top, -10) }
+                    Lookout(watching: monitor.scanning).frame(width: 40, height: 40).padding(.top, -8)
                     Button(monitor.scanning ? "Checking…" : "Check now") { monitor.check() }.buttonStyle(.borderedProminent).disabled(monitor.scanning)
                 }.padding(28)
-                if let progress = monitor.progress { CheckSteps(progress: progress).padding(.horizontal, 28).padding(.bottom, 16) }
+                if let progress = monitor.progress {
+                    CheckSteps(progress: progress).padding(.horizontal, 28).padding(.bottom, 16)
+                        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
+                }
                 ForEach([monitor.message].compactMap { $0 }, id: \.self) { Text($0).font(.callout).foregroundStyle(.orange).padding(.horizontal, 28).padding(.bottom, 16).textSelection(.enabled) }
                 if monitor.section != "Settings", monitor.report == nil { welcome }
                 else { content }
@@ -462,7 +463,7 @@ struct Dashboard: View {
                     Spacer()
                     Text("Checks at launch, daily at 9 a.m. Pacific and on Check now")
                 }.font(.caption).foregroundStyle(.secondary).padding(16)
-            }.frame(maxWidth: .infinity)
+            }.frame(maxWidth: .infinity).animation(.easeInOut(duration: 0.35), value: monitor.progress == nil)
         }.frame(minWidth: 900, minHeight: 640)
         .sheet(isPresented: $monitor.feedbackOpen) { FeedbackSheet().environmentObject(monitor) }
         .onAppear { NSApp.setActivationPolicy(.regular) }
@@ -510,7 +511,7 @@ struct Dashboard: View {
                             AllCommandsButton(findings: findings)
                         }.padding(.top, 14).id("findings")
                         if filter == .waiting {
-                            Text("Nothing you can install fixes these yet: you have the newest release and no fixed one is out, or the app that bundles the affected code hasn't shipped a fix to you yet. These don't count as needing attention; \(appName) alerts you when a fix is out.").font(.callout).foregroundStyle(.secondary)
+                            Text("Nothing you can install fixes these yet: you have the newest release and no fixed one is out, the app that bundles the affected code hasn't shipped a fix to you yet, or a tool you run with npx still requires the affected version. These don't count as needing attention; \(appName) alerts you when a fix is out.").font(.callout).foregroundStyle(.secondary)
                         }
                         if findings.isEmpty {
                             Label(filter == nil ? "Nothing needs attention in covered checks." : "None found in covered checks.", systemImage: "tray").foregroundStyle(.secondary).padding(.vertical, 30)
@@ -907,7 +908,7 @@ struct StatCard: View {
 func findingBadge(_ finding: Finding) -> (String, Color) {
     if finding.malicious == true { return ("MALICIOUS PACKAGE", .red) }
     if finding.exploited { return ("KNOWN EXPLOITATION", .red) }
-    if finding.awaitingFix == true { return ((finding.severity.map { $0 + " · " } ?? "") + "NO FIX RELEASED YET", .secondary) }
+    if finding.awaitingFix == true { return ((finding.severity.map { $0 + " · " } ?? "") + (finding.heldBack == nil ? "NO FIX RELEASED YET" : "WAITING ON ITS TOOL"), .secondary) }
     switch finding.kind {
     case .security: return ((finding.severity.map { $0 + " · " } ?? "") + "SECURITY FIX", finding.severity == "CRITICAL" ? .red : .orange)
     case .unsupported: return ("END OF SUPPORT", .orange)
@@ -923,7 +924,7 @@ struct CheckSteps: View {
     @AppStorage("checkStepsFolded") private var folded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button { folded.toggle() } label: {
+            Button { withAnimation(.easeInOut(duration: 0.25)) { folded.toggle() } } label: {
                 HStack {
                     Text(progress.tally).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Spacer()
@@ -935,7 +936,7 @@ struct CheckSteps: View {
                 HStack(alignment: .top, spacing: 24) {
                     column(Array(progress.steps.prefix(half)))
                     column(Array(progress.steps.dropFirst(half)))
-                }
+                }.transition(.opacity)
             }
         }.modifier(CardStyle())
     }
@@ -1206,7 +1207,7 @@ struct FindingGroupCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title).font(.headline)
-                Text("\(findings.count) \(findings[0].kind == .update ? "updates" : "findings")" + (findings[0].blocked == nil ? ", one command" : "")).font(.caption).foregroundStyle(.secondary)
+                Text("\(findings.count) \(findings[0].kind == .update ? "updates" : "findings")" + (group.command == nil ? "" : ", one command")).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Text(badge.0).font(.caption2.weight(.bold)).foregroundStyle(badge.1)
                 // Reports the whole card, such as its shared command failing; each finding below keeps its own button.
@@ -1215,6 +1216,7 @@ struct FindingGroupCard: View {
             }
             if !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
             if let blocked = findings[0].blocked { BlockedNotice(text: blocked) }
+            if let held = findings[0].heldBack { Text(held.outlook).font(.callout) }
             if let command = group.command { UpdateOptionRow(option: command, primary: true) }
             ForEach(findings) { finding in
                 let itemBadge = findingBadge(finding)
@@ -1227,6 +1229,7 @@ struct FindingGroupCard: View {
                         Text(itemBadge.0).font(.caption2.weight(.semibold)).foregroundStyle(itemBadge.1)
                     }
                     if finding.stale { Label("Previous finding · could not verify on this check", systemImage: "clock.badge.exclamationmark").font(.caption).foregroundStyle(.orange) }
+                    if let held = finding.heldBack { Text(held.requirement + ", which rules out the fix.").font(.callout) }
                     Text(finding.reasonWithDates()).font(.callout).foregroundStyle(.secondary)
                     AlternativeOptions(options: finding.blocked == nil ? Array((finding.commands ?? []).dropFirst()) : finding.commands ?? [])
                     FindingEvidence(finding: finding)
