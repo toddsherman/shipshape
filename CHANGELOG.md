@@ -2,7 +2,7 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
-## Unreleased
+## 0.3.25 — October 31, 2026
 
 - **A check shows what it's doing, step by step.** While it runs, the window lists its whole route: what each finished step found, the step under way and what's still to come, with a count of findings so far. A line under the current step says what it's reading, why it takes the time it does or what leaves your Mac, and NVD's step says about how long is left. Apple Software Update and CISA's list have their own steps now, so a slow one no longer looks like Homebrew. Fold the list away with the arrow at its corner, and it stays folded. The menu bar panel shows the current step and the count.
 - **A lookout replaces the spinner.** While a check runs, a sailor in a crow's nest watches the horizon through his telescope, to the left and then to the right, on a gently rocking mast. With Reduce Motion on, he stays still and faces the other way every few seconds.
