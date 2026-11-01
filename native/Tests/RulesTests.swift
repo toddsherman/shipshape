@@ -457,6 +457,48 @@ import Foundation
         let uvGroups = groupByCommand(uvFindings)
         expect(uvFindings[0].commands?.first?.text == "uv python upgrade 3.10" && uvGroups.count == 1 && uvGroups[0].command?.text == "uv python upgrade 3.10 3.12 3.13"
                && Commands.commands(for: onlyNewer).first?.text == "uv python install 3.13", "uv upgrades each Python within its branch, in one command; a fix only in a newer branch installs that branch")
+        expect(onlyNewer.action.hasPrefix("No Python 3.12 release has every fix") && py310.action.hasPrefix("Install the update"), "a card says when only a newer branch has the fix")
+
+        // Issue #4: the newer branch was already installed, so uv said so and the findings stayed.
+        var uvContext = CommandContext.all
+        let onlyNewer310 = NVD.finding(uvPython("3.10.22"), product: python, hits: [NVDHit(id: "CVE-2026-6019", fixed: "3.13.14", severity: "LOW")])!
+        func uvCommand(_ finding: Finding, _ pythons: [String: Bool]) -> String? {
+            uvContext.uvPythons = pythons
+            return Commands.commands(for: finding, context: uvContext).first?.text
+        }
+        let replaced = [onlyNewer310, onlyNewer].map { finding -> Finding in
+            var finding = finding; uvContext.uvPythons = ["3.10.22": false, "3.12.13": false, "3.13.18": true]; finding.commands = Commands.commands(for: finding, context: uvContext); return finding
+        }
+        expect(groupByCommand(replaced).count == 1 && groupByCommand(replaced)[0].command?.text == "uv python uninstall 3.10 3.12" && replaced[0].commands?.first?.note.contains("Python 3.13.18 is already installed") == true,
+               "with a fixed Python already installed, what's left is removing the older ones, in one command")
+        expect(uvCommand(onlyNewer, ["3.14.10": true]) == "uv python uninstall 3.12" && uvCommand(onlyNewer, ["3.13.18": false]) == "uv python uninstall 3.12",
+               "a later branch with no findings counts as a replacement, and so does the fix's own branch, whose findings are about other advisories")
+        expect(uvCommand(onlyNewer, ["3.13.12": false]) == "uv python upgrade 3.13", "a target branch behind the fix is upgraded, because uv python install would do nothing")
+        expect(uvCommand(onlyNewer, ["3.14.2": false]) == "uv python install 3.13" && uvCommand(onlyNewer, ["3.12.13": false]) == "uv python install 3.13",
+               "with no fixed Python here, the target branch is installed; a later branch numbered past the fix can still lack it")
+
+        // Issue #4: NVD's single range for every branch, against the affected releases OSV works out from the fix commits.
+        let everyBranch = NVDHit(id: "CVE-2026-7210", fixed: "3.13.14", severity: "MEDIUM", expected: nil, published: nil), unbounded = NVDHit(id: "CVE-2026-3087", fixed: nil, severity: "MEDIUM")
+        let osvReleases = ["v3.10.21", "v3.12.13", "v3.12.12", "v3.12.0", "v3.12.0rc1", "v3.13.13", "v3.14.5", "v3.15.0b1"]
+        expect(NVD.inBranch(everyBranch, version: "3.12.16", affected: osvReleases) == nil && NVD.inBranch(everyBranch, version: "3.10.22", affected: osvReleases) == nil, "a release past the affected ones in its branch has the fix, whatever NVD's range says")
+        expect(NVD.inBranch(everyBranch, version: "3.12.13", affected: osvReleases)?.fixed == "3.12.14" && NVD.inBranch(everyBranch, version: "3.12.5", affected: osvReleases)?.fixed == "3.12.14"
+               && NVD.inBranch(unbounded, version: "3.12.13", affected: osvReleases)?.fixed == "3.12.14", "an affected release takes its own branch's fix instead of a newer branch's")
+        expect(NVD.inBranch(everyBranch, version: "3.11.18", affected: osvReleases)?.fixed == "3.13.14" && NVD.inBranch(everyBranch, version: "3.12.16", affected: ["v3.12.0rc1", "v3.13.13"])?.fixed == "3.13.14"
+               && NVD.inBranch(everyBranch, version: "3.12.16", affected: [])?.fixed == "3.13.14", "with no final release of the branch listed, OSV says nothing about it and the hit stands")
+        let inOwnBranch = NVDHit(id: "CVE-1", fixed: "3.12.15", severity: "LOW")
+        expect(NVD.inBranch(inOwnBranch, version: "3.12.13", affected: osvReleases)?.fixed == "3.12.15", "a fix NVD lists in the branch is kept")
+
+        // python@3.12 can't reach a fix that's only in Python 3.13, so there's nothing to run.
+        var brewPython = NVD.finding(Installation(product: "python", name: "python@3.12", version: "3.12.16", path: "/opt/homebrew/Cellar/python@3.12/3.12.16", domain: "brew", package: "python@3.12", manager: "brew"), product: python,
+                                     hits: [NVDHit(id: "CVE-2026-6019", fixed: "3.13.14", severity: "LOW")])!
+        var brewFindings = [brewPython]
+        Scanner.markAwaiting(&brewFindings, newest: ["python@3.12": "3.12.16"])
+        brewPython = brewFindings[0]
+        expect(brewPython.awaitingFix == true && brewPython.fixed == "No 3.12 fix yet" && brewPython.action.contains("no 3.12 release fixes these yet; newer branches do") && Commands.commands(for: brewPython).isEmpty,
+               "a Homebrew Python on its newest release waits when only a newer branch has the fix")
+        brewFindings = [NVD.finding(brewFindings[0].installation, product: python, hits: [NVDHit(id: "CVE-2026-6019", fixed: "3.13.14", severity: "LOW")])!]
+        Scanner.markAwaiting(&brewFindings, newest: ["python@3.12": "3.12.17"])
+        expect(brewFindings[0].awaitingFix != true, "a Homebrew Python behind its formula still gets the upgrade")
 
         // uv keeps the old patch release after an upgrade; only the newest of each branch and platform is checked.
         let uvRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-uv-\(UUID().uuidString)").path

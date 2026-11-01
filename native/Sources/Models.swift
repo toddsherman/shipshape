@@ -395,6 +395,7 @@ struct NVDHit: Codable, Hashable {
 struct NVDCacheEntry: Codable {
     let date: Date
     let hits: [NVDHit]
+    var backported: [String]? = nil  // CVEs NVD lists against this version though its branch has the fix
 }
 struct SourceCheck: Codable, Identifiable {
     var id: String

@@ -412,10 +412,10 @@ enum Scanner {
             guard let product = Catalog.byID[item.product], product.cpe != nil else { return false }
             return !Catalog.vendorRules.contains(product.id) && item.manager != "brew-old" && item.manager != "uv-python-old"
         }
-        // The leading number versions the matching rules; change it when NVD.evaluate changes.
-        func nvdKey(_ item: Installation) -> String { "3|" + Catalog.byID[item.product]!.cpe! + "|" + item.version }
+        // The leading number versions the matching rules; change it when NVD.evaluate or NVD.inBranch changes.
+        func nvdKey(_ item: Installation) -> String { "4|" + Catalog.byID[item.product]!.cpe! + "|" + item.version }
         var nvdResults: [String: (checked: Int, problems: [String])] = [:]
-        var requested = false, saved = 0
+        var requested = false, saved = 0, releases: [String: [String]] = [:]
         if nvdItems.isEmpty { live.skip("nvd") } else { begin("nvd", "Checking NVD") }
         for (index, item) in nvdItems.enumerated() {
             let product = Catalog.byID[item.product]!, key = nvdKey(item)
@@ -427,7 +427,10 @@ enum Scanner {
                     if requested { try await Task.sleep(nanoseconds: 6_500_000_000) }
                     requested = true
                     hits = try await NVD.hits(cpe: product.cpe!, version: item.version)
-                    cache[key] = NVDCacheEntry(date: Date(), hits: hits!)
+                    if let repository = product.repository {
+                        cache[key] = await NVD.branchHits(hits!, version: item.version, repository: repository, releases: &releases)
+                        hits = cache[key]!.hits
+                    } else { cache[key] = NVDCacheEntry(date: Date(), hits: hits!) }
                 } else { saved += 1 }
                 if let finding = NVD.finding(item, product: product, hits: hits!) { report.findings.append(finding) }
                 nvdResults[product.id, default: (0, [])].checked += 1
@@ -437,6 +440,10 @@ enum Scanner {
             let name = Catalog.byID[id]!.name
             record("nvd:" + id, name + " (NVD)", result.problems.isEmpty ? "\(result.checked) cop\(result.checked == 1 ? "y" : "ies") checked against NVD version ranges." : result.problems.joined(separator: "; "),
                    url: "https://nvd.nist.gov/products/cpe/search", status: result.problems.isEmpty ? "checked" : "failed")
+        }
+        let backported = Set(nvdItems.flatMap { cache[nvdKey($0)]?.backported ?? [] }).sorted()
+        if !backported.isEmpty {
+            record("nvd-backports", "Fixes already in older branches", "NVD lists \(backported.count == 1 ? "1 advisory" : "\(backported.count) advisories") against an installed release that already has the fix, going by the affected releases OSV works out from the fix commits, so \(backported.count == 1 ? "it isn't a finding" : "they aren't findings"): \(backported.joined(separator: ", ")).", url: "https://osv.dev/list", status: "checked")
         }
         report.nvdCache = cache
         if !nvdItems.isEmpty { end(CheckProgress.count(nvdItems.count, "version") + (saved > 0 ? ", \(saved) from saved answers" : "")) }
@@ -545,6 +552,7 @@ enum Scanner {
         }
         record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven packages in projects, global installs (including cargo install, go install and Ruby gems), Python environments, the npx cache and pinned MCP servers, plus GitHub Actions in project workflows. Editor extensions: Microsoft's list of extensions removed as malware, impersonation or untrustworthy. Self-updating apps: their own Sparkle update feeds, and the Sparkle version bundled inside them, against Sparkle's advisories. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries. Excluded by design: Google Chrome and Mac App Store apps. Not covered: vulnerabilities in editor extensions, CocoaPods, containers and images, unpinned MCP servers that npx hasn't cached, GitHub Actions pinned to branches or bare commits, software outside the catalog and arbitrary install paths.", status: "manual")
         report.retainUnverified(from: previous)
+        context.uvPythons = Dictionary(report.installations.filter { $0.manager == "uv-python" }.map { item in (item.version, !report.security.contains { $0.installation.path == item.path }) }, uniquingKeysWith: { $0 && $1 })
         for index in report.findings.indices { report.findings[index].commands = Commands.commands(for: report.findings[index], context: context) }
         Ownership.restrict(&report.findings, access: FileAccess.live.memoized())
         if let homebrew = report.findings.first(where: { $0.blocked != nil && Ownership.homebrewManagers.contains($0.installation.manager ?? "") })?.blocked {
@@ -623,10 +631,12 @@ enum Scanner {
                 }
                 continue
             }
-            guard !looseLess(item.version, latest), finding.fixed == NVD.noFixListed || finding.expectedFix != nil else { continue }
+            // A fix only in a newer branch is out of reach of this formula: python@3.12 stays on Python 3.12.
+            let branch = NVD.branch(item.version), onlyNewer = Catalog.byID[item.product]?.branches == true && finding.fixed != NVD.noFixListed && NVD.branch(finding.fixed) != branch
+            guard !looseLess(item.version, latest), finding.fixed == NVD.noFixListed || finding.expectedFix != nil || onlyNewer else { continue }
             findings[index].awaitingFix = true
-            findings[index].fixed = finding.expectedFix.map { "\($0), not released yet" } ?? "No fix released yet"
-            findings[index].action = "You have Homebrew's newest \(item.name) (\(latest)), and no release fixes these yet."
+            findings[index].fixed = onlyNewer ? "No \(branch) fix yet" : finding.expectedFix.map { "\($0), not released yet" } ?? "No fix released yet"
+            findings[index].action = "You have Homebrew's newest \(item.name) (\(latest)), and \(onlyNewer ? "no \(branch) release fixes these yet; newer branches do" : "no release fixes these yet")."
                 + (finding.expectedFix.map { " The advisory names \($0) as the fix." } ?? "") + " \(appName) alerts you when a fixed release is available."
         }
     }

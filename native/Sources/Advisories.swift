@@ -561,6 +561,36 @@ enum NVD {
     }
     static let noFixListed = "No fixed version listed"
     static func branch(_ version: String) -> String { version.split(separator: ".").prefix(2).joined(separator: ".") }
+    // A project's CVE records, and so NVD's, can give one range for every branch ("before 3.13.14") though each branch
+    // got the fix in a release of its own. OSV works out the affected releases from the fix commits, and a maintenance
+    // branch's releases are listed only when a fix landed after them. So a release past all of those in its branch has
+    // the fix, and otherwise the release after them does. A branch with none listed tells us nothing, so the hit stands.
+    static func inBranch(_ hit: NVDHit, version: String, affected: [String]) -> NVDHit? {
+        let branch = Self.branch(version)
+        let releases = affected.map { $0.hasPrefix("v") ? String($0.dropFirst()) : $0 }
+            .filter { Self.branch($0) == branch && $0.range(of: "^[0-9]+\\.[0-9]+\\.[0-9]+$", options: .regularExpression) != nil }
+        guard let newest = releases.max(by: looseLess) else { return hit }
+        if looseLess(newest, version) { return nil }
+        if let fixed = hit.fixed, Self.branch(fixed) == branch { return hit }
+        let parts = newest.split(separator: ".").map(String.init)
+        return NVDHit(id: hit.id, fixed: "\(parts[0]).\(parts[1]).\((Int(parts[2]) ?? 0) + 1)", severity: hit.severity, expected: hit.expected, published: hit.published)
+    }
+    static func affectedReleases(_ id: String, repository: String) async -> [String] {
+        guard id.range(of: "^CVE-[0-9]+-[0-9]+$", options: .regularExpression) != nil,
+              let obj = (try? await Fetch.json("https://api.osv.dev/v1/vulns/" + id)) as? [String: Any] else { return [] }
+        return ((obj["affected"] as? [[String: Any]]) ?? []).filter { entry in
+            ((entry["ranges"] as? [[String: Any]]) ?? []).contains { $0["repo"] as? String == repository }
+        }.flatMap { $0["versions"] as? [String] ?? [] }
+    }
+    // Answers from OSV are kept for the check, since every Python on a Mac shares most of its CVEs.
+    static func branchHits(_ hits: [NVDHit], version: String, repository: String, releases: inout [String: [String]]) async -> NVDCacheEntry {
+        var kept: [NVDHit] = [], backported: [String] = []
+        for hit in hits {
+            if releases[hit.id] == nil { releases[hit.id] = await affectedReleases(hit.id, repository: repository) }
+            if let result = inBranch(hit, version: version, affected: releases[hit.id]!) { kept.append(result) } else { backported.append(hit.id) }
+        }
+        return NVDCacheEntry(date: Date(), hits: kept, backported: backported)
+    }
     // For a product with several supported branches, the fix is the one in the installed branch, such as 3.12.14
     // for Python 3.12.13. NVD sometimes lists a fix only as a release in a newer branch ("before 3.13.14"); that
     // becomes the fix only when nothing in the installed branch is listed, and is mentioned otherwise.
@@ -576,8 +606,9 @@ enum NVD {
             + (elsewhere.isEmpty ? "" : "; \(elsewhere.count) list\(elsewhere.count == 1 ? "s" : "") a fix only in a newer \(product.name) (\(elsewhere.max(by: looseLess)!))") + ". NVD can lag vendor advisories"
             + (item.domain == "brew" ? ", and Homebrew sometimes ships patches without changing the version." : ".")
             + (expected.map { " The advisory text names \($0) as the fix." } ?? "")
+        let onlyNewer = listed.flatMap { fix in branch.map { Self.branch(fix) != $0 } } == true
         var finding = Finding(source: "nvd:" + product.id, installation: item, kind: .security, fixed: listed ?? expected ?? noFixListed,
-                              reason: reason, action: "Install the update below, then restart programs that use it.",
+                              reason: reason, action: onlyNewer ? "No \(product.name) \(branch!) release has every fix, so the way out is a newer \(product.name)." : "Install the update below, then restart programs that use it.",
                               links: hits.prefix(3).map { "https://nvd.nist.gov/vuln/detail/" + $0.id }, advisories: hits.map(\.id).sorted(),
                               severity: hits.reduce(nil) { worse($0, $1.severity) }, expectedFix: expected)
         OSV.dates(&finding, hits.map { ($0.id, [], $0.published) })

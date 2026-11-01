@@ -21,6 +21,7 @@ struct CaskInfo: Hashable {
 struct CommandContext {
     var tools: Set<String>
     var casks: [String: CaskInfo] = [:]
+    var uvPythons: [String: Bool] = [:]  // the Pythons uv has installed; true for those with no security finding
     func has(_ tool: String) -> Bool { tools.contains(tool) }
     static let known = ["brew", "mise", "npm", "pnpm", "yarn", "bun", "corepack", "uv", "pipx", "poetry", "cargo", "bundle", "go", "deno", "volta", "fnm",
                         "swift", "composer", "dart", "flutter", "dotnet", "mix"]
@@ -292,14 +293,19 @@ enum Commands {
                            "Downloads python.org's installer, stops unless Apple's notarization check passes, then installs it. Asks for your administrator password.")
                 + [link("https://www.python.org/downloads/release/python-\(fix.replacingOccurrences(of: ".", with: ""))/", "The release page with the macOS installer.", label: "Download from python.org")].compactMap { $0 }
         // uv upgrades a Python to the newest patch release of its branch, and keeps the old one for virtual
-        // environments made with it. A fix only in a newer branch means installing that branch.
+        // environments made with it. A fix only in a newer branch leaves this Python as it is, so the steps are to get
+        // that branch, which uv won't do twice, and then to remove this one. A later branch counts too if it has no
+        // findings of its own: 3.14.2 is numbered past 3.13.14 without having all its fixes.
         case "uv-python":
             guard let fix else { return [] }
             let installed = NVD.branch(item.version), target = NVD.branch(fix)
-            if target == installed {
-                return batch(["uv python upgrade ", ""], installed, "Installs the newest patch release of this Python, and virtual environments uv made with it switch to it. uv keeps the old release; \(appName) then lists it under Updates to remove.")
+            let upgrade = "Installs the newest patch release of this Python, and virtual environments uv made with it switch to it. uv keeps the old release; \(appName) then lists it under Updates to remove."
+            if target == installed { return batch(["uv python upgrade ", ""], installed, upgrade) }
+            if let newer = context.uvPythons.filter({ !looseLess($0.key, fix) && ($0.value || NVD.branch($0.key) == target) }).keys.max(by: looseLess) {
+                return batch(["uv python uninstall ", ""], installed, "Python \(newer) is already installed with these fixes, so what's left is removing the older Python. Move its projects to \(newer) first: virtual environments made with it stop working once it's gone.")
             }
-            return command("uv python install " + target, "No Python \(installed) release is listed with every fix, so this installs Python \(target). Move projects to it, then remove \(installed) with uv python uninstall \(installed).")
+            if context.uvPythons.keys.contains(where: { NVD.branch($0) == target }) { return batch(["uv python upgrade ", ""], target, upgrade) }
+            return command("uv python install " + target, "Installs Python \(target) beside this one. Once it's there, \(appName) shows the command that removes the older Python.")
         case "uv-python-old":
             return batch(["uv python uninstall ", ""], item.version, "Removes this older patch release. Check first that no virtual environment was made with it explicitly.")
         case "pyenv":
