@@ -2,7 +2,7 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
-## Unreleased
+## 0.3.27 — November 1, 2026
 
 - **Python findings no longer count fixes a branch already has.** NVD often records one range for every Python branch, such as "before 3.13.14", so current 3.10, 3.11 and 3.12 releases were flagged for CVEs fixed in their own branch and told to move to 3.13. Each CVE is now compared with the affected releases OSV works out from Python's fix commits. A release that has the fix isn't flagged, an older one is pointed at its own branch's fix, and Coverage lists what was set aside.
 - **A uv Python whose fix is in a newer branch gets a command that does something.** `uv python install 3.13` did nothing if 3.13 was already there, and the finding stayed. Once a fixed Python is installed, the card now offers `uv python uninstall 3.10 3.12`, with a warning to move projects first. If that branch is behind the fix, it offers `uv python upgrade 3.13`.
