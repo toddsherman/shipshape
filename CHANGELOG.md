@@ -2,6 +2,11 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.29 — November 3, 2026
+
+- **Apps built on Electron are checked.** An Electron app carries its own Chromium, which changes only when the app ships a release on a newer Electron. Shipshape now reads the Electron version inside any app in Applications and gives it one card. The card counts the Chrome vulnerabilities NVD published more than a week after that Electron release came out, and lists Electron's own advisories. It says whether that Electron still gets security fixes (only the three newest major versions do) and names the release that has them. Only the app's developer can ship that release, so the card waits unless Shipshape knows of a newer release of the app. A Chrome flaw on CISA's exploited list puts it under Known exploitation while it waits. Electron's public release list is downloaded to read each release's Chromium; nothing about your Mac is sent.
+- **One ship, on a black icon.** The app icon is now a white ship on black, and the same ship appears beside the name, on the welcome screen and in the menu bar. The menu bar shows the ship with a count when something needs attention. The lookout in the crow's nest is gone; a check still lists its steps as it goes.
+
 ## 0.3.28 — November 3, 2026
 
 - **Playwright's browsers are covered.** Playwright downloads its own Chromium, Firefox and WebKit builds and never updates them, so Shipshape now reads them from `~/Library/Caches/ms-playwright` and works out which Playwright on your Mac uses each one, as Playwright does. A build nothing uses any more appears under Updates with one command that deletes all such builds. A Chromium or Firefox build in use is checked against NVD as Chrome or Firefox. The card says how many of its fixes Playwright's newest release ships, and offers the command that updates Playwright in your project or deletes the npx install that uses it. If no Playwright release has the fixes yet, it waits for a fix, and a Chromium card says Playwright can run on Google Chrome meanwhile (`channel: 'chrome'`), which updates itself.
