@@ -33,9 +33,10 @@ if [ ! -x "$BINARY" ] || [ -n "$(find "$SOURCES" "$ROOT/native/Resources" "$ROOT
   rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
   xcrun swiftc -swift-version 5 -O -parse-as-library -target "$(uname -m)-apple-macos13.0" \
     -F "$SPARKLE" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-    "$SOURCES"/{Models,Catalog,Lockfiles,Inventory,Advisories,Commands,Feeds,Updates,Lookout,App}.swift -o "$BINARY"
+    "$SOURCES"/{Models,Catalog,Lockfiles,Inventory,Advisories,Commands,Feeds,Updates,ShipMark,App}.swift -o "$BINARY"
   cp "$ROOT/native/Resources/Info.plist" "$APP/Contents/Info.plist"
-  xcrun swift "$ROOT/native/make-icon.swift" "$ROOT" dev
+  xcrun swiftc -parse-as-library "$ROOT/native/make-icon.swift" "$SOURCES/ShipMark.swift" -o "$WORK/make-icon"
+  "$WORK/make-icon" "$ROOT" dev
   iconutil -c icns "$ROOT/native/work/AppIcon-Dev.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
   plutil -replace CFBundleIdentifier -string sh.todd.security-monitor.dev "$APP/Contents/Info.plist"
   plutil -replace CFBundleName -string "Shipshape Dev" "$APP/Contents/Info.plist"

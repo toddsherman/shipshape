@@ -296,10 +296,26 @@ struct ShipshapeApp: App {
         MenuBarExtra {
             MenuPanel().environmentObject(monitor)
         } label: {
-            Image(systemName: monitor.scanning ? "arrow.triangle.2.circlepath" : monitor.attention.isEmpty ? "sailboat" : "sailboat.fill")
+            if monitor.scanning { Image(systemName: "arrow.triangle.2.circlepath") } else { Image(nsImage: ShipLogo.menuBar).accessibilityLabel(displayName) }
             if !monitor.attention.isEmpty { Text("\(monitor.attention.count)") }
         }.menuBarExtraStyle(.window)
     }
+}
+
+// Shipshape's logo (ShipMark), the ship on the app icon, in the color of the text around it: black in light mode and
+// white in dark mode. The menu bar gets a template image of it, which macOS colors to suit the menu bar.
+struct ShipLogo: View {
+    static let menuBar = ShipMark.template(height: 16)
+    var body: some View {
+        ZStack {
+            ShipMarkShape(waves: false)
+            ShipMarkShape(waves: true).opacity(ShipMark.wavesOpacity)
+        }.accessibilityHidden(true)
+    }
+}
+struct ShipMarkShape: Shape {
+    let waves: Bool
+    func path(in rect: CGRect) -> Path { Path(waves ? ShipMark.waves : ShipMark.ship).applying(ShipMark.transform(fitting: rect, flipped: true)) }
 }
 
 struct MenuPanel: View {
@@ -309,10 +325,8 @@ struct MenuPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Label(displayName, systemImage: "sailboat.fill").font(.headline)
+                Label { Text(displayName) } icon: { ShipLogo().frame(width: 18, height: 18) }.font(.headline)
                 Spacer()
-                // The lookout stands a little taller than the row. Beside him, Check now as a refresh button.
-                Lookout(watching: monitor.scanning).frame(width: 32, height: 32).padding(.vertical, -5)
                 Button { monitor.check() } label: { Image(systemName: "arrow.clockwise.circle").font(.title2) }
                     .buttonStyle(.borderless).help("Check now").accessibilityLabel("Check now").frame(width: 22, height: 22).disabled(monitor.scanning)
             }
@@ -422,7 +436,7 @@ struct Dashboard: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
-                Label(displayName, systemImage: "sailboat.fill").font(.title3.weight(.semibold)).padding(.bottom, 25).padding(.top, 14)
+                Label { Text(displayName) } icon: { ShipLogo().frame(width: 20, height: 20) }.font(.title3.weight(.semibold)).padding(.bottom, 25).padding(.top, 14)
                 ForEach(sections, id: \.0) { title, symbol in
                     Button { monitor.section = title; query = ""; if title == "Security" { monitor.filter = nil } } label: {
                         HStack { Image(systemName: symbol).frame(width: 20); Text(title); Spacer(); if title == "Security" && !monitor.attention.isEmpty { Text("\(monitor.attention.count)").font(.caption.weight(.semibold)) } }
@@ -447,7 +461,6 @@ struct Dashboard: View {
                         if let why = monitor.progress?.why { Text(why).font(.caption).foregroundStyle(.secondary) }
                     }
                     Spacer()
-                    Lookout(watching: monitor.scanning).frame(width: 40, height: 40).padding(.top, -8)
                     Button(monitor.scanning ? "Checking…" : "Check now") { monitor.check() }.buttonStyle(.borderedProminent).disabled(monitor.scanning)
                 }.padding(28)
                 if let progress = monitor.progress {
@@ -481,7 +494,7 @@ struct Dashboard: View {
     }
     var welcome: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Image(systemName: "sailboat.fill").font(.system(size: 48)).foregroundStyle(.blue)
+            ShipLogo().frame(width: 48, height: 48)
             Text("Know what in your dev stack needs a fix.").font(.title.weight(.semibold))
             Text("Checks the runtimes, package managers, AI coding tools, MCP servers, Homebrew libraries and project dependencies you build with against OSV, NVD and vendor advisories. Every finding comes with its evidence and a command you can copy into Terminal.").foregroundStyle(.secondary)
             Text("Add the folders that hold your projects so their lockfiles are included. Inventory stays on this Mac; public advisory services receive package names and versions only. No accounts or API keys are needed.").font(.callout)
