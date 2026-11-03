@@ -431,6 +431,102 @@ enum Playwright {
     }
 }
 
+// An app built on Electron carries its own Chromium, which changes only when the app ships a release on a newer Electron.
+// Electron supports its three newest major versions and copies Chrome's security fixes into them, usually within days,
+// without changing the Chromium version a release names. So a Chrome vulnerability NVD lists for that Chromium counts
+// against an Electron release only if NVD published it more than a week after the release came out: one published
+// earlier may have been fixed in it, and NVD can take a week to publish what Chrome has already fixed.
+enum Electron {
+    struct Release: Equatable { let version: String; let date: Date; let chromium: String }
+    struct Releases: Equatable {
+        var all: [String: Release] = [:]   // stable releases by version
+        var newest: [Int: Release] = [:]   // each major's newest release
+        var started: [Int: Date] = [:]     // when each major's first release came out
+        var supported: [Int] = []          // the three newest majors, newest first
+        // A major stops getting fixes when the major three above it comes out.
+        func ended(_ major: Int) -> Date? {
+            supported.contains(major) ? nil : started[major + 3] ?? supported.last.flatMap { started[$0] }
+        }
+    }
+    static let source = "https://releases.electronjs.org/releases.json"
+    static let timelines = "https://www.electronjs.org/docs/latest/tutorial/electron-timelines"
+    static let grace: TimeInterval = 7 * 86_400
+    static func major(_ version: String) -> Int? { Int(version.prefix { $0 != "." }) }
+    // Electron's release list: every release with its date and Chromium. Alpha, beta and nightly releases are left out.
+    static func parse(_ rows: [[String: Any]]) -> Releases {
+        var releases = Releases()
+        for row in rows {
+            guard let version = Commands.safe(row["version"] as? String, "^[0-9]+\\.[0-9]+\\.[0-9]+$"), let major = major(version),
+                  let chromium = row["chrome"] as? String, Version(chromium) != nil,
+                  let date = advisoryDate(row["fullDate"] as? String) ?? advisoryDate(row["date"] as? String) else { continue }
+            let release = Release(version: version, date: date, chromium: chromium)
+            releases.all[version] = release
+            if releases.newest[major].map({ looseLess($0.version, version) }) ?? true { releases.newest[major] = release }
+            if releases.started[major].map({ date < $0 }) ?? true { releases.started[major] = date }
+        }
+        releases.supported = Array(releases.newest.keys.sorted(by: >).prefix(3))
+        return releases
+    }
+    // Electron's public release list. Nothing about this Mac is sent.
+    static func releases() async throws -> Releases {
+        guard let rows = try await Fetch.json(source, limit: 40_000_000) as? [[String: Any]] else { throw MonitorError(message: "Electron's release list couldn't be read") }
+        let releases = parse(rows)
+        guard releases.supported.count == 3 else { throw MonitorError(message: "Electron's release list names too few releases") }
+        return releases
+    }
+    // An app's Electron: the Chrome vulnerabilities its Chromium still has, and whether its Electron still gets fixes. The
+    // fix is the newest release of its major, or of the oldest major still supported once its own has stopped. An Electron
+    // that isn't a public release has no known Chromium, so it gets no finding.
+    static func finding(_ item: Installation, releases: Releases, hits: [NVDHit]) -> Finding? {
+        guard let release = releases.all[item.version], let major = major(item.version), let oldest = releases.supported.last, let app = item.bundledApp else { return nil }
+        let open = hits.filter { ($0.published ?? .distantFuture) > release.date.addingTimeInterval(grace) }
+        let ended = releases.ended(major)
+        guard !open.isEmpty || ended != nil else { return nil }
+        guard let target = releases.newest[ended == nil ? major : oldest] else { return nil }
+        func day(_ date: Date) -> String { date.formatted(date: .abbreviated, time: .omitted) }
+        var reason = "\(app) is built on Electron \(item.version), released \(day(release.date)), with Chromium \(release.chromium)."
+        if !open.isEmpty {
+            let count = open.count == 1 ? "1 Chrome vulnerability" : "\(open.count.formatted()) Chrome vulnerabilities"
+            reason += " NVD published \(count) affecting that Chromium more than a week after this release came out, so it doesn't have their fixes."
+        }
+        if let ended {
+            reason += " Electron \(major) stopped getting security fixes on \(day(ended)), when Electron \(major + 3) came out, so this Chromium gets no more of them until \(app) moves to a newer Electron."
+        } else {
+            reason += target.version == item.version ? " Electron \(major) still gets Chrome's fixes, but no Electron \(major) release has these yet." : " Electron \(major) still gets Chrome's fixes; its newest release is \(target.version)."
+        }
+        let fixed = target.version == item.version ? NVD.noFixListed : target.version
+        var finding = Finding(source: "nvd:electron", installation: item, kind: open.isEmpty ? .unsupported : .security, fixed: fixed, reason: reason,
+                              action: fixed == NVD.noFixListed ? "No Electron \(major) release has these fixes yet. A newer \(app) may be built on a newer Electron that does." : Commands.action(for: item, malicious: false, fixed: fixed),
+                              links: open.prefix(3).map { "https://nvd.nist.gov/vuln/detail/" + $0.id } + [timelines], advisories: open.map(\.id).sorted(),
+                              severity: open.reduce(nil) { worse($0, $1.severity) })
+        OSV.dates(&finding, open.map { ($0.id, [], $0.published) })
+        return finding
+    }
+    // Each app's Electron gets one card: Electron's own advisories, from OSV, join the finding about its Chromium, whose
+    // fix, a supported Electron release, covers them too. Without that finding they keep a card of their own.
+    static func combine(_ findings: inout [Finding]) {
+        var merged = Set<String>()
+        for own in findings where own.source == "osv" && own.installation.manager == "electron-framework" && own.malicious != true {
+            guard let index = findings.firstIndex(where: { $0.source == "nvd:electron" && $0.installation.path == own.installation.path }) else { continue }
+            // OSV's reason reads "45 published advisories: Electron: <title>; …"; its titles all start with Electron's name.
+            let parts = own.reason.components(separatedBy: ": ")
+            let count = parts[0].replacingOccurrences(of: "published ", with: "")
+            let titles = parts.dropFirst().joined(separator: ": ").replacingOccurrences(of: "Electron: ", with: "")
+            var finding = findings[index]
+            finding.kind = .security
+            finding.reason += " Electron has also published \(count) that affect this release: \(titles)"
+            finding.advisories = Array(Set(finding.advisories + own.advisories)).sorted()
+            finding.severity = worse(finding.severity, own.severity)
+            finding.links += own.links
+            finding.published = (finding.published ?? [:]).merging(own.published ?? [:]) { first, _ in first }
+            finding.sameIssue = own.sameIssue.map { (finding.sameIssue ?? [:]).merging($0) { first, _ in first } } ?? finding.sameIssue
+            findings[index] = finding
+            merged.insert(own.id)
+        }
+        findings.removeAll { merged.contains($0.id) }
+    }
+}
+
 enum EditorExtensions {
     static let source = "https://raw.githubusercontent.com/microsoft/vsmarketplace/main/RemovedPackages.md"
     static let page = "https://github.com/microsoft/vsmarketplace/blob/main/RemovedPackages.md"

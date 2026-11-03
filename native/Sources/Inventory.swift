@@ -79,7 +79,7 @@ enum Inventory {
         progress("Reading apps and how they're signed")
         let (apps, appErrors, skipped, signatures, unreadable) = self.apps()
         add(apps)
-        check("inventory-apps", "Developer apps", "apps", appErrors, "Read \(apps.filter { $0.manager == "app" }.count) apps in /Applications and your Applications folder: catalog developer apps, plus self-updating apps with a Sparkle feed or a bundled Sparkle, and the Sparkle version inside \(apps.filter { $0.manager == "sparkle-framework" }.count) of them. Skipped \(skipped) App Store or Google Chrome app\(skipped == 1 ? "" : "s") by design.")
+        check("inventory-apps", "Developer apps", "apps", appErrors, "Read \(apps.filter { $0.manager == "app" }.count) apps in /Applications and your Applications folder: catalog developer apps, plus self-updating apps with a Sparkle feed or a bundled Sparkle, and apps built on Electron. Found the Sparkle version inside \(apps.filter { $0.manager == "sparkle-framework" }.count) of them and the Electron version inside \(apps.filter { $0.manager == "electron-framework" }.count). Skipped \(skipped) App Store or Google Chrome app\(skipped == 1 ? "" : "s") by design.")
         report.signatures = signatures
         report.checks.append(SourceCheck(id: "app-signatures", name: "App signatures", status: "checked", detail: AppSignature.coverage(signatures, unreadable: unreadable)))
         progress("Reading what Homebrew has installed")
@@ -150,10 +150,10 @@ enum Inventory {
                     guard let bundleID else { continue }
                     let build = info["CFBundleVersion"] as? String
                     let feed = (info["SUFeedURL"] as? String).flatMap { $0.hasPrefix("https://") ? $0 : nil } ?? product?.feed
-                    let sparkle = sparkleBuild(url.path)
-                    // Apps outside the catalog are kept when Sparkle can say something about them: a feed with
-                    // their newest release, or a bundled Sparkle with known advisories.
-                    guard product != nil || feed != nil || sparkle != nil else { continue }
+                    let sparkle = sparkleBuild(url.path), electron = electronVersion(url.path)
+                    // Apps outside the catalog are kept when something about them can be checked: a Sparkle feed with
+                    // their newest release, a bundled Sparkle with known advisories, or the Electron they're built on.
+                    guard product != nil || feed != nil || sparkle != nil || electron != nil else { continue }
                     guard let version = info["CFBundleShortVersionString"] as? String ?? build else { errors.append("Unreadable version: \(url.lastPathComponent)"); continue }
                     let name = product?.name ?? title
                     items.append(Installation(product: product?.id ?? "app:" + bundleID, name: name, version: version, path: url.path, domain: "apps", package: product?.casks.first,
@@ -164,6 +164,11 @@ enum Inventory {
                         items.append(Installation(product: "swifturl:github.com/sparkle-project/Sparkle", name: "Sparkle in \(name)", version: sparkle.version, path: url.path + "/Contents/Frameworks/Sparkle.framework",
                                                   domain: "apps", note: "The update framework bundled inside \(name). It is updated with the app." + modified, ecosystem: "SwiftURL",
                                                   packageName: "github.com/sparkle-project/Sparkle", manager: "sparkle-framework", location: url.path))
+                    }
+                    if let electron {
+                        items.append(Installation(product: "electron", name: "Electron in \(name)", version: electron, path: url.path + "/Contents/Frameworks/Electron Framework.framework",
+                                                  domain: "apps", note: "The framework \(name) is built on, with its own copy of Chromium. It changes only when \(name) ships a release on a newer Electron.",
+                                                  ecosystem: "npm", packageName: "electron", manager: "electron-framework", location: url.path))
                     }
                 } else if url.pathComponents.count - base.pathComponents.count >= 3 { enumerator.skipDescendants() }
             }
@@ -191,6 +196,14 @@ enum Inventory {
               let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
               let raw = (info["CFBundleShortVersionString"] ?? info["CFBundleVersion"]) as? String, let version = trimmedSparkleVersion(raw) else { return nil }
         return (version, sparkleChanges(raw))
+    }
+    // The Electron release an app is built on, from the Electron framework it bundles. Only Electron's own version
+    // numbers are kept, so a renamed or modified framework isn't mistaken for a release.
+    static func electronVersion(_ app: String) -> String? {
+        let framework = app + "/Contents/Frameworks/Electron Framework.framework"
+        guard let data = ["/Versions/A/Resources/Info.plist", "/Resources/Info.plist"].lazy.compactMap({ read(framework + $0, limit: 1_000_000, followLinks: true) }).first,
+              let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any] else { return nil }
+        return Commands.safe((info["CFBundleVersion"] ?? info["CFBundleShortVersionString"]) as? String, "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-(?:alpha|beta|nightly)\\.[0-9]+)?$")
     }
     static func sparkleChanges(_ raw: String) -> Int? {
         captures("^[0-9]+(?:\\.[0-9]+)*[ -]([0-9]+)-g[0-9a-f]{6,}", raw).first.flatMap { Int($0[1]) }

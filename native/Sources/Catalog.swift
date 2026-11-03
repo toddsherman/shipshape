@@ -67,6 +67,9 @@ enum Catalog {
         Product(id: "playwright-chromium", name: "Chromium (Playwright)", cpe: "google:chrome"),
         Product(id: "playwright-firefox", name: "Firefox (Playwright)", cpe: "mozilla:firefox"),
         Product(id: "playwright-webkit", name: "WebKit (Playwright)"),
+        // The Chromium inside apps built on Electron, found by Inventory.apps. NVD is asked about the Chromium version of
+        // each app's Electron release, and only the app's next release updates it (see Electron).
+        Product(id: "electron", name: "Chromium in Electron apps", cpe: "google:chrome"),
         Product(id: "brave", name: "Brave", bundleIDs: ["com.brave.Browser"], casks: ["brave-browser"], cpe: "brave:brave", download: "https://brave.com/download/"),
         Product(id: "edge", name: "Microsoft Edge", bundleIDs: ["com.microsoft.edgemac"], casks: ["microsoft-edge"], cpe: "microsoft:edge_chromium", download: "https://www.microsoft.com/edge/download"),
         Product(id: "iterm2", name: "iTerm2", bundleIDs: ["com.googlecode.iterm2"], casks: ["iterm2"], cpe: "iterm2:iterm2", download: "https://iterm2.com/downloads.html"),

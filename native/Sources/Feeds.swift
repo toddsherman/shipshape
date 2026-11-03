@@ -337,6 +337,22 @@ enum Scanner {
                    + (unpublished.isEmpty ? "" : " No vulnerabilities are published yet for OpenSSL \(unpublished.joined(separator: ", ")); OpenSSL's index doesn't list \(unpublished.count == 1 ? "that branch" : "those branches")."),
                    url: "https://openssl-library.org/news/vulnerabilities/")
         } catch { failure("openssl", "OpenSSL security", error) }
+        // Electron's release list says which Chromium each app's Electron has, for NVD below, and which Electron versions
+        // still get fixes.
+        var electron: Electron.Releases? = nil
+        do {
+            let installed = report.installations.filter { $0.manager == "electron-framework" }
+            if !installed.isEmpty {
+                vendors.append("Electron")
+                show("Reading Electron's releases")
+                electron = try await Electron.releases()
+            }
+            let unknown = installed.filter { electron?.all[$0.version] == nil }.map { "Electron \($0.version) in \($0.bundledApp ?? $0.name)" }
+            record("electron", "Electron releases", installed.isEmpty ? "No apps built on Electron." : "\(CheckProgress.count(installed.count, "app")) built on Electron compared with Electron's release list"
+                   + (electron.map { ", which names each release's Chromium. Electron \(Alerts.list($0.supported.map(String.init))) still get security fixes." } ?? ".")
+                   + (unknown.isEmpty ? "" : " \(Alerts.list(unknown)) \(unknown.count == 1 ? "isn't a public release, so its Chromium" : "aren't public releases, so their Chromium") can't be checked."),
+                   url: Electron.timelines, status: unknown.isEmpty ? "checked" : "partial")
+        } catch { failure("electron", "Electron releases", error) }
 
         // Package-level advisories and malicious-package reports for every inventoried package version.
         let packages = report.installations.filter { OSV.key($0) != nil && $0.manager != "brew-old" }
@@ -408,31 +424,35 @@ enum Scanner {
         // NVD version ranges for catalog tools and libraries without a vendor rule. Without an API key NVD
         // allows about five requests per 30 seconds, so requests are spaced and results reused for 20 hours.
         var cache = (previous?.nvdCache ?? [:]).filter { Date().timeIntervalSince($0.value.date) < 20 * 3600 }
+        // An Electron app is looked up by its Electron release's Chromium, so one whose release isn't known is left out.
+        func nvdVersion(_ item: Installation) -> String? { item.manager == "electron-framework" ? electron?.all[item.version]?.chromium : item.version }
         let nvdItems = report.installations.filter { item in
-            guard let product = Catalog.byID[item.product], product.cpe != nil else { return false }
+            guard let product = Catalog.byID[item.product], product.cpe != nil, nvdVersion(item) != nil else { return false }
             return !Catalog.vendorRules.contains(product.id) && item.manager != "brew-old" && item.manager != "uv-python-old" && item.manager != "playwright-unused"
         }
         // The leading number versions the matching rules; change it when NVD.evaluate or NVD.inBranch changes.
-        func nvdKey(_ item: Installation) -> String { "4|" + Catalog.byID[item.product]!.cpe! + "|" + item.version }
+        func nvdKey(_ item: Installation) -> String { "4|" + Catalog.byID[item.product]!.cpe! + "|" + nvdVersion(item)! }
         var nvdResults: [String: (checked: Int, problems: [String])] = [:]
         var requested = false, saved = 0, releases: [String: [String]] = [:]
         if nvdItems.isEmpty { live.skip("nvd") } else { begin("nvd", "Checking NVD") }
         for (index, item) in nvdItems.enumerated() {
-            let product = Catalog.byID[item.product]!, key = nvdKey(item)
+            let product = Catalog.byID[item.product]!, key = nvdKey(item), version = nvdVersion(item)!
             let requests = Set(nvdItems[index...].map(nvdKey)).filter { cache[$0] == nil }.count
-            show("Checking NVD (\(index + 1) of \(nvdItems.count)): \(product.name) \(item.version)", why: CheckProgress.nvdNote(requests: requests))
+            let label = item.bundledApp.map { "Chromium \(version) in \($0)" } ?? "\(product.name) \(version)"
+            show("Checking NVD (\(index + 1) of \(nvdItems.count)): \(label)", why: CheckProgress.nvdNote(requests: requests))
             do {
                 var hits = cache[key]?.hits
                 if hits == nil {
                     if requested { try await Task.sleep(nanoseconds: 6_500_000_000) }
                     requested = true
-                    hits = try await NVD.hits(cpe: product.cpe!, version: item.version)
+                    hits = try await NVD.hits(cpe: product.cpe!, version: version)
                     if let repository = product.repository {
                         cache[key] = await NVD.branchHits(hits!, version: item.version, repository: repository, releases: &releases)
                         hits = cache[key]!.hits
                     } else { cache[key] = NVDCacheEntry(date: Date(), hits: hits!) }
                 } else { saved += 1 }
-                if let finding = NVD.finding(item, product: product, hits: hits!) { report.findings.append(finding) }
+                let finding = item.manager == "electron-framework" ? electron.flatMap { Electron.finding(item, releases: $0, hits: hits!) } : NVD.finding(item, product: product, hits: hits!)
+                if let finding { report.findings.append(finding) }
                 nvdResults[product.id, default: (0, [])].checked += 1
             } catch { nvdResults[product.id, default: (0, [])].problems.append("\(item.version): \(error.localizedDescription)") }
         }
@@ -441,6 +461,7 @@ enum Scanner {
             record("nvd:" + id, name + " (NVD)", result.problems.isEmpty ? "\(result.checked) cop\(result.checked == 1 ? "y" : "ies") checked against NVD version ranges." : result.problems.joined(separator: "; "),
                    url: "https://nvd.nist.gov/products/cpe/search", status: result.problems.isEmpty ? "checked" : "failed")
         }
+        Electron.combine(&report.findings)
         let backported = Set(nvdItems.flatMap { cache[nvdKey($0)]?.backported ?? [] }).sorted()
         if !backported.isEmpty {
             record("nvd-backports", "Fixes already in older branches", "NVD lists \(backported.count == 1 ? "1 advisory" : "\(backported.count) advisories") against an installed release that already has the fix, going by the affected releases OSV works out from the fix commits, so \(backported.count == 1 ? "it isn't a finding" : "they aren't findings"): \(backported.joined(separator: ", ")).", url: "https://osv.dev/list", status: "checked")
@@ -507,7 +528,7 @@ enum Scanner {
         }
 
         markAwaiting(&report.findings, newest: newestFormulae, waiting: waiting)
-        markSparkleAwaiting(&report.findings, currentApps: currentApps, fresh: freshApps, waiting: Set(waiting.keys))
+        markBundledAwaiting(&report.findings, currentApps: currentApps, fresh: freshApps, waiting: Set(waiting.keys))
         let skipped = dropSameReleaseUpdates(&report.findings)
         if skipped > 0 {
             record("same-release", "Update sanity check", "\(skipped) update\(skipped == 1 ? "" : "s") skipped because the newer version was the installed release written differently.", status: "checked")
@@ -561,7 +582,7 @@ enum Scanner {
             let exploited = report.findings.filter(\.exploited).count
             end(exploited == 0 ? "None of your findings listed" : CheckProgress.count(exploited, "finding") + " listed")
         }
-        record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven packages in projects, global installs (including cargo install, go install and Ruby gems), Python environments, the npx cache and pinned MCP servers, plus GitHub Actions in project workflows. Editor extensions: Microsoft's list of extensions removed as malware, impersonation or untrustworthy. Self-updating apps: their own Sparkle update feeds, and the Sparkle version bundled inside them, against Sparkle's advisories. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries, including the Chromium and Firefox builds Playwright downloaded while a Playwright on this Mac uses them; builds nothing uses are listed to delete, and Playwright's WebKit builds have no advisory source. Excluded by design: Google Chrome, which updates itself, and Mac App Store apps. Not covered: vulnerabilities in editor extensions, CocoaPods, containers and images, unpinned MCP servers that npx hasn't cached, GitHub Actions pinned to branches or bare commits, software outside the catalog and arbitrary install paths.", status: "manual")
+        record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven packages in projects, global installs (including cargo install, go install and Ruby gems), Python environments, the npx cache and pinned MCP servers, plus GitHub Actions in project workflows. Editor extensions: Microsoft's list of extensions removed as malware, impersonation or untrustworthy. Self-updating apps: their own Sparkle update feeds, and the Sparkle version bundled inside them, against Sparkle's advisories. Apps built on Electron: Electron's own advisories, whether their Electron still gets security fixes, and NVD's Chrome vulnerabilities for its Chromium that NVD published more than a week after that Electron release, since Electron copies Chrome's fixes into supported releases without changing the Chromium version. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries, including the Chromium and Firefox builds Playwright downloaded while a Playwright on this Mac uses them; builds nothing uses are listed to delete, and Playwright's WebKit builds have no advisory source. Excluded by design: Google Chrome, which updates itself, and Mac App Store apps, including ones built on Electron. Not covered: vulnerabilities in editor extensions, CocoaPods, containers and images, unpinned MCP servers that npx hasn't cached, GitHub Actions pinned to branches or bare commits, software outside the catalog and arbitrary install paths.", status: "manual")
         report.retainUnverified(from: previous)
         context.uvPythons = Dictionary(report.installations.filter { $0.manager == "uv-python" }.map { item in (item.version, !report.security.contains { $0.installation.path == item.path }) }, uniquingKeysWith: { $0 && $1 })
         for index in report.findings.indices { report.findings[index].commands = Commands.commands(for: report.findings[index], context: context) }
@@ -598,33 +619,37 @@ enum Scanner {
         return before - findings.count
     }
 
-    // A vulnerable Sparkle inside an app that is already at its newest release can't be fixed by updating; only
-    // the app's developer can ship a newer Sparkle. Like an NVD finding with no fixed release, it waits in
+    // A vulnerable Sparkle or Electron inside an app that is already at its newest release can't be fixed by updating;
+    // only the app's developer can ship a newer one. Like an NVD finding with no fixed release, it waits in
     // "No fix released yet", and becomes an ordinary finding again, with an alert, once a newer release appears.
     // One that was waiting keeps waiting until something shows a newer release, so an update feed that can't be
     // read this time doesn't pass for a new release.
-    // A bundled Sparkle is fixed only by a newer release of its app, so it needs attention only when such a release
+    // A bundled framework is fixed only by a newer release of its app, so it needs attention only when such a release
     // has been out long enough for the app's own updater to have offered it (SparkleFeeds.settled). Otherwise it
-    // waits: the app is current, its newer release is still reaching copies, or Shipshape can't see its feed.
-    static func markSparkleAwaiting(_ findings: inout [Finding], currentApps: Set<String>, fresh: [String: SparkleFeeds.Release] = [:], waiting: Set<String> = []) {
+    // waits: the app is current, its newer release is still reaching copies, or Shipshape can't see its releases.
+    static func markBundledAwaiting(_ findings: inout [Finding], currentApps: Set<String>, fresh: [String: SparkleFeeds.Release] = [:], waiting: Set<String> = []) {
         // Apps with a newer release: from their feed or Homebrew, or a fixed release of the app itself. A feed that dates
         // its newer releases as too recent outranks Homebrew, which gives no dates.
         let newer = Set(findings.filter { $0.kind == .update || ($0.kind == .security && $0.awaitingFix != true && $0.fixed.first?.isNumber == true) }.map(\.installation.path))
             .subtracting(fresh.keys)
         for index in findings.indices {
             let finding = findings[index], item = finding.installation
-            guard finding.kind == .security, finding.malicious != true, let name = item.sparkleApp, let app = item.location, !newer.contains(app) else { continue }
+            guard finding.kind != .update, finding.malicious != true, let name = item.bundledApp, let framework = item.bundledFramework, let app = item.location, !newer.contains(app) else { continue }
             findings[index].awaitingFix = true
             findings[index].fixed = finding.fixed.first?.isNumber == true ? "\(finding.fixed), not in \(name) yet" : "No fix released yet"
             if let release = fresh[app] {
                 let day = release.date.map { " on " + $0.formatted(.dateTime.month(.abbreviated).day()) } ?? ""
-                findings[index].action = "\(name) \(release.version ?? release.build) came out\(day), and it may bundle a newer Sparkle. \(name) installs its own updates, usually within days. "
-                    + "If it hasn't after a week, this moves to Needs attention. Only \(name)'s developer can update the Sparkle it bundles."
+                findings[index].action = "\(name) \(release.version ?? release.build) came out\(day), and it may bundle a newer \(framework). \(name) installs its own updates, usually within days. "
+                    + "If it hasn't after a week, this moves to Needs attention. Only \(name)'s developer can update the \(framework) it bundles."
             } else if currentApps.contains(app) || waiting.contains(finding.id) {
-                findings[index].action = "You have the newest \(name), and it still bundles Sparkle \(item.version). Only its developer can update Sparkle, so let them know. Shipshape alerts you when a newer \(name) is released."
-            } else {
+                findings[index].action = "You have the newest \(name), and it still bundles \(framework) \(item.version). Only its developer can update \(framework), so let them know. Shipshape alerts you when a newer \(name) is released."
+            } else if framework == "Sparkle" {
                 findings[index].action = "Shipshape can't see whether a newer \(name) is out, because it couldn't find or read \(name)'s update feed. \(name) updates itself; "
                     + "if you have the newest \(name), only its developer can update the Sparkle it bundles, so let them know."
+            } else {
+                // Electron apps mostly update through their own servers, which don't publish a list Shipshape can read.
+                findings[index].action = "Shipshape can't see whether a newer \(name) is out, so check for updates in \(name). "
+                    + "If you have the newest, only its developer can move it to a newer Electron, so let them know."
             }
         }
     }

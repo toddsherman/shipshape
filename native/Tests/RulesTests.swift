@@ -1048,24 +1048,24 @@ import Foundation
         expect(SparkleFeeds.current(currentApp, releases: feedReleases, system: "Version 27.0 (Build 27A1)") && !SparkleFeeds.current(feedApp, releases: feedReleases, system: "Version 27.0 (Build 27A1)")
                && !SparkleFeeds.current(currentApp, releases: [], system: "Version 27.0 (Build 27A1)"), "an app is current only when its feed offers nothing newer")
         var otherApps = sparkleFindings
-        Scanner.markSparkleAwaiting(&otherApps, currentApps: ["/Applications/Rectangle.app"])
+        Scanner.markBundledAwaiting(&otherApps, currentApps: ["/Applications/Rectangle.app"])
         expect(otherApps.first?.awaitingFix == true && Commands.commands(for: otherApps[0]).isEmpty
                && otherApps[0].action.hasPrefix("Shipshape can't see whether a newer Folx is out, because it couldn't find or read Folx's update feed."),
                "an app whose feed can't be read waits instead of needing attention, and the card says Shipshape can't see")
-        Scanner.markSparkleAwaiting(&sparkleFindings, currentApps: ["/Applications/Folx.app"])
+        Scanner.markBundledAwaiting(&sparkleFindings, currentApps: ["/Applications/Folx.app"])
         let waitingSparkle = sparkleFindings[0]
         expect(waitingSparkle.awaitingFix == true && waitingSparkle.fixed == "2.6.4, not in Folx yet" && waitingSparkle.action.hasPrefix("You have the newest Folx, and it still bundles Sparkle 1.20.0")
                && Commands.commands(for: waitingSparkle).isEmpty, "a current app's bundled Sparkle has no button and says only the developer can fix it")
         expect(ScanReport(findings: sparkleFindings).security.isEmpty && ScanReport(findings: sparkleFindings).awaiting.count == 1, "it waits in No fix released yet instead of counting as needing attention")
         let freshSparkle = OSV.findings(for: [sparkleItem], matches: [OSV.key(sparkleItem)!: ["GHSA-a", "GHSA-b"]], vulns: sparkleVulns)
         var unreadFeed = freshSparkle
-        Scanner.markSparkleAwaiting(&unreadFeed, currentApps: [], waiting: [waitingSparkle.id])
+        Scanner.markBundledAwaiting(&unreadFeed, currentApps: [], waiting: [waitingSparkle.id])
         expect(unreadFeed[0].awaitingFix == true && unreadFeed[0].fixed == waitingSparkle.fixed, "a waiting Sparkle keeps waiting when nothing shows a newer release, such as an unreadable feed")
         let folxUpdate = Finding(source: "sparkle-feed", installation: Installation(product: "app:folx", name: "Folx", version: "5.30", path: "/Applications/Folx.app", domain: "apps", manager: "app"),
                                  kind: .update, fixed: "5.31", reason: "", action: "", links: [])
         var folxReleased = freshSparkle + [folxUpdate], folxBothSources = freshSparkle + [folxUpdate]
-        Scanner.markSparkleAwaiting(&folxReleased, currentApps: [], waiting: [waitingSparkle.id])
-        Scanner.markSparkleAwaiting(&folxBothSources, currentApps: ["/Applications/Folx.app"])
+        Scanner.markBundledAwaiting(&folxReleased, currentApps: [], waiting: [waitingSparkle.id])
+        Scanner.markBundledAwaiting(&folxBothSources, currentApps: ["/Applications/Folx.app"])
         expect(folxReleased[0].awaitingFix == nil && Commands.commands(for: folxReleased[0]).first?.text == "Open Folx" && folxBothSources[0].awaitingFix == nil
                && folxReleased[0].action == freshSparkle[0].action,
                "a newer release of the app ends the wait, even if another source calls the app current")
@@ -1075,7 +1075,7 @@ import Foundation
         let itermFix = Finding(source: "nvd:iterm2", installation: Installation(product: "iterm2", name: "iTerm2", version: "3.5.0", path: "/Applications/iTerm.app", domain: "apps", manager: "app"),
                                kind: .security, fixed: "3.5.1", reason: "", action: "", links: [])
         var itermFindings = [itermFix, itermSparkle]
-        Scanner.markSparkleAwaiting(&itermFindings, currentApps: [], waiting: [itermSparkle.id])
+        Scanner.markBundledAwaiting(&itermFindings, currentApps: [], waiting: [itermSparkle.id])
         expect(itermFindings[1].awaitingFix == nil, "a fixed release of the app itself also counts as a newer release")
 
         // A newer release counts once the app's own updater has had time to offer it: a week, or a whole phased rollout.
@@ -1111,8 +1111,8 @@ import Foundation
                                    manager: "sparkle-framework", location: "/Applications/ChatGPT.app"), kind: .security, fixed: "2.9.2", reason: "", action: "", links: [])
         let codexUpdate = Finding(source: "sparkle-feed", installation: codexInstalled, kind: .update, fixed: "26.1023.51421", reason: "", action: "", links: [])
         var freshCodex = [codexSparkle, codexUpdate], settledCodex = [codexSparkle, codexUpdate]
-        Scanner.markSparkleAwaiting(&freshCodex, currentApps: [], fresh: ["/Applications/ChatGPT.app": dated[0]])
-        Scanner.markSparkleAwaiting(&settledCodex, currentApps: [])
+        Scanner.markBundledAwaiting(&freshCodex, currentApps: [], fresh: ["/Applications/ChatGPT.app": dated[0]])
+        Scanner.markBundledAwaiting(&settledCodex, currentApps: [])
         expect(freshCodex[0].awaitingFix == true && freshCodex[0].fixed == "2.9.2, not in Codex yet" && freshCodex[0].action.hasPrefix("Codex 26.1023.51421 came out on Oct 2")
                && freshCodex[1].kind == .update && ScanReport(findings: freshCodex).attention.isEmpty,
                "a bundled Sparkle waits while the app's newer release is too recent, and the app's update stays listed")
@@ -1137,6 +1137,90 @@ import Foundation
         expect(Alerts.findings([badPad, folxReleased[0]], released: [waitingSparkle.id]).title == "Malicious package found", "malicious packages come first")
         expect(Alerts.list(["A"]) == "A" && Alerts.list(["A", "B"]) == "A and B" && Alerts.list(["A", "B", "C"]) == "A, B and C"
                && Alerts.list(["A", "B", "C", "D", "E", "F"]) == "A, B, C, D and 2 more", "app names are listed in a sentence")
+
+        // Electron: an app built on it is kept with the Electron it bundles. Electron's release list gives each release's
+        // Chromium and the majors that still get fixes, and NVD's Chrome vulnerabilities count against a release only when
+        // NVD published them more than a week after it came out.
+        let electronRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-electron-\(UUID().uuidString)").path
+        let electronResources = electronRoot + "/Chat.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources"
+        try FileManager.default.createDirectory(atPath: electronResources, withIntermediateDirectories: true)
+        try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "com.example.chat", "CFBundleShortVersionString": "0.0.380"], format: .xml, options: 0)
+            .write(to: URL(fileURLWithPath: electronRoot + "/Chat.app/Contents/Info.plist"))
+        try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "com.github.Electron.framework", "CFBundleVersion": "37.6.0"], format: .xml, options: 0)
+            .write(to: URL(fileURLWithPath: electronResources + "/Info.plist"))
+        let electronApps = Inventory.apps(roots: [electronRoot]).0
+        try? FileManager.default.removeItem(atPath: electronRoot)
+        expect(electronApps.map { "\($0.name) \($0.version) \($0.manager!) \($0.ecosystem ?? "-") \($0.packageName ?? "-")" } == ["Chat 0.0.380 app - -", "Electron in Chat 37.6.0 electron-framework npm electron"]
+               && electronApps.last?.location?.hasSuffix("/Chat.app") == true && electronApps.last?.bundledApp == "Chat" && electronApps.last?.bundledFramework == "Electron",
+               "an app outside the catalog is kept when it's built on Electron, and its Electron is checked with OSV as npm's electron")
+        func electronRow(_ version: String, _ date: String, _ chrome: String) -> [String: Any] { ["version": version, "date": String(date.prefix(10)), "fullDate": date, "chrome": chrome] }
+        let electronReleases = Electron.parse([
+            electronRow("47.0.0-nightly.20261102", "2026-11-02T14:00:29.000Z", "159.0.8130.0"), electronRow("45.2.2", "2026-11-03T10:00:00.000Z", "156.0.8078.80"),
+            electronRow("45.0.0", "2026-10-21T10:00:00.000Z", "156.0.8078.20"), electronRow("44.10.2", "2026-11-03T10:00:00.000Z", "152.0.7977.169"),
+            electronRow("44.9.3", "2026-10-21T10:00:00.000Z", "152.0.7977.167"), electronRow("44.0.0", "2026-08-24T10:00:00.000Z", "152.0.7977.10"),
+            electronRow("43.8.7", "2026-11-03T10:00:00.000Z", "150.0.7871.250"), electronRow("43.0.0", "2026-06-30T10:00:00.000Z", "150.0.7871.10"),
+            electronRow("42.0.0", "2026-05-05T10:00:00.000Z", "148.0.7778.10"), electronRow("40.0.0", "2026-01-13T10:00:00.000Z", "144.0.7559.10"),
+            electronRow("37.6.0", "2025-09-27T10:00:00.000Z", "138.0.7204.251"), electronRow("37.0.0", "2025-06-24T10:00:00.000Z", "138.0.7204.35"),
+            ["version": "36.0.0", "date": "2025-04-29"]])
+        expect(electronReleases.supported == [45, 44, 43] && electronReleases.newest[44]?.version == "44.10.2" && electronReleases.all["37.6.0"]?.chromium == "138.0.7204.251"
+               && electronReleases.all["47.0.0-nightly.20261102"] == nil && electronReleases.all["36.0.0"] == nil
+               && electronReleases.ended(37) == electronReleases.started[40] && electronReleases.ended(42) == electronReleases.started[45] && electronReleases.ended(44) == nil,
+               "the three newest majors are supported; a major's support ends when the one three above it comes out; nightlies and rows without a Chromium are skipped")
+        let chat37 = electronApps.last!, released37 = electronReleases.all["37.6.0"]!.date
+        func electronItem(_ version: String) -> Installation {
+            Installation(product: "electron", name: chat37.name, version: version, path: chat37.path, domain: "apps", ecosystem: "npm", packageName: "electron", manager: "electron-framework", location: chat37.location)
+        }
+        let chromeHits = [NVDHit(id: "CVE-2025-1", fixed: "139.0.7258.5", severity: "HIGH", published: released37.addingTimeInterval(3 * 86_400)),
+                          NVDHit(id: "CVE-2026-2", fixed: "156.0.8078.73", severity: "CRITICAL", published: released37.addingTimeInterval(40 * 86_400)),
+                          NVDHit(id: "CVE-2026-3", fixed: "150.0.7871.20", severity: "MEDIUM", published: released37.addingTimeInterval(90 * 86_400))]
+        let chatOld = Electron.finding(chat37, releases: electronReleases, hits: chromeHits)!
+        expect(chatOld.kind == .security && chatOld.source == "nvd:electron" && chatOld.advisories == ["CVE-2026-2", "CVE-2026-3"] && chatOld.severity == "CRITICAL" && chatOld.fixed == "43.8.7"
+               && chatOld.reason == "Chat is built on Electron 37.6.0, released Sep 27, 2025, with Chromium 138.0.7204.251. NVD published 2 Chrome vulnerabilities affecting that Chromium more than a week after this release came out, so it doesn't have their fixes. Electron 37 stopped getting security fixes on Jan 13, 2026, when Electron 40 came out, so this Chromium gets no more of them until Chat moves to a newer Electron."
+               && chatOld.action.hasPrefix("Update Chat to a release that bundles Electron 43.8.7 or later")
+               && Commands.commands(for: chatOld).first.map { $0.kind == "app" && $0.text == "Open Chat" && $0.note.contains("bundles Electron 43.8.7 or later") } == true,
+               "an Electron that stopped getting fixes counts the Chrome vulnerabilities published over a week after its release, and points at the oldest supported major's newest release")
+        let released44 = electronReleases.all["44.9.3"]!.date
+        let laterHit = NVDHit(id: "CVE-2026-4", fixed: "156.0.8078.73", severity: "HIGH", published: released44.addingTimeInterval(8 * 86_400))
+        let behind = Electron.finding(electronItem("44.9.3"), releases: electronReleases, hits: [laterHit] + chromeHits)!
+        expect(behind.advisories == ["CVE-2026-4"] && behind.fixed == "44.10.2" && behind.reason.hasSuffix("Electron 44 still gets Chrome's fixes; its newest release is 44.10.2."),
+               "a supported Electron counts only what came out after it and points at its own major's newest release")
+        let unreleased = Electron.finding(electronItem("44.10.2"), releases: electronReleases,
+                                          hits: [NVDHit(id: "CVE-2026-5", fixed: nil, severity: "HIGH", published: electronReleases.all["44.10.2"]!.date.addingTimeInterval(10 * 86_400))])!
+        expect(unreleased.fixed == NVD.noFixListed && unreleased.action.hasPrefix("No Electron 44 release has these fixes yet") && unreleased.reason.hasSuffix("but no Electron 44 release has these yet."),
+               "the newest release of a supported major with newer vulnerabilities has no fix to point at")
+        let quietChat = Electron.finding(chat37, releases: electronReleases, hits: [])
+        expect(Electron.finding(electronItem("44.9.3"), releases: electronReleases, hits: chromeHits) == nil && Electron.finding(electronItem("44.9.4"), releases: electronReleases, hits: [laterHit]) == nil
+               && quietChat?.kind == .unsupported && quietChat?.advisories == [] && quietChat?.fixed == "43.8.7",
+               "a supported Electron with nothing newer has no finding, an unknown release can't be checked, and one that stopped getting fixes is flagged anyway")
+        let electronTarget = "npm|electron"
+        let electronVulns = ["GHSA-e1": OSV.Vuln(id: "GHSA-e1", summary: "Electron: SameSite cookie restrictions are not applied to windows opened from links", aliases: ["CVE-2026-9001"], severity: "HIGH", fixed: [electronTarget: ["42.11.16", "43.8.5"]]),
+                             "GHSA-e2": OSV.Vuln(id: "GHSA-e2", summary: "Electron: Out-of-bounds read in second-instance IPC", aliases: [], severity: "MODERATE", fixed: [electronTarget: ["38.1.0"]])]
+        let chatOwn = OSV.findings(for: [chat37], matches: [OSV.key(chat37)!: ["GHSA-e1", "GHSA-e2"]], vulns: electronVulns)
+        var combined = chatOwn + [chatOld], combinedQuiet = chatOwn + [quietChat!], ownOnly = chatOwn
+        Electron.combine(&combined); Electron.combine(&combinedQuiet); Electron.combine(&ownOnly)
+        expect(chatOwn.count == 1 && combined.count == 1 && combined[0].source == "nvd:electron" && combined[0].fixed == "43.8.7"
+               && combined[0].advisories == ["CVE-2026-2", "CVE-2026-3", "CVE-2026-9001", "GHSA-e1", "GHSA-e2"]
+               && combined[0].reason.hasSuffix("Electron has also published 2 advisories that affect this release: SameSite cookie restrictions are not applied to windows opened from links; Out-of-bounds read in second-instance IPC.")
+               && combinedQuiet.count == 1 && combinedQuiet[0].kind == .security && combinedQuiet[0].severity == "HIGH" && ownOnly.count == 1 && ownOnly[0].source == "osv",
+               "Electron's own advisories join the app's Electron card and its supported target, and stand alone without one")
+        var chatWaiting = [chatOld], chatCurrent = [chatOld]
+        Scanner.markBundledAwaiting(&chatWaiting, currentApps: [])
+        Scanner.markBundledAwaiting(&chatCurrent, currentApps: [chat37.location!])
+        expect(chatWaiting[0].awaitingFix == true && chatWaiting[0].fixed == "43.8.7, not in Chat yet" && Commands.commands(for: chatWaiting[0]).isEmpty
+               && chatWaiting[0].action == "Shipshape can't see whether a newer Chat is out, so check for updates in Chat. If you have the newest, only its developer can move it to a newer Electron, so let them know."
+               && chatCurrent[0].action.hasPrefix("You have the newest Chat, and it still bundles Electron 37.6.0. Only its developer can update Electron"),
+               "an app's Electron waits for the app's next release, saying whether Shipshape can see that the app is current")
+        var exploitedChat = chatWaiting[0]; exploitedChat.exploited = true
+        expect(ScanReport(findings: chatWaiting).attention.isEmpty && ScanReport(findings: [exploitedChat]).attention.count == 1,
+               "a waiting Electron needs attention only when its Chromium has a known exploited vulnerability")
+        let chatUpdate = Finding(source: "homebrew-cask", installation: Installation(product: "app:com.example.chat", name: "Chat", version: "0.0.380", path: chat37.location!, domain: "apps", manager: "app"),
+                                 kind: .update, fixed: "0.0.381", reason: "", action: "", links: [])
+        var chatReleased = [chatOld, chatUpdate]
+        Scanner.markBundledAwaiting(&chatReleased, currentApps: [], waiting: [chatOld.id])
+        expect(chatReleased[0].awaitingFix == nil
+               && Alerts.findings([chatReleased[0]], released: [chatOld.id]).body == "The new release of Chat may include a newer Electron than the vulnerable version it bundles now. Open Shipshape for details."
+               && Alerts.findings([chatReleased[0], folxReleased[0]], released: [chatOld.id, waitingSparkle.id]).body.hasPrefix("New releases of Chat and Folx may include a newer Sparkle or Electron than"),
+               "a newer release of the app ends the wait, and its alert says it may bring a newer Electron")
         let pruned = Alerts.pruned([waitingSparkle.id: "before it waited", leftPad.id: "delivered", "gone": "removed"], report: ScanReport(findings: [waitingSparkle, leftPad]))
         expect(pruned == [leftPad.id: "delivered"], "a waiting finding forgets its earlier alert, so a new release alerts again")
 

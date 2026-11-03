@@ -161,6 +161,29 @@ import Foundation
         Playwright.mark(&findings, newest: Playwright.Release(version: "1.65.0", browsers: ["chromium_headless_shell": "157.0.8090.12"]), hits: { _ in hits })
         return finish(findings[0])
     }()
+    // An app built on an Electron that stopped getting fixes, whose Chromium has Chrome vulnerabilities published since,
+    // one of them exploited. Marked by the same code as a real check.
+    static let electronApp: Finding = {
+        let item = Installation(product: "electron", name: "Electron in Huddle", version: "37.6.0", path: "/Applications/Huddle.app/Contents/Frameworks/Electron Framework.framework", domain: "apps",
+                                note: "The framework Huddle is built on, with its own copy of Chromium. It changes only when Huddle ships a release on a newer Electron.",
+                                ecosystem: "npm", packageName: "electron", manager: "electron-framework", location: "/Applications/Huddle.app")
+        let day = 86_400.0, released = Electron.Release(version: "37.6.0", date: now.addingTimeInterval(-400 * day), chromium: "138.0.7204.251")
+        var releases = Electron.Releases()
+        releases.all = ["37.6.0": released]
+        releases.newest = [37: released, 43: Electron.Release(version: "43.8.7", date: now.addingTimeInterval(-day), chromium: "150.0.7871.250")]
+        releases.started = [40: now.addingTimeInterval(-294 * day)]
+        releases.supported = [45, 44, 43]
+        var hits: [NVDHit] = []
+        for index in 0..<64 {
+            let severity = index % 7 == 0 ? "CRITICAL" : index % 3 == 0 ? "MEDIUM" : "HIGH", published = now.addingTimeInterval(-Double(390 - index * 6) * day)
+            hits.append(NVDHit(id: "CVE-2026-\(20_000 + index)", fixed: "\(140 + index / 5).0.7400.\(index)", severity: severity, published: published))
+        }
+        var findings = [Electron.finding(item, releases: releases, hits: hits)!]
+        Scanner.markBundledAwaiting(&findings, currentApps: [])
+        findings[0].exploited = true
+        findings[0].exploitedSince = now.addingTimeInterval(-20 * day)
+        return finish(findings[0])
+    }()
     static let ffmpeg = dated(waiting(brew("ffmpeg", "9.0.2"), severity: "HIGH", ids: ["CVE-2026-107675", "CVE-2026-107676"], titles: ["Heap overflow in the HEVC decoder", "Use after free in the MOV demuxer"],
                                 action: "You have Homebrew's newest ffmpeg (9.0.2), and no release fixes these yet. Shipshape alerts you when a fixed release is available."), 412, 98)
     static let folxSparkle = dated(waiting(sparkle(in: "Folx", "1.20.0"), severity: "HIGH", ids: ["GHSA-g3hp-f6mg-559v"], titles: ["Sparkle's installer XPC listener accepts unvalidated connections"],
@@ -225,7 +248,7 @@ import Foundation
             Scenario(name: "exploited", description: "Known exploitation, with and without a released fix.",
                      findings: [viteDated, security(brew("curl", "8.10.1"), fixed: "8.11.1", severity: "CRITICAL", ids: ["CVE-2026-0001"], titles: ["curl heap overflow in SOCKS5 proxy handshake"], exploited: true),
                                 { var f = waiting(app("Raycast", "1.104.2", id: "com.raycast.macos"), severity: "CRITICAL", ids: ["CVE-2026-31337"], titles: ["Raycast extension sandbox escape"]); f.exploited = true; return f }(),
-                                opensslDated, requestsDated, nodeUpdate]),
+                                electronApp, opensslDated, requestsDated, nodeUpdate]),
             Scenario(name: "everything", description: "Every kind of finding, including blocked and unverified ones, failed checks, and History.",
                      findings: [flatmap, viteDated, opensslDated, lodash, axiosDated, requestsDated,
                                 security(globalNPM("@anthropic-ai/claude-code", "2.0.10"), fixed: "2.0.31", severity: "HIGH", ids: ["GHSA-x5gv-jw7f-j6xj"], titles: ["Claude Code permission prompt bypass"]),
@@ -233,7 +256,7 @@ import Foundation
                                 stale(security(brew("node@20", "20.11.0", product: "node"), fixed: "20.19.5", severity: "HIGH", ids: ["CVE-2025-23166"], titles: ["Node.js crypto error handling crash"])),
                                 endOfSupport(brew("node@18", "18.20.4", product: "node"), what: "Node", fixed: "Supported LTS branch", link: "https://nodejs.org/en/about/previous-releases"),
                                 endOfSupport(brew("python@3.9", "3.9.23", product: "python"), what: "Python", fixed: "Python 3.12 or later", link: "https://devguide.python.org/versions/"),
-                                ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate, update(brew("gh", "2.80.0"), to: "2.81.0"), update(brew("jq", "1.7.1"), to: "1.8.0"), playwrightInUse] + heldByTool + playwrightUnused,
+                                ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate, update(brew("gh", "2.80.0"), to: "2.81.0"), update(brew("jq", "1.7.1"), to: "1.8.0"), playwrightInUse, electronApp] + heldByTool + playwrightUnused,
                      clean: 150, checks: checks(failed: 1, partial: 1),
                      history: [security(npm("shop", "next", "14.0.0"), fixed: "14.2.25", severity: "CRITICAL", ids: ["GHSA-f82v-jwr5-mffw"], titles: ["Authorization bypass in Next.js middleware"]),
                                security(pypi("api-server", "gunicorn", "20.0.4"), fixed: "22.0.0", severity: "HIGH", ids: ["GHSA-w3h3-4rj7-4ph4"], titles: ["Request smuggling in gunicorn"]),

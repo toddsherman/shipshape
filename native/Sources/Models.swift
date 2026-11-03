@@ -115,8 +115,10 @@ struct Installation: Codable, Identifiable, Hashable {
     var feed: String? = nil        // an app's https Sparkle update feed (SUFeedURL)
     // Reports saved before `file` existed joined the file and package with "#", which a folder name can contain.
     var sourceFile: String { file ?? String(path.prefix { $0 != "#" }) }
-    // The app a bundled Sparkle belongs to; its entry is named "Sparkle in <app>".
-    var sparkleApp: String? { manager == "sparkle-framework" ? String(name.dropFirst("Sparkle in ".count)) : nil }
+    // A framework bundled in an app, which only a release of the app updates: Sparkle or Electron. Its entry is named
+    // "Sparkle in <app>" or "Electron in <app>".
+    var bundledFramework: String? { manager == "sparkle-framework" ? "Sparkle" : manager == "electron-framework" ? "Electron" : nil }
+    var bundledApp: String? { bundledFramework.map { String(name.dropFirst($0.count + " in ".count)) } }
 }
 // How an app in /Applications is signed, read from its code signature without opening the app or checking its files
 // against the signature. Apps built on this Mac and some Homebrew casks are ad-hoc signed by design, so this is
@@ -449,25 +451,27 @@ struct SavedState: Codable {
     var history: [HistoryEntry]? = nil
 }
 // What the alert about new or changed findings says. `released` holds the findings that were waiting for a fix.
-// A bundled Sparkle that stops waiting isn't known to be fixed: its app has a new release, which may or may not
-// bundle a newer Sparkle, so the alert names the app and says only that.
+// A bundled Sparkle or Electron that stops waiting isn't known to be fixed: its app has a new release, which may or may
+// not bundle a newer one, so the alert names the app and says only that.
 enum Alerts {
     static func findings(_ changed: [Finding], released: Set<String>) -> (title: String, body: String) {
-        let newRelease = { (finding: Finding) in released.contains(finding.id) && finding.installation.sparkleApp != nil }
+        let newRelease = { (finding: Finding) in released.contains(finding.id) && finding.installation.bundledApp != nil }
         let others = changed.filter { !newRelease($0) }
-        let apps = Array(Set(changed.filter(newRelease).compactMap(\.installation.sparkleApp))).sorted()
+        let apps = Array(Set(changed.filter(newRelease).compactMap(\.installation.bundledApp))).sorted()
+        let frameworks = Array(Set(changed.filter(newRelease).compactMap(\.installation.bundledFramework))).sorted()
+        let framework = frameworks.count == 1 ? frameworks[0] : "Sparkle or Electron"
         let title = changed.contains { $0.malicious == true } ? "Malicious package found"
             : others.contains { released.contains($0.id) } ? "Fix now available"
             : !others.isEmpty ? "Security updates to review"
             : apps.count == 1 ? "New \(apps[0]) release" : "New app releases"
         var body: [String] = []
         if !others.isEmpty {
-            let names = Array(Set(others.map { $0.installation.sparkleApp != nil ? $0.installation.name : $0.installation.packageName ?? $0.installation.name })).sorted()
+            let names = Array(Set(others.map { $0.installation.bundledApp != nil ? $0.installation.name : $0.installation.packageName ?? $0.installation.name })).sorted()
             body.append(names.prefix(4).joined(separator: ", ") + (names.count > 4 ? " and \(names.count - 4) more" : "") + ".")
         }
         if !apps.isEmpty {
-            body.append(apps.count == 1 ? "The new release of \(apps[0]) may include a newer Sparkle than the vulnerable version it bundles now."
-                                        : "New releases of \(list(apps)) may include a newer Sparkle than the vulnerable versions they bundle now.")
+            body.append(apps.count == 1 ? "The new release of \(apps[0]) may include a newer \(framework) than the vulnerable version it bundles now."
+                                        : "New releases of \(list(apps)) may include a newer \(framework) than the vulnerable versions they bundle now.")
         }
         body.append(others.isEmpty ? "Open \(appName) for details." : "Open \(appName) for versions and update commands.")
         return (title, body.joined(separator: " "))
