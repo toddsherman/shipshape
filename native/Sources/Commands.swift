@@ -107,7 +107,9 @@ enum Ownership {
         case "brew", "brew-old", "brew-python", "cask", "pip", "pip-brew", "pip-uv", "npm-global", "bun-global", "pnpm-global", "pipx", "uv-tool", "uv-python", "uv-python-old",
              "mise", "gem", "extension": return [parent]
         case "cargo-install", "go-install": return item.location.map { [$0.hasSuffix("/bin") ? $0 : ($0 as NSString).deletingLastPathComponent] } ?? []
-        case "npx-cache": return item.location.map { [($0 as NSString).deletingLastPathComponent, $0] } ?? []
+        case "npx-cache", "playwright-npx": return item.location.map { [($0 as NSString).deletingLastPathComponent, $0] } ?? []
+        case "playwright-unused": return [parent, item.path]
+        case "playwright-npm", "playwright-pnpm", "playwright-yarn", "playwright-bun": return item.location.map { [$0, $0 + "/node_modules", parent] } ?? []
         case "mcp": return item.location.map { [$0] } ?? []
         case let manager where projectManagers.contains(manager):
             guard let folder = item.location else { return [] }
@@ -339,6 +341,20 @@ enum Commands {
         case "pip-req":
             let requirements = item.sourceFile
             return [file(requirements, "Change the pin to \(item.packageName ?? item.name)==\(fix ?? "a fixed release"), then reinstall the project's environment.")]
+        // Playwright's browser builds (see Playwright): delete one nothing uses, or update the Playwright that uses it.
+        case "playwright-unused":
+            guard let folder = safe((item.path as NSString).lastPathComponent, "^[a-z][a-z0-9_]*-[0-9]+$") else { return [] }
+            return batch(["cd " + Shell.quote((item.path as NSString).deletingLastPathComponent) + " && rm -rf ", ""], folder, "Deletes this browser build from Playwright's cache. A Playwright that needs it again downloads it.")
+        case "playwright-npx":
+            guard let directory = item.location else { return [] }
+            return batch(["rm -rf ", ""], Shell.quote(directory), "Deletes the npx install that uses this browser. Its next run fetches the newest release, and once nothing uses this build, \(appName) shows the command that deletes it.")
+        case "playwright-npm", "playwright-pnpm", "playwright-yarn", "playwright-bun":
+            guard let package = safe(item.package, namePatterns["npm"]!) else { return [] }
+            let tool = String((item.manager ?? "").dropFirst("playwright-".count)), browser = item.product == "playwright-firefox" ? "firefox" : item.product == "playwright-webkit" ? "webkit" : "chromium"
+            let add = ["npm": "npm install", "pnpm": "pnpm add", "yarn": "yarn add", "bun": "bun add"][tool]!, devFlag = ["npm": " --save-dev", "pnpm": " -D", "yarn": " -D", "bun": " -d"][tool]!
+            let run = ["npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"][tool]!
+            return project(tool, add + (dev ? devFlag : "") + " " + package + "@latest && " + run + " playwright install " + browser,
+                           "Updates Playwright in this project to its newest release and downloads that release's \(browser == "chromium" ? "Chromium" : browser == "firefox" ? "Firefox" : "WebKit"). Playwright then deletes this build, unless another Playwright still uses it.")
         default: break
         }
         guard let package else { return [] }

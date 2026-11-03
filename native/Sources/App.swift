@@ -971,20 +971,29 @@ struct FindingEvidence: View {
     @State private var reporting = false
     @State private var copied = false
     @State private var hovering = false
+    @State private var allAdvisories = false
     // The lockfile or MCP settings file for project and MCP findings; the install path otherwise.
     var location: String { Inventory.display(finding.installation.sourceFile) }
+    // A browser build can match over a thousand CVEs. A long list starts with its twelve newest, and the rest show on request.
+    var listed: [String] {
+        guard finding.advisories.count > 20 else { return finding.advisories }
+        let newest = finding.advisories.sorted { (finding.published?[$0] ?? .distantPast) > (finding.published?[$1] ?? .distantPast) }
+        return allAdvisories ? newest : Array(newest.prefix(12))
+    }
     // Each advisory ID is its own link, so the cursor shows which one a click opens; Copy is on its menu. Hovering one
     // shows when it was published, which would make the line too long to show for every ID.
     var advisories: some View {
-        WrappingStack {
+        let listed = self.listed, hidden = finding.advisories.count - listed.count
+        return WrappingStack {
             Text("Advisories:").foregroundStyle(.secondary)
-            ForEach(Array(finding.advisories.enumerated()), id: \.offset) { index, id in
+            ForEach(Array(listed.enumerated()), id: \.offset) { index, id in
                 HStack(spacing: 0) {
                     if let url = finding.page(id) { Link(id, destination: url).linkCursor().help(finding.publishedNote(for: id) ?? "").contextMenu { Button("Copy \(id)") { monitor.copy(id) } } }
                     else { Text(id).foregroundStyle(.secondary).textSelection(.enabled).help(finding.publishedNote(for: id) ?? "") }
-                    if index < finding.advisories.count - 1 { Text(",").foregroundStyle(.secondary) }
+                    if index < listed.count - 1 || hidden > 0 { Text(",").foregroundStyle(.secondary) }
                 }
             }
+            if hidden > 0 { Button("and \(hidden.formatted()) more") { allAdvisories = true }.buttonStyle(.link).help("Show every advisory") }
         }.font(.caption)
     }
     // The location as a path to copy: the full path when it is one, since "~" means nothing outside a shell.
@@ -1190,7 +1199,8 @@ struct FindingGroupCard: View {
     var place: String? { Set(findings.compactMap(\.installation.location)).count == 1 ? findings[0].installation.location : nil }
     static let labels = ["brew": "Homebrew formulae", "brew-python": "Homebrew formulae", "brew-old": "Older Homebrew copies", "uv-python-old": "Older uv Pythons", "cask": "Homebrew apps",
                          "npm-global": "Global npm packages", "bun-global": "Global Bun packages", "pnpm-global": "Global pnpm packages",
-                         "pip": "Python packages", "pip-brew": "Python packages", "pip-uv": "Python packages", "npx-cache": "npx cache", "mise": "mise runtimes"]
+                         "pip": "Python packages", "pip-brew": "Python packages", "pip-uv": "Python packages", "npx-cache": "npx cache", "mise": "mise runtimes",
+                         "playwright-unused": "Unused Playwright browsers"]
     // A project is named by its path inside the chosen project folder, such as shop/backend.
     var title: String {
         if sameName { return findings[0].installation.name }

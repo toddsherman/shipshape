@@ -110,6 +110,17 @@ enum Inventory {
         let (servers, mcpErrors) = mcpServers(projectFiles: mcpFiles)
         add(servers)
         check("inventory-mcp", "MCP servers", "mcp", mcpErrors, "Read \(servers.count) package-based MCP servers from Claude Code, Claude, Codex, Cursor, Windsurf, VS Code and Gemini CLI settings.")
+        // Read last, since whether a build is in use depends on the Playwright packages found above. They're listed with runtimes.
+        progress("Reading browsers Playwright downloaded")
+        let (browsers, browserErrors) = playwrightBrowsers(found: report.installations)
+        add(browsers)
+        report.domains["tools"] = report.domains["tools"] == true && browserErrors.isEmpty
+        let unused = browsers.filter { $0.manager == "playwright-unused" }.count
+        var detail = "Read \(CheckProgress.count(browsers.count, "browser build")) Playwright downloaded to ~/Library/Caches/ms-playwright."
+        if unused > 0 { detail = String(detail.dropLast()) + "; no Playwright uses " + (unused < browsers.count ? "\(unused) of them" : unused == 1 ? "it" : "any of them") + " any more." }
+        if browsers.isEmpty { detail = "No browsers downloaded by Playwright in ~/Library/Caches/ms-playwright." }
+        if !browserErrors.isEmpty { detail = browserErrors.prefix(8).joined(separator: "; ") }
+        report.checks.append(SourceCheck(id: "inventory-playwright", name: "Playwright's browsers", status: browserErrors.isEmpty ? "checked" : "partial", detail: detail))
         report.domains["apple"] = true
         report.installations.sort { ($0.domain, $0.name.lowercased(), $0.path) < ($1.domain, $1.name.lowercased(), $1.path) }
         return report
@@ -559,6 +570,50 @@ enum Inventory {
             let pin = version != nil ? "pinned" : running != nil ? "unpinned; npx cache holds \(running!)" : "unpinned; runs the latest release"
             items.append(Installation(product: "mcp:" + name, name: "\(server.name) (\(name))", version: running ?? "unpinned", path: server.config + "#" + server.name, domain: "mcp",
                                       note: "MCP server in \(display(server.config)) · \(pin)", ecosystem: running == nil ? nil : ecosystem, packageName: name, manager: "mcp", location: server.config, file: server.config))
+        }
+        return (items, errors)
+    }
+
+    // Browser builds Playwright downloaded (see Playwright). A build is in use when a Playwright package lists it: one linked
+    // from the cache, or a playwright-core found among global packages, the npx cache or project folders. Each build's
+    // manager says what updating it means: playwright-npx, playwright-<package manager> for a project, playwright when
+    // no single command fits, and playwright-unused when nothing uses it.
+    static func playwrightBrowsers(root: String = Playwright.cache, found: [Installation] = []) -> ([Installation], [String]) {
+        let linked = children(root + "/.links").compactMap { read(root + "/.links/" + $0, limit: 4096).map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) } }
+        let packages = linked + found.filter { $0.ecosystem == "npm" && $0.packageName == "playwright-core" }
+            .compactMap { $0.domain == "projects" ? $0.location.map { $0 + "/node_modules/playwright-core" } : $0.path }
+        var users: [String: [(package: String, version: String)]] = [:], listed: [String: String] = [:], seen = Set<String>()
+        for package in packages where seen.insert(URL(fileURLWithPath: package).resolvingSymlinksInPath().path).inserted {
+            guard let browsers = json(package + "/browsers.json", limit: 1_000_000)?["browsers"] as? [[String: Any]] else { continue }
+            let version = json(package + "/package.json", limit: 1_000_000)?["version"] as? String ?? "?"
+            for (folder, browserVersion) in Playwright.folders(browsers) {
+                users[folder, default: []].append((package, version))
+                if let browserVersion { listed[folder] = browserVersion }
+            }
+        }
+        var items: [Installation] = [], errors: [String] = []
+        for folder in children(root) {
+            let path = root + "/" + folder
+            guard let kind = Playwright.kind(folder), directory(path) else { continue }
+            // A headless shell without its manifest has the version of the full Chromium of the same revision.
+            guard let version = kind.hasPrefix("webkit") ? folder.split(separator: "-").last.map(String.init)
+                    : Playwright.version(path) ?? listed[folder] ?? Playwright.version(root + "/" + folder.replacingOccurrences(of: "_headless_shell", with: "")) else {
+                errors.append("\(display(path)): Version could not be read"); continue
+            }
+            let using = users[folder] ?? []
+            let date = ((try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date).map { " on " + $0.formatted(.dateTime.month(.abbreviated).day().year()) } ?? ""
+            let places = using.map { "Playwright \($0.version) in \(display(Playwright.owner($0.package).folder))" }
+            var item = Installation(product: Playwright.product(kind), name: Playwright.name(kind) + " (Playwright)", version: version, path: path, domain: "tools",
+                                    note: "Downloaded by Playwright\(date)" + (using.isEmpty ? ". No Playwright on this Mac uses it any more." : ", for " + Alerts.list(places) + "."),
+                                    manager: using.isEmpty ? "playwright-unused" : "playwright")
+            if using.count == 1 {
+                let (owner, place) = Playwright.owner(using[0].package)
+                if owner == "npx" { item.manager = "playwright-npx"; item.location = place }
+                if owner == "project", let dependency = Playwright.dependency(in: place) {
+                    item.manager = "playwright-" + dependency.tool; item.location = place; item.package = dependency.package; item.dependency = dependency.dev ? "dev" : "direct"
+                }
+            }
+            items.append(item)
         }
         return (items, errors)
     }

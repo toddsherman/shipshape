@@ -140,6 +140,27 @@ import Foundation
                       newest: [tool: NpxCache.Release(version: "2.0.4", dependencies: [:])])
         return findings.map(finish)
     }()
+    // Browser builds Playwright downloaded: two left behind, and one a project's Playwright uses, with more CVEs than a card
+    // lists at first. Marked by the same code as a real check.
+    static func playwright(_ folder: String, _ version: String, note: String, manager: String = "playwright-unused") -> Installation {
+        let kind = Playwright.kind(folder)!
+        return Installation(product: Playwright.product(kind), name: Playwright.name(kind) + " (Playwright)", version: version, path: home + "/Library/Caches/ms-playwright/" + folder,
+                            domain: "tools", note: "Downloaded by Playwright on " + note, manager: manager)
+    }
+    static let playwrightUnused = [playwright("chromium-1243", "153.0.8010.12", note: "Sep 8, 2026. No Playwright on this Mac uses it any more."),
+                                   playwright("chromium_headless_shell-1234", "151.0.7922.34", note: "Aug 27, 2026. No Playwright on this Mac uses it any more.")].map { finish(Playwright.unused($0)) }
+    static let playwrightInUse: Finding = {
+        var item = playwright("chromium_headless_shell-1248", "156.0.8078.4", note: "Oct 14, 2026, for Playwright 1.64.1 in \(Inventory.display(projects))/shop.", manager: "playwright-npm")
+        item.location = projects + "/shop"; item.package = "@playwright/test"; item.dependency = "dev"
+        var hits: [NVDHit] = []
+        for index in 0..<240 {
+            let severity = index % 9 == 0 ? "CRITICAL" : index % 3 == 0 ? "MEDIUM" : "HIGH", age = Double(2 + index / 8) * 86_400
+            hits.append(NVDHit(id: "CVE-2026-\(12_000 + index)", fixed: index < 200 ? "156.0.8078.47" : "157.0.8103.26", severity: severity, published: now.addingTimeInterval(-age)))
+        }
+        var findings = [NVD.finding(item, product: Catalog.byID["playwright-chromium"]!, hits: hits)!]
+        Playwright.mark(&findings, newest: Playwright.Release(version: "1.65.0", browsers: ["chromium_headless_shell": "157.0.8090.12"]), hits: { _ in hits })
+        return finish(findings[0])
+    }()
     static let ffmpeg = dated(waiting(brew("ffmpeg", "9.0.2"), severity: "HIGH", ids: ["CVE-2026-107675", "CVE-2026-107676"], titles: ["Heap overflow in the HEVC decoder", "Use after free in the MOV demuxer"],
                                 action: "You have Homebrew's newest ffmpeg (9.0.2), and no release fixes these yet. Shipshape alerts you when a fixed release is available."), 412, 98)
     static let folxSparkle = dated(waiting(sparkle(in: "Folx", "1.20.0"), severity: "HIGH", ids: ["GHSA-g3hp-f6mg-559v"], titles: ["Sparkle's installer XPC listener accepts unvalidated connections"],
@@ -212,7 +233,7 @@ import Foundation
                                 stale(security(brew("node@20", "20.11.0", product: "node"), fixed: "20.19.5", severity: "HIGH", ids: ["CVE-2025-23166"], titles: ["Node.js crypto error handling crash"])),
                                 endOfSupport(brew("node@18", "18.20.4", product: "node"), what: "Node", fixed: "Supported LTS branch", link: "https://nodejs.org/en/about/previous-releases"),
                                 endOfSupport(brew("python@3.9", "3.9.23", product: "python"), what: "Python", fixed: "Python 3.12 or later", link: "https://devguide.python.org/versions/"),
-                                ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate, update(brew("gh", "2.80.0"), to: "2.81.0"), update(brew("jq", "1.7.1"), to: "1.8.0")] + heldByTool,
+                                ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate, update(brew("gh", "2.80.0"), to: "2.81.0"), update(brew("jq", "1.7.1"), to: "1.8.0"), playwrightInUse] + heldByTool + playwrightUnused,
                      clean: 150, checks: checks(failed: 1, partial: 1),
                      history: [security(npm("shop", "next", "14.0.0"), fixed: "14.2.25", severity: "CRITICAL", ids: ["GHSA-f82v-jwr5-mffw"], titles: ["Authorization bypass in Next.js middleware"]),
                                security(pypi("api-server", "gunicorn", "20.0.4"), fixed: "22.0.0", severity: "HIGH", ids: ["GHSA-w3h3-4rj7-4ph4"], titles: ["Request smuggling in gunicorn"]),

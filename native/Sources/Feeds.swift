@@ -410,7 +410,7 @@ enum Scanner {
         var cache = (previous?.nvdCache ?? [:]).filter { Date().timeIntervalSince($0.value.date) < 20 * 3600 }
         let nvdItems = report.installations.filter { item in
             guard let product = Catalog.byID[item.product], product.cpe != nil else { return false }
-            return !Catalog.vendorRules.contains(product.id) && item.manager != "brew-old" && item.manager != "uv-python-old"
+            return !Catalog.vendorRules.contains(product.id) && item.manager != "brew-old" && item.manager != "uv-python-old" && item.manager != "playwright-unused"
         }
         // The leading number versions the matching rules; change it when NVD.evaluate or NVD.inBranch changes.
         func nvdKey(_ item: Installation) -> String { "4|" + Catalog.byID[item.product]!.cpe! + "|" + item.version }
@@ -444,6 +444,16 @@ enum Scanner {
         let backported = Set(nvdItems.flatMap { cache[nvdKey($0)]?.backported ?? [] }).sorted()
         if !backported.isEmpty {
             record("nvd-backports", "Fixes already in older branches", "NVD lists \(backported.count == 1 ? "1 advisory" : "\(backported.count) advisories") against an installed release that already has the fix, going by the affected releases OSV works out from the fix commits, so \(backported.count == 1 ? "it isn't a finding" : "they aren't findings"): \(backported.joined(separator: ", ")).", url: "https://osv.dev/list", status: "checked")
+        }
+        // A browser build Playwright uses gets only the fixes Playwright's newest release ships.
+        if report.findings.contains(where: { $0.source.hasPrefix("nvd:playwright-") }) {
+            show("Checking which browsers Playwright's newest release ships", why: "npm and GitHub receive Playwright's name and version only.")
+            let newest = try? await Playwright.newest()
+            Playwright.mark(&report.findings, newest: newest, hits: { cache[nvdKey($0)]?.hits ?? [] }, waiting: waiting)
+            record("playwright", "Playwright's newest browsers", newest.map { release in "Browser builds a Playwright on this Mac uses were compared with Playwright \(release.version), its newest release"
+                    + (release.browsers["chromium"].map { ", which ships Chromium \($0)" } ?? "") + ". npm and GitHub received Playwright's name and version only." }
+                   ?? "Playwright's newest release couldn't be read from npm and GitHub, so whether updating Playwright brings the fixes is unknown.",
+                   url: "https://playwright.dev/docs/release-notes", status: newest == nil ? "partial" : "checked")
         }
         report.nvdCache = cache
         if !nvdItems.isEmpty { end(CheckProgress.count(nvdItems.count, "version") + (saved > 0 ? ", \(saved) from saved answers" : "")) }
@@ -489,6 +499,7 @@ enum Scanner {
                                            reason: "uv keeps the previous patch release after an upgrade, in case a virtual environment was made with it. Environments uv made for this Python's branch use the newer release.",
                                            action: "Remove it once no virtual environment needs it.", links: ["https://docs.astral.sh/uv/concepts/python-versions/#upgrading-python-versions"]))
         }
+        for item in report.installations where item.manager == "playwright-unused" { report.findings.append(Playwright.unused(item)) }
         for item in report.installations where item.manager == "brew-old" && !report.findings.contains(where: { $0.installation.path == item.path }) {
             report.findings.append(Finding(source: "inventory-brew", installation: item, kind: .update, fixed: "Remove older copy",
                                            reason: "An older Homebrew copy is still on disk. It is not the active version, but anything that references its path directly still loads it.",
@@ -550,7 +561,7 @@ enum Scanner {
             let exploited = report.findings.filter(\.exploited).count
             end(exploited == 0 ? "None of your findings listed" : CheckProgress.count(exploited, "finding") + " listed")
         }
-        record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven packages in projects, global installs (including cargo install, go install and Ruby gems), Python environments, the npx cache and pinned MCP servers, plus GitHub Actions in project workflows. Editor extensions: Microsoft's list of extensions removed as malware, impersonation or untrustworthy. Self-updating apps: their own Sparkle update feeds, and the Sparkle version bundled inside them, against Sparkle's advisories. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries. Excluded by design: Google Chrome and Mac App Store apps. Not covered: vulnerabilities in editor extensions, CocoaPods, containers and images, unpinned MCP servers that npx hasn't cached, GitHub Actions pinned to branches or bare commits, software outside the catalog and arbitrary install paths.", status: "manual")
+        record("scope", "Security coverage limits", "Vendor rules: Node, Bun, OpenCode, PostgreSQL (including libpq) and OpenSSL. OSV: npm, PyPI, crates.io, Go, RubyGems, Swift, Composer, Dart, NuGet, Hex and Maven packages in projects, global installs (including cargo install, go install and Ruby gems), Python environments, the npx cache and pinned MCP servers, plus GitHub Actions in project workflows. Editor extensions: Microsoft's list of extensions removed as malware, impersonation or untrustworthy. Self-updating apps: their own Sparkle update feeds, and the Sparkle version bundled inside them, against Sparkle's advisories. NVD: \(Catalog.products.filter { $0.cpe != nil }.count) catalog tools and libraries, including the Chromium and Firefox builds Playwright downloaded while a Playwright on this Mac uses them; builds nothing uses are listed to delete, and Playwright's WebKit builds have no advisory source. Excluded by design: Google Chrome, which updates itself, and Mac App Store apps. Not covered: vulnerabilities in editor extensions, CocoaPods, containers and images, unpinned MCP servers that npx hasn't cached, GitHub Actions pinned to branches or bare commits, software outside the catalog and arbitrary install paths.", status: "manual")
         report.retainUnverified(from: previous)
         context.uvPythons = Dictionary(report.installations.filter { $0.manager == "uv-python" }.map { item in (item.version, !report.security.contains { $0.installation.path == item.path }) }, uniquingKeysWith: { $0 && $1 })
         for index in report.findings.indices { report.findings[index].commands = Commands.commands(for: report.findings[index], context: context) }

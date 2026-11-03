@@ -524,6 +524,80 @@ import Foundation
         expect(Inventory.managedPythons(root: pyenvRoot, manager: "pyenv").map(\.manager) == ["pyenv", "pyenv"], "pyenv versions are all chosen on purpose, so none is an old copy")
         try? FileManager.default.removeItem(atPath: pyenvRoot)
 
+        // Playwright's browsers: a build is in use when a Playwright package lists it, and left over otherwise.
+        expect(Playwright.folders([["name": "webkit", "revision": "2370", "revisionOverrides": ["mac14": "2251", "mac14-arm64": "2251"], "browserVersion": "27.2"],
+                                   ["name": "chromium-headless-shell", "revision": "1248", "browserVersion": "156.0.8078.4"]]).map(\.folder)
+               == ["webkit-2370", "webkit_mac14_special-2251", "webkit_mac14_arm64_special-2251", "chromium_headless_shell-1248"], "browsers.json names the cache folders Playwright uses, including builds kept for older macOS")
+        expect(Playwright.kind("chromium_tip_of_tree_headless_shell-1380") == "chromium_tip_of_tree_headless_shell" && Playwright.kind("ffmpeg-1011") == nil && Playwright.kind("chromium-1243.zip") == nil
+               && Playwright.name("chromium_tip_of_tree_headless_shell") == "Chromium tip-of-tree headless shell" && Playwright.name("firefox_beta") == "Firefox beta", "build kinds and names; helpers aren't browsers")
+        expect(Playwright.owner("/Users/x/.npm/_npx/0c9f2a/node_modules/playwright-core") == ("npx", "/Users/x/.npm/_npx/0c9f2a")
+               && Playwright.owner("/opt/homebrew/lib/node_modules/playwright/node_modules/playwright-core").kind == "other", "an npx install is its cache folder, and a global install isn't a project")
+        let pwRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-playwright-\(UUID().uuidString)").path
+        let pwCache = pwRoot + "/ms-playwright", pwProject = pwRoot + "/site", pwCore = pwProject + "/node_modules/playwright-core"
+        for folder in ["ms-playwright/.links", "ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents", "ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64",
+                       "ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/resources/accessibility", "ms-playwright/chromium_headless_shell-1300/chrome-headless-shell-mac-arm64",
+                       "ms-playwright/firefox-1555/firefox/Nightly.app/Contents", "ms-playwright/webkit-2336/Playwright.app", "ms-playwright/ffmpeg-1011", "site/node_modules/playwright-core"] {
+            try FileManager.default.createDirectory(atPath: pwRoot + "/" + folder, withIntermediateDirectories: true)
+        }
+        func pwWrite(_ path: String, _ text: String) throws { try Data(text.utf8).write(to: URL(fileURLWithPath: pwRoot + "/" + path)) }
+        func pwPlist(_ version: String) -> String { #"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>"# + version + "</string></dict></plist>" }
+        try pwWrite("ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents/Info.plist", pwPlist("153.0.8010.12"))
+        try pwWrite("ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/resources/accessibility/reading_mode_gdocs_helper_manifest.json", #"{"name":"Reading Mode","version":"151.0.7922.34"}"#)
+        try pwWrite("ms-playwright/firefox-1555/firefox/Nightly.app/Contents/Info.plist", pwPlist("157.0"))
+        try pwWrite("ms-playwright/.links/0d1f", "/nonexistent/project/node_modules/playwright-core")
+        try pwWrite("ms-playwright/.links/7a2c", pwCore + "\n")
+        try pwWrite("site/package.json", #"{"devDependencies":{"@playwright/test":"^1.60.0"}}"#)
+        try pwWrite("site/pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+        try pwWrite("site/node_modules/playwright-core/package.json", #"{"name":"playwright-core","version":"1.62.0"}"#)
+        try pwWrite("site/node_modules/playwright-core/browsers.json", #"{"browsers":[{"name":"chromium-headless-shell","revision":"1300","browserVersion":"155.0.8059.20"},{"name":"firefox","revision":"1555","browserVersion":"157.0"},"#
+                    + #"{"name":"webkit","revision":"2336","revisionOverrides":{"mac14-arm64":"2251"},"browserVersion":"27.0"},{"name":"ffmpeg","revision":"1011"}]}"#)
+        let (pwItems, pwErrors) = Inventory.playwrightBrowsers(root: pwCache)
+        expect(pwErrors.isEmpty && pwItems.map { "\(($0.path as NSString).lastPathComponent) \($0.name) \($0.version) \($0.manager!)" }.sorted() == [
+            "chromium-1243 Chromium (Playwright) 153.0.8010.12 playwright-unused", "chromium_headless_shell-1234 Chromium headless shell (Playwright) 151.0.7922.34 playwright-unused",
+            "chromium_headless_shell-1243 Chromium headless shell (Playwright) 153.0.8010.12 playwright-unused", "chromium_headless_shell-1300 Chromium headless shell (Playwright) 155.0.8059.20 playwright-pnpm",
+            "firefox-1555 Firefox (Playwright) 157.0 playwright-pnpm", "webkit-2336 WebKit (Playwright) 2336 playwright-pnpm"],
+               "versions come from each build's app, the headless shell's manifest, browsers.json or the full Chromium of its revision; a dead link uses nothing, and ffmpeg isn't listed")
+        let pwShell = pwItems.first { $0.path.hasSuffix("chromium_headless_shell-1300") }!, pwOld = pwItems.first { $0.path.hasSuffix("chromium-1243") }!
+        expect(pwShell.location == pwProject && pwShell.package == "@playwright/test" && pwShell.dependency == "dev" && pwShell.note.hasSuffix(", for Playwright 1.62.0 in \(pwProject).")
+               && pwOld.note.hasSuffix(". No Playwright on this Mac uses it any more."), "a build in use names the Playwright and project using it, with the project's package and package manager")
+        let (pwFound, _) = Inventory.playwrightBrowsers(root: pwCache, found: [Installation(product: "npm:playwright-core", name: "playwright-core", version: "1.62.0", path: pwProject + "/pnpm-lock.yaml#playwright-core", domain: "projects",
+                                                                                            ecosystem: "npm", packageName: "playwright-core", manager: "pnpm", location: pwProject)])
+        expect(pwFound.filter { $0.manager == "playwright-pnpm" }.count == 3, "a project's playwright-core and the link to it count once")
+        try FileManager.default.removeItem(atPath: pwRoot + "/ms-playwright/.links/7a2c")
+        let (pwUnlinked, _) = Inventory.playwrightBrowsers(root: pwCache), (pwProjectOnly, _) = Inventory.playwrightBrowsers(root: pwCache, found: [Installation(product: "npm:playwright-core", name: "playwright-core", version: "1.62.0",
+                                                                          path: pwProject + "/pnpm-lock.yaml#playwright-core", domain: "projects", ecosystem: "npm", packageName: "playwright-core", manager: "pnpm", location: pwProject)])
+        expect(pwUnlinked.allSatisfy { $0.manager == "playwright-unused" } && pwProjectOnly.filter { $0.manager == "playwright-pnpm" }.count == 3,
+               "a Playwright Shipshape found in a project keeps its builds in use even without a link")
+        let pwUnusedFindings = pwItems.filter { $0.manager == "playwright-unused" }.map { item -> Finding in var finding = Playwright.unused(item); finding.commands = Commands.commands(for: finding); return finding }
+        expect(pwUnusedFindings.allSatisfy { $0.kind == .update && $0.fixed == "Delete unused build" } && groupByCommand(pwUnusedFindings).count == 1
+               && groupByCommand(pwUnusedFindings)[0].command?.text == "cd \(Shell.quote(pwCache)) && rm -rf chromium-1243 chromium_headless_shell-1234 chromium_headless_shell-1243",
+               "unused builds are updates that share one command deleting them from Playwright's cache")
+        let pwHits = [NVDHit(id: "CVE-2026-1", fixed: "155.0.8059.39", severity: "HIGH"), NVDHit(id: "CVE-2026-2", fixed: "156.0.8078.79", severity: "CRITICAL"), NVDHit(id: "CVE-2026-3", fixed: "156.0.8078.47", severity: "HIGH")]
+        let pwFinding = Finding(source: "nvd:playwright-chromium", installation: pwShell, kind: .security, fixed: "156.0.8078.79", reason: "", action: "", links: [], advisories: pwHits.map(\.id))
+        func pwMarked(_ newest: Playwright.Release?, hits: [NVDHit] = pwHits, waiting: [String: Finding] = [:]) -> Finding {
+            var findings = [pwFinding]
+            Playwright.mark(&findings, newest: newest, hits: { _ in hits }, waiting: waiting)
+            findings[0].commands = Commands.commands(for: findings[0])
+            return findings[0]
+        }
+        let pwPartly = pwMarked(Playwright.Release(version: "1.64.1", browsers: ["chromium_headless_shell": "156.0.8078.4"]))
+        expect(pwPartly.awaitingFix != true && pwPartly.fixed == "156.0.8078.4" && pwPartly.action.hasPrefix("Playwright 1.64.1 ships Chromium headless shell 156.0.8078.4, which has 1 of these fixes; the other 2 wait for a later release. Update Playwright in this project")
+               && pwPartly.commands?.first?.text == "cd \(Shell.quote(pwProject)) && pnpm add -D @playwright/test@latest && pnpm exec playwright install chromium",
+               "a build Playwright's newest release partly fixes gets the project's update command and says what's left")
+        let pwNone = pwMarked(Playwright.Release(version: "1.64.1", browsers: ["chromium_headless_shell": "155.0.8059.20"]))
+        expect(pwNone.awaitingFix == true && pwNone.fixed == "156.0.8078.79, not in Playwright yet" && pwNone.commands == []
+               && pwNone.action == "Playwright's newest release, 1.64.1, ships Chromium headless shell 155.0.8059.20, which doesn't have these fixes yet. Shipshape alerts you when a Playwright release has them.",
+               "a build whose fixes no Playwright release has waits, with no command")
+        expect(pwMarked(Playwright.Release(version: "1.65.0", browsers: ["chromium_headless_shell": "157.0.8103.4"])).action.hasPrefix("Playwright 1.65.0 ships Chromium headless shell 157.0.8103.4, which has these fixes. ")
+               && pwMarked(Playwright.Release(version: "1.65.0", browsers: [:])).awaitingFix == true, "a release with every fix says so, and one without the browser can't fix it")
+        let pwUnknown = pwMarked(nil), pwStillWaiting = pwMarked(nil, waiting: [pwNone.id: pwNone])
+        expect(pwUnknown.awaitingFix != true && pwUnknown.action.hasPrefix("Shipshape couldn't read which browsers Playwright's newest release ships") && pwUnknown.commands?.isEmpty == false
+               && pwStillWaiting.awaitingFix == true && pwStillWaiting.fixed == pwNone.fixed && pwStillWaiting.action == pwNone.action, "without Playwright's answer a waiting build keeps waiting and others keep their command")
+        var pwNpxShell = pwShell; pwNpxShell.manager = "playwright-npx"; pwNpxShell.location = "/Users/x/.npm/_npx/0c9f2a"
+        expect(Commands.commands(for: Finding(source: "nvd:playwright-chromium", installation: pwNpxShell, kind: .security, fixed: "156.0.8078.79", reason: "", action: "", links: [])).first?.text == "rm -rf /Users/x/.npm/_npx/0c9f2a",
+               "a build an npx install uses is replaced by deleting that install")
+        try? FileManager.default.removeItem(atPath: pwRoot)
+
         // History: findings open entries, disappear into resolutions, and reappear as new entries.
         let day1 = Date(timeIntervalSince1970: 1_800_000_000), day2 = day1.addingTimeInterval(86_400), day3 = day2.addingTimeInterval(86_400)
         let lockfile = "/work/app/package-lock.json"
@@ -741,6 +815,12 @@ import Foundation
         expect(missing?.contains("404") == true, "an HTTP error is reported with its status")
         let plainHTTP = await failure("http://stub.test/ok")
         expect(plainHTTP == "Invalid source URL", "only https sources are fetched")
+        StubProtocol.responses = ["https://registry.npmjs.org/playwright-core/latest": (200, [:], Data(#"{"name":"playwright-core","version":"1.64.1"}"#.utf8)),
+                                  "https://raw.githubusercontent.com/microsoft/playwright/v1.64.1/packages/playwright-core/browsers.json": (200, [:], Data(
+                                    #"{"browsers":[{"name":"chromium","revision":"1248","browserVersion":"156.0.8078.4"},{"name":"chromium-headless-shell","revision":"1248","browserVersion":"156.0.8078.4"},{"name":"ffmpeg","revision":"1013"}]}"#.utf8))]
+        let newestPlaywright = try await Playwright.newest()
+        expect(newestPlaywright == Playwright.Release(version: "1.64.1", browsers: ["chromium": "156.0.8078.4", "chromium_headless_shell": "156.0.8078.4"]),
+               "Playwright's newest release and its browsers come from npm and the browsers.json at its tag")
         Fetch.configuration = realConfiguration
 
         // More project ecosystems: Swift, PHP, Dart and Flutter, .NET, Elixir and Gradle lockfiles.

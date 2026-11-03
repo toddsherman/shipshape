@@ -319,6 +319,116 @@ enum NpxCache {
     }
 }
 
+// Playwright downloads its own Chromium, Firefox and WebKit builds into one cache and never updates them: each release
+// names the builds it uses in its browsers.json. Every install that runs `playwright install` leaves a file in the
+// cache's .links folder naming its package folder, and the next install by any of them deletes the builds no linked
+// package uses. So a build only a newer Playwright can replace waits until a Playwright release ships the fix.
+enum Playwright {
+    struct Release: Equatable { let version: String; let browsers: [String: String] }  // build kind → browser version
+    static let cache = Inventory.home + "/Library/Caches/ms-playwright"
+    // "chromium_headless_shell-1243" is kind chromium_headless_shell, revision 1243. ffmpeg and other helpers aren't browsers.
+    static func kind(_ folder: String) -> String? {
+        captures("^((?:chromium|firefox|webkit)[a-z0-9_]*)-[0-9]+$", folder).first?[1]
+    }
+    static func product(_ kind: String) -> String { kind.hasPrefix("chromium") ? "playwright-chromium" : kind.hasPrefix("firefox") ? "playwright-firefox" : "playwright-webkit" }
+    static func name(_ kind: String) -> String {
+        (kind.hasPrefix("chromium") ? "Chromium" : kind.hasPrefix("firefox") ? "Firefox" : "WebKit") + (kind.contains("tip_of_tree") ? " tip-of-tree" : "")
+            + (kind.contains("headless_shell") ? " headless shell" : "") + (kind.hasSuffix("_beta") ? " beta" : "")
+    }
+    // The cache folders a browsers.json names, with the version each is. A revision kept for an older macOS gets a folder of
+    // its own, such as webkit_mac14_arm64_special-2251; every one counts as used, so no build is called unused because of it.
+    static func folders(_ browsers: [[String: Any]]) -> [(folder: String, version: String?)] {
+        browsers.flatMap { browser -> [(folder: String, version: String?)] in
+            guard let name = browser["name"] as? String, let revision = browser["revision"] as? String else { return [] }
+            let overrides = (browser["revisionOverrides"] as? [String: String] ?? [:]).sorted { $0.key < $1.key }
+                .map { (folder: "\(name)_\($0.key)_special".replacingOccurrences(of: "-", with: "_") + "-" + $0.value, version: nil as String?) }
+            return [(name.replacingOccurrences(of: "-", with: "_") + "-" + revision, browser["browserVersion"] as? String)] + overrides
+        }
+    }
+    // A build's version from its own files: its app's Info.plist, or for Chromium's headless shell, which has no app, the
+    // reading-mode manifest it carries. WebKit's app is numbered 1.0, so WebKit builds go by revision instead.
+    static func version(_ path: String) -> String? {
+        for child in Inventory.children(path) {
+            let folder = path + "/" + child
+            for app in [folder] + Inventory.children(folder).map({ folder + "/" + $0 }) where app.hasSuffix(".app") {
+                guard let data = Inventory.read(app + "/Contents/Info.plist", limit: 1_000_000),
+                      let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
+                      let version = info["CFBundleShortVersionString"] as? String, Version(version) != nil else { continue }
+                return version
+            }
+            if let version = Inventory.json(folder + "/resources/accessibility/reading_mode_gdocs_helper_manifest.json", limit: 100_000)?["version"] as? String,
+               Version(version)?.parts.count == 4 { return version }
+        }
+        return nil
+    }
+    // Where a Playwright package is installed: an npx cache folder, a project (the folder holding its node_modules), or
+    // somewhere else, such as global packages.
+    static func owner(_ package: String) -> (kind: String, folder: String) {
+        if let npx = captures("^(.*/\\.npm/_npx/[^/]+)/", package).first?[1] { return ("npx", npx) }
+        let global = ["/lib/node_modules/", "/.bun/install/global/", "/Library/pnpm/global/"].contains { package.contains($0) }
+        if !global, let range = package.range(of: "/node_modules/"), Inventory.fm.fileExists(atPath: package[..<range.lowerBound] + "/package.json") {
+            return ("project", String(package[..<range.lowerBound]))
+        }
+        return ("other", package)
+    }
+    // How a project depends on Playwright, for the command that updates it: the package it lists, whether as a development
+    // dependency, and its package manager, from its lockfile.
+    static func dependency(in project: String) -> (package: String, dev: Bool, tool: String)? {
+        guard let manifest = Inventory.json(project + "/package.json", limit: 4_000_000) else { return nil }
+        let dev = manifest["devDependencies"] as? [String: Any] ?? [:], direct = manifest["dependencies"] as? [String: Any] ?? [:]
+        guard let package = ["@playwright/test", "playwright", "playwright-core"].first(where: { dev[$0] != nil || direct[$0] != nil }) else { return nil }
+        let tool = [("pnpm-lock.yaml", "pnpm"), ("yarn.lock", "yarn"), ("bun.lock", "bun"), ("bun.lockb", "bun")].first { Inventory.fm.fileExists(atPath: project + "/" + $0.0) }?.1 ?? "npm"
+        return (package, dev[package] != nil, tool)
+    }
+    // The newest Playwright, from npm's public registry, and the browsers its release ships, from the browsers.json at its
+    // tag on GitHub. Both receive Playwright's name and version only.
+    static func newest() async throws -> Release {
+        guard let manifest = try await Fetch.json("https://registry.npmjs.org/playwright-core/latest") as? [String: Any],
+              let version = Commands.safe(manifest["version"] as? String, "^[0-9]+\\.[0-9]+\\.[0-9]+$"),
+              let browsers = (try await Fetch.json("https://raw.githubusercontent.com/microsoft/playwright/v\(version)/packages/playwright-core/browsers.json") as? [String: Any])?["browsers"] as? [[String: Any]]
+        else { throw MonitorError(message: "Playwright's newest release couldn't be read") }
+        var shipped: [String: String] = [:]
+        for (folder, browserVersion) in folders(browsers) { if let kind = kind(folder), let browserVersion { shipped[kind] = browserVersion } }
+        return Release(version: version, browsers: shipped)
+    }
+    // A build a Playwright still uses is fixed by updating that Playwright, but only as far as its newest release goes. When
+    // that release has none of the fixes, the finding waits; without its answer, one that was waiting keeps waiting.
+    static func mark(_ findings: inout [Finding], newest: Release?, hits: (Installation) -> [NVDHit], waiting: [String: Finding] = [:]) {
+        for index in findings.indices {
+            let finding = findings[index], item = finding.installation
+            guard finding.source.hasPrefix("nvd:playwright-"), let kind = kind((item.path as NSString).lastPathComponent) else { continue }
+            let next = item.manager == "playwright-npx" ? "Delete the npx install that uses it; its next run fetches the newest release."
+                : item.manager == "playwright" ? "Update each Playwright that uses it, then install their browsers. Playwright then deletes this build."
+                : "Update Playwright in this project, then install its browsers. Playwright then deletes this build."
+            guard let newest else {
+                if let old = waiting[finding.id], old.installation.version == item.version {
+                    findings[index].awaitingFix = true; findings[index].fixed = old.fixed; findings[index].action = old.action
+                } else { findings[index].action = "\(appName) couldn't read which browsers Playwright's newest release ships, so updating may not bring every fix. " + next }
+                continue
+            }
+            let shipped = newest.browsers[kind], all = hits(item)
+            let open = all.filter { hit in shipped.flatMap { version in hit.fixed.map { looseLess(version, $0) } } ?? true }
+            if open.count == all.count {
+                findings[index].awaitingFix = true
+                findings[index].fixed = finding.fixed == NVD.noFixListed ? "No fix released yet" : "\(finding.fixed), not in Playwright yet"
+                findings[index].action = (shipped.map { "Playwright's newest release, \(newest.version), ships \(name(kind)) \($0), which doesn't have these fixes yet." }
+                    ?? "Playwright's newest release, \(newest.version), doesn't ship this browser.") + " \(appName) alerts you when a Playwright release has them."
+            } else {
+                // The card's target is the build the update installs, which may still lack the newest fixes.
+                findings[index].fixed = shipped!
+                findings[index].action = "Playwright \(newest.version) ships \(name(kind)) \(shipped!), which has " + (open.isEmpty ? "these fixes. " : "\(all.count - open.count) of these fixes; the other \(open.count) wait for a later release. ") + next
+            }
+        }
+    }
+    // A build no Playwright on this Mac uses any more, listed to delete like an older Homebrew copy. It isn't checked for
+    // vulnerabilities, since nothing runs it.
+    static func unused(_ item: Installation) -> Finding {
+        Finding(source: "inventory-playwright", installation: item, kind: .update, fixed: "Delete unused build",
+                reason: item.note + " Playwright never updates its browsers, and deletes ones nothing uses only the next time a Playwright here installs browsers.",
+                action: "Delete it. A Playwright that needs it again downloads it.", links: ["https://playwright.dev/docs/browsers#managing-browser-binaries"])
+    }
+}
+
 enum EditorExtensions {
     static let source = "https://raw.githubusercontent.com/microsoft/vsmarketplace/main/RemovedPackages.md"
     static let page = "https://github.com/microsoft/vsmarketplace/blob/main/RemovedPackages.md"
@@ -601,7 +711,7 @@ enum NVD {
         let fixes = hits.compactMap(\.fixed), inBranch = fixes.filter { branch == nil || Self.branch($0) == branch }
         let elsewhere = inBranch.isEmpty ? [] : fixes.filter { branch != nil && Self.branch($0) != branch }
         let listed = (inBranch.isEmpty ? fixes : inBranch).max(by: looseLess), expected = listed == nil ? hits.compactMap(\.expected).max(by: looseLess) : nil
-        let count = hits.count == 1 ? "1 NVD-listed vulnerability affects" : "\(hits.count) NVD-listed vulnerabilities affect"
+        let count = hits.count == 1 ? "1 NVD-listed vulnerability affects" : "\(hits.count.formatted()) NVD-listed vulnerabilities affect"
         let reason = count + " this version" + (unknown > 0 ? "; \(unknown) list no fixed version" : "")
             + (elsewhere.isEmpty ? "" : "; \(elsewhere.count) list\(elsewhere.count == 1 ? "s" : "") a fix only in a newer \(product.name) (\(elsewhere.max(by: looseLess)!))") + ". NVD can lag vendor advisories"
             + (item.domain == "brew" ? ", and Homebrew sometimes ships patches without changing the version." : ".")
