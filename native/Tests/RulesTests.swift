@@ -586,8 +586,12 @@ import Foundation
                "a build Playwright's newest release partly fixes gets the project's update command and says what's left")
         let pwNone = pwMarked(Playwright.Release(version: "1.64.1", browsers: ["chromium_headless_shell": "155.0.8059.20"]))
         expect(pwNone.awaitingFix == true && pwNone.fixed == "156.0.8078.79, not in Playwright yet" && pwNone.commands == []
-               && pwNone.action == "Playwright's newest release, 1.64.1, ships Chromium headless shell 155.0.8059.20, which doesn't have these fixes yet. Shipshape alerts you when a Playwright release has them.",
-               "a build whose fixes no Playwright release has waits, with no command")
+               && pwNone.action == "Playwright's newest release, 1.64.1, ships Chromium headless shell 155.0.8059.20, which doesn't have these fixes yet. Shipshape alerts you when a Playwright release has them. "
+                  + "Meanwhile, Playwright can run on Google Chrome, which updates itself, if it's installed: choose the chrome channel (channel: 'chrome' in Playwright's config).",
+               "a Chromium build whose fixes no Playwright release has waits, with no command, and points to Google Chrome meanwhile")
+        var pwFirefox = [Finding(source: "nvd:playwright-firefox", installation: pwItems.first { $0.path.hasSuffix("firefox-1555") }!, kind: .security, fixed: "158.0", reason: "", action: "", links: [])]
+        Playwright.mark(&pwFirefox, newest: Playwright.Release(version: "1.64.1", browsers: ["firefox": "157.0"]), hits: { _ in [NVDHit(id: "CVE-2026-9", fixed: "158.0", severity: "HIGH")] })
+        expect(pwFirefox[0].awaitingFix == true && !pwFirefox[0].action.contains("Chrome"), "Firefox builds have no Chrome to fall back on")
         expect(pwMarked(Playwright.Release(version: "1.65.0", browsers: ["chromium_headless_shell": "157.0.8103.4"])).action.hasPrefix("Playwright 1.65.0 ships Chromium headless shell 157.0.8103.4, which has these fixes. ")
                && pwMarked(Playwright.Release(version: "1.65.0", browsers: [:])).awaitingFix == true, "a release with every fix says so, and one without the browser can't fix it")
         let pwUnknown = pwMarked(nil), pwStillWaiting = pwMarked(nil, waiting: [pwNone.id: pwNone])

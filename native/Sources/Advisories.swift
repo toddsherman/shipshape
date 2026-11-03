@@ -409,10 +409,12 @@ enum Playwright {
             let shipped = newest.browsers[kind], all = hits(item)
             let open = all.filter { hit in shipped.flatMap { version in hit.fixed.map { looseLess(version, $0) } } ?? true }
             if open.count == all.count {
+                // Google Chrome gets Chromium's fixes first and updates itself, and Playwright can run on it instead.
+                let chrome = kind.hasPrefix("chromium") ? " Meanwhile, Playwright can run on Google Chrome, which updates itself, if it's installed: choose the chrome channel (channel: 'chrome' in Playwright's config)." : ""
                 findings[index].awaitingFix = true
                 findings[index].fixed = finding.fixed == NVD.noFixListed ? "No fix released yet" : "\(finding.fixed), not in Playwright yet"
                 findings[index].action = (shipped.map { "Playwright's newest release, \(newest.version), ships \(name(kind)) \($0), which doesn't have these fixes yet." }
-                    ?? "Playwright's newest release, \(newest.version), doesn't ship this browser.") + " \(appName) alerts you when a Playwright release has them."
+                    ?? "Playwright's newest release, \(newest.version), doesn't ship this browser.") + " \(appName) alerts you when a Playwright release has them." + chrome
             } else {
                 // The card's target is the build the update installs, which may still lack the newest fixes.
                 findings[index].fixed = shipped!

@@ -4,7 +4,7 @@ Every release is a universal (Apple silicon and Intel) build for macOS 13 or lat
 
 ## Unreleased
 
-- **Playwright's browsers are covered.** Playwright downloads its own Chromium, Firefox and WebKit builds and never updates them, so Shipshape now reads them from `~/Library/Caches/ms-playwright` and works out which Playwright on your Mac uses each one, as Playwright does. A build nothing uses any more appears under Updates with one command that deletes all such builds. A Chromium or Firefox build in use is checked against NVD as Chrome or Firefox. The card says how many of its fixes Playwright's newest release ships, and offers the command that updates Playwright in your project or deletes the npx install that uses it. If no Playwright release has the fixes yet, it waits for a fix.
+- **Playwright's browsers are covered.** Playwright downloads its own Chromium, Firefox and WebKit builds and never updates them, so Shipshape now reads them from `~/Library/Caches/ms-playwright` and works out which Playwright on your Mac uses each one, as Playwright does. A build nothing uses any more appears under Updates with one command that deletes all such builds. A Chromium or Firefox build in use is checked against NVD as Chrome or Firefox. The card says how many of its fixes Playwright's newest release ships, and offers the command that updates Playwright in your project or deletes the npx install that uses it. If no Playwright release has the fixes yet, it waits for a fix, and a Chromium card says Playwright can run on Google Chrome meanwhile (`channel: 'chrome'`), which updates itself.
 - **Long advisory lists show their twelve newest first.** An old Chromium can match over a thousand CVEs; the rest of the list opens with a click.
 
 ## 0.3.27 — November 1, 2026
