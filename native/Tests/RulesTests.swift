@@ -1059,12 +1059,13 @@ import Foundation
         expect(ScanReport(findings: sparkleFindings).security.isEmpty && ScanReport(findings: sparkleFindings).awaiting.count == 1, "it waits in No fix released yet instead of counting as needing attention")
         let freshSparkle = OSV.findings(for: [sparkleItem], matches: [OSV.key(sparkleItem)!: ["GHSA-a", "GHSA-b"]], vulns: sparkleVulns)
         var unreadFeed = freshSparkle
-        Scanner.markBundledAwaiting(&unreadFeed, currentApps: [], waiting: [waitingSparkle.id])
-        expect(unreadFeed[0].awaitingFix == true && unreadFeed[0].fixed == waitingSparkle.fixed, "a waiting Sparkle keeps waiting when nothing shows a newer release, such as an unreadable feed")
+        Scanner.markBundledAwaiting(&unreadFeed, currentApps: [])
+        expect(unreadFeed[0].awaitingFix == true && unreadFeed[0].fixed == waitingSparkle.fixed && unreadFeed[0].action.hasPrefix("Shipshape can't see whether a newer Folx is out"),
+               "a waiting Sparkle keeps waiting when nothing shows a newer release, such as an unreadable feed, without claiming the app is current")
         let folxUpdate = Finding(source: "sparkle-feed", installation: Installation(product: "app:folx", name: "Folx", version: "5.30", path: "/Applications/Folx.app", domain: "apps", manager: "app"),
                                  kind: .update, fixed: "5.31", reason: "", action: "", links: [])
         var folxReleased = freshSparkle + [folxUpdate], folxBothSources = freshSparkle + [folxUpdate]
-        Scanner.markBundledAwaiting(&folxReleased, currentApps: [], waiting: [waitingSparkle.id])
+        Scanner.markBundledAwaiting(&folxReleased, currentApps: [])
         Scanner.markBundledAwaiting(&folxBothSources, currentApps: ["/Applications/Folx.app"])
         expect(folxReleased[0].awaitingFix == nil && Commands.commands(for: folxReleased[0]).first?.text == "Open Folx" && folxBothSources[0].awaitingFix == nil
                && folxReleased[0].action == freshSparkle[0].action,
@@ -1075,7 +1076,7 @@ import Foundation
         let itermFix = Finding(source: "nvd:iterm2", installation: Installation(product: "iterm2", name: "iTerm2", version: "3.5.0", path: "/Applications/iTerm.app", domain: "apps", manager: "app"),
                                kind: .security, fixed: "3.5.1", reason: "", action: "", links: [])
         var itermFindings = [itermFix, itermSparkle]
-        Scanner.markBundledAwaiting(&itermFindings, currentApps: [], waiting: [itermSparkle.id])
+        Scanner.markBundledAwaiting(&itermFindings, currentApps: [])
         expect(itermFindings[1].awaitingFix == nil, "a fixed release of the app itself also counts as a newer release")
 
         // A newer release counts once the app's own updater has had time to offer it: a week, or a whole phased rollout.
@@ -1216,11 +1217,60 @@ import Foundation
         let chatUpdate = Finding(source: "homebrew-cask", installation: Installation(product: "app:com.example.chat", name: "Chat", version: "0.0.380", path: chat37.location!, domain: "apps", manager: "app"),
                                  kind: .update, fixed: "0.0.381", reason: "", action: "", links: [])
         var chatReleased = [chatOld, chatUpdate]
-        Scanner.markBundledAwaiting(&chatReleased, currentApps: [], waiting: [chatOld.id])
+        Scanner.markBundledAwaiting(&chatReleased, currentApps: [])
         expect(chatReleased[0].awaitingFix == nil
                && Alerts.findings([chatReleased[0]], released: [chatOld.id]).body == "The new release of Chat may include a newer Electron than the vulnerable version it bundles now. Open Shipshape for details."
                && Alerts.findings([chatReleased[0], folxReleased[0]], released: [chatOld.id, waitingSparkle.id]).body.hasPrefix("New releases of Chat and Folx may include a newer Sparkle or Electron than"),
                "a newer release of the app ends the wait, and its alert says it may bring a newer Electron")
+
+        // Alerts for findings waiting for a fix: none until exploited, then once per installed version, however many
+        // advisories NVD adds; a fix that comes out later alerts as usual.
+        var quietWait = chatWaiting[0]; quietWait.exploited = false
+        let exploitedWait = exploitedChat
+        var delivered: [String: String] = [:]
+        expect(Alerts.due(ScanReport(findings: [quietWait]), delivered: [:]).isEmpty && Alerts.due(ScanReport(findings: [exploitedWait]), delivered: [:]).count == 1,
+               "a waiting finding alerts only once it's exploited")
+        for finding in Alerts.due(ScanReport(findings: [exploitedWait]), delivered: delivered) { delivered[finding.id] = Alerts.signature(finding) }
+        var moreAdvisories = exploitedWait; moreAdvisories.advisories.append("CVE-2026-99999")
+        let upgradedChat = Finding(source: exploitedWait.source, installation: electronItem("37.7.0"), kind: .security, fixed: exploitedWait.fixed, reason: "", action: "", links: [],
+                                   advisories: exploitedWait.advisories, exploited: true, awaitingFix: true)
+        var fixedNow = exploitedWait; fixedNow.awaitingFix = nil; fixedNow.fixed = "43.8.7"
+        expect(Alerts.due(ScanReport(findings: [moreAdvisories]), delivered: delivered).isEmpty && Alerts.due(ScanReport(findings: [upgradedChat]), delivered: delivered).count == 1
+               && Alerts.due(ScanReport(findings: [fixedNow]), delivered: delivered).count == 1,
+               "new advisories on an exploited waiting finding don't alert again; another installed version or a fix does")
+        expect(Alerts.pruned(delivered, report: ScanReport(findings: [moreAdvisories])) == delivered && Alerts.pruned(delivered, report: ScanReport(findings: [quietWait])).isEmpty,
+               "an exploited waiting finding keeps its alert record between checks; a quiet one doesn't")
+        let exploitedAlert = Alerts.findings([exploitedWait], released: [])
+        expect(exploitedAlert.title == "Known exploitation, no fix yet"
+               && exploitedAlert.body == "Electron in Chat has a flaw attackers are using, and nothing you can install fixes it yet. Open Shipshape for details."
+               && Alerts.findings([exploitedWait, leftPad], released: []).title == "Security updates to review",
+               "the alert says attackers are using it and nothing can be installed yet")
+
+        // Apps Homebrew didn't install are matched to a cask by app name, so their newest release is known.
+        let caskJSON = Data("""
+        [{"token": "discord", "version": "0.0.421", "auto_updates": true, "homepage": "https://discord.com/", "artifacts": [{"uninstall": [{"quit": "com.hnc.Discord"}]}, {"app": ["Discord.app"]}, {"zap": [{"trash": ["~/x"]}]}]},
+         {"token": "orca", "version": "1.3.1", "artifacts": [{"app": ["Orca.app", {"target": "Other.app"}]}]},
+         {"token": "firefox", "version": "140.0", "artifacts": [{"app": ["Firefox.app"]}]}, {"token": "firefox@esr", "version": "128.0", "artifacts": [{"app": ["Firefox.app"]}]},
+         {"token": "nightly-tool", "version": "latest", "artifacts": [{"app": ["Nightly.app"]}]}, {"token": "no-app", "version": "1.0", "artifacts": [{"pkg": ["x.pkg"]}]}]
+        """.utf8)
+        let caskData = try HomebrewMetadata.parse(caskJSON, kind: "cask")
+        func caskless(_ name: String, _ version: String) -> Installation { Installation(product: "app:com.example." + name.lowercased(), name: name, version: version, path: "/Applications/\(name).app", domain: "apps", manager: "app") }
+        let caskMatches = caskData.matched([caskless("Discord", "0.0.382"), caskless("Orca", "1.4.245"), caskless("Firefox", "139.0"), caskless("Nightly", "1.0"), caskless("Unknown", "1.0")])
+        expect(caskData.apps["Discord.app"] == ["discord"] && caskData.apps["Orca.app"] == ["orca"] && caskData.apps["Other.app"] == nil && caskData.latest["discord"] == "0.0.421"
+               && caskData.casks["discord"]?.autoUpdates == true && caskMatches.map { "\($0.name) \($0.package ?? "-")" } == ["Discord discord"],
+               "an app matches the one cask that installs an app of its name; a cask older than the app, a name two casks share and an unversioned cask don't")
+
+        // npm's empty placeholders (0.0.1-security) are listed to remove, not as malware.
+        func lockedNPM(_ name: String, _ version: String) -> Installation {
+            Installation(product: "npm:" + name, name: name, version: version, path: "/p/package-lock.json#" + name + "@" + version, domain: "projects", ecosystem: "npm", packageName: name, manager: "npm", location: "/p", dependency: "dev")
+        }
+        let fsPlaceholder = lockedNPM("fs", "0.0.1-security"), fsReal = lockedNPM("fs", "0.0.2")
+        let malFS = ["MAL-2025-21003": OSV.Vuln(id: "MAL-2025-21003", summary: "Malicious code in fs (npm)", aliases: [], severity: "CRITICAL", fixed: [:])]
+        let placeholderFindings = OSV.findings(for: [fsPlaceholder, fsReal], matches: [OSV.key(fsPlaceholder)!: ["MAL-2025-21003"], OSV.key(fsReal)!: ["MAL-2025-21003"]], vulns: malFS)
+        expect(placeholderFindings.count == 2 && placeholderFindings[0].kind == .update && placeholderFindings[0].malicious == nil && placeholderFindings[0].fixed == OSV.placeholderFix
+               && placeholderFindings[0].reason.hasPrefix("This is npm's empty placeholder for fs, 0.0.1-security") && Commands.commands(for: placeholderFindings[0]).first?.text.hasSuffix("npm uninstall fs") == true
+               && placeholderFindings[1].malicious == true && ScanReport(findings: [placeholderFindings[0]]).attention.isEmpty,
+               "npm's placeholder is an update to remove it, with the uninstall command; other versions of the name are still malware")
         let pruned = Alerts.pruned([waitingSparkle.id: "before it waited", leftPad.id: "delivered", "gone": "removed"], report: ScanReport(findings: [waitingSparkle, leftPad]))
         expect(pruned == [leftPad.id: "delivered"], "a waiting finding forgets its earlier alert, so a new release alerts again")
 

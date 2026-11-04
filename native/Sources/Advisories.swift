@@ -72,6 +72,13 @@ enum OSV {
                     published: advisoryDate(obj["published"] as? String))
     }
 
+    // npm holds the name of a package it took down, or one at risk of malicious use, with an empty placeholder version such
+    // as 0.0.1-security. OSV's malware report for the name covers every version, but the placeholder holds no code, so
+    // it's listed to remove rather than as malware.
+    static let placeholderFix = "Remove placeholder"
+    static func placeholder(_ item: Installation) -> Bool {
+        item.ecosystem == "npm" && item.version.range(of: "^[0-9]+\\.[0-9]+\\.[0-9]+-security(\\.[0-9]+)?$", options: .regularExpression) != nil
+    }
     static func findings(for items: [Installation], matches: [String: [String]], vulns: [String: Vuln]) -> [Finding] {
         func order(_ id: String) -> Int { id.hasPrefix("MAL-") ? 0 : id.hasPrefix("GHSA-") ? 1 : 2 }
         var findings: [Finding] = []
@@ -85,6 +92,17 @@ enum OSV {
                 if !vuln.informational { chosen.append(vuln) }
             }
             guard !chosen.isEmpty else { continue }
+            if placeholder(item), chosen.allSatisfy({ $0.id.hasPrefix("MAL-") }) {
+                var finding = Finding(source: "osv", installation: item, kind: .update, fixed: placeholderFix,
+                                      reason: "This is npm's empty placeholder for \(name), \(item.version), which holds the name so no one can publish malicious code under it. It contains no code. "
+                                          + "OSV's malware report for the name covers every version, so it lists the placeholder too.",
+                                      action: "Remove it: it does nothing. A project that lists \(name) usually meant something else, such as a module built into Node.",
+                                      links: chosen.prefix(2).map { "https://osv.dev/vulnerability/" + $0.id } + ["https://www.npmjs.com/package/" + name],
+                                      advisories: chosen.map(\.id).sorted())
+                dates(&finding, chosen.map { ($0.id, $0.aliases, $0.published) })
+                findings.append(finding)
+                continue
+            }
             let target = ecosystem + "|" + normalized(name, ecosystem)
             var fixes: [String] = [], unfixed = 0, severity: String? = nil
             for vuln in chosen {

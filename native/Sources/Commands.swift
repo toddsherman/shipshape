@@ -234,7 +234,7 @@ enum Commands {
         if finding.awaitingFix == true { return [] }  // no release fixes it yet, so there is nothing to install
         let item = finding.installation
         let fix = safe(finding.fixed, "^[0-9][a-z0-9.+_-]*$")
-        let removing = finding.malicious == true
+        let removing = finding.malicious == true || finding.fixed == OSV.placeholderFix
         let package = item.ecosystem.flatMap { safe(item.packageName, namePatterns[$0] ?? "^$") }
         let cd = item.location.map { "cd " + Shell.quote($0) + " && " } ?? ""
         let dev = item.dependency == "dev"

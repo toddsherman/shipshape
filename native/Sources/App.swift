@@ -218,7 +218,7 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return false }
-        let changed = report.security.filter { !$0.stale && state.delivered[$0.id] != $0.fingerprint }
+        let changed = Alerts.due(report, delivered: state.delivered)
         let failureSignature = report.checks.filter { $0.status == "failed" }.map(\.id).sorted().joined(separator: ",")
         if !changed.isEmpty {
             let content = UNMutableNotificationContent()
@@ -226,7 +226,7 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
             content.sound = .default
             do {
                 try await center.add(UNNotificationRequest(identifier: "security-findings", content: content, trigger: nil))
-                for finding in changed { state.delivered[finding.id] = finding.fingerprint }
+                for finding in changed { state.delivered[finding.id] = Alerts.signature(finding) }
             } catch { message = "Could not schedule an alert: \(error.localizedDescription)" }
         }
         if !failureSignature.isEmpty && state.lastFailure != failureSignature {

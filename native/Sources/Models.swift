@@ -454,20 +454,40 @@ struct SavedState: Codable {
 // A bundled Sparkle or Electron that stops waiting isn't known to be fixed: its app has a new release, which may or may
 // not bundle a newer one, so the alert names the app and says only that.
 enum Alerts {
+    // What a finding's alert is keyed on. Findings with something to install alert again when anything that matters
+    // changes (Finding.fingerprint). One waiting for a fix alerts only once it's exploited, and then once per installed
+    // version, so advisories NVD adds each week don't alert again while nothing can be installed.
+    static func signature(_ finding: Finding) -> String {
+        finding.awaitingFix == true ? "exploited|" + finding.installation.version : finding.fingerprint
+    }
+    // The findings to alert about now: new or changed ones with something to install, and waiting ones newly exploited.
+    static func due(_ report: ScanReport, delivered: [String: String]) -> [Finding] {
+        report.findings.filter { finding in
+            guard !finding.stale, finding.kind != .update, finding.awaitingFix != true || finding.exploited else { return false }
+            return delivered[finding.id] != signature(finding)
+        }
+    }
     static func findings(_ changed: [Finding], released: Set<String>) -> (title: String, body: String) {
         let newRelease = { (finding: Finding) in released.contains(finding.id) && finding.installation.bundledApp != nil }
-        let others = changed.filter { !newRelease($0) }
+        let exploitedWaiting = changed.filter { $0.awaitingFix == true }
+        let others = changed.filter { !newRelease($0) && $0.awaitingFix != true }
         let apps = Array(Set(changed.filter(newRelease).compactMap(\.installation.bundledApp))).sorted()
         let frameworks = Array(Set(changed.filter(newRelease).compactMap(\.installation.bundledFramework))).sorted()
         let framework = frameworks.count == 1 ? frameworks[0] : "Sparkle or Electron"
         let title = changed.contains { $0.malicious == true } ? "Malicious package found"
             : others.contains { released.contains($0.id) } ? "Fix now available"
             : !others.isEmpty ? "Security updates to review"
+            : !exploitedWaiting.isEmpty ? "Known exploitation, no fix yet"
             : apps.count == 1 ? "New \(apps[0]) release" : "New app releases"
         var body: [String] = []
         if !others.isEmpty {
             let names = Array(Set(others.map { $0.installation.bundledApp != nil ? $0.installation.name : $0.installation.packageName ?? $0.installation.name })).sorted()
             body.append(names.prefix(4).joined(separator: ", ") + (names.count > 4 ? " and \(names.count - 4) more" : "") + ".")
+        }
+        if !exploitedWaiting.isEmpty {
+            let names = Array(Set(exploitedWaiting.map { $0.installation.bundledApp != nil ? $0.installation.name : $0.installation.packageName ?? $0.installation.name })).sorted()
+            body.append(list(names) + (names.count == 1 ? " has a flaw" : " have flaws") + " attackers are using, and nothing you can install fixes "
+                        + (names.count == 1 ? "it" : "them") + " yet.")
         }
         if !apps.isEmpty {
             body.append(apps.count == 1 ? "The new release of \(apps[0]) may include a newer \(framework) than the vulnerable version it bundles now."
@@ -480,10 +500,11 @@ enum Alerts {
         let shown = names.count > 4 ? Array(names.prefix(4)) + ["\(names.count - 4) more"] : names
         return shown.count < 2 ? shown.joined() : shown.dropLast().joined(separator: ", ") + " and " + shown.last!
     }
-    // Delivered alerts are kept only for findings still listed and not waiting for a fix. A waiting finding loses
-    // its record, so it alerts again when a fix or a new release appears, even if it was alerted before it waited.
+    // Delivered alerts are kept only for findings still listed, and not waiting for a fix unless exploited. A waiting
+    // finding loses its record, so it alerts again when a fix or a new release appears, even if it was alerted before
+    // it waited; an exploited one keeps its record, so it alerts once, not on every check.
     static func pruned(_ delivered: [String: String], report: ScanReport) -> [String: String] {
-        let ids = Set(report.findings.filter { $0.awaitingFix != true }.map(\.id))
+        let ids = Set(report.findings.filter { $0.awaitingFix != true || $0.exploited }.map(\.id))
         return delivered.filter { ids.contains($0.key) }
     }
 }

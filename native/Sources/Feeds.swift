@@ -169,17 +169,32 @@ enum Rules {
 }
 
 // Newest releases from Homebrew's public API, parsed into just what a check compares. Builds include
-// Homebrew's rebuild number (26.12.1_1); casks also say whether the app updates itself and where its site is.
+// Homebrew's rebuild number (26.12.1_1); casks also say whether the app updates itself, where its site is and
+// the names of the apps they install.
 struct HomebrewMetadata: Sendable {
     var latest: [String: String] = [:]
     var builds: [String: String] = [:]
     var casks: [String: CaskInfo] = [:]
+    var apps: [String: [String]] = [:]  // app bundle name, such as Discord.app → the casks that install it
     // Only the fields a check compares are decoded, which is faster and lighter than parsing every field of
     // these 20–30 MB lists.
     private struct Formula: Decodable { let name: String; let versions: Versions; let revision: Int?; struct Versions: Decodable { let stable: String? } }
-    private struct Cask: Decodable { let token: String; let version: String?; let auto_updates: Bool?; let homepage: String? }
+    private struct Cask: Decodable { let token: String; let version: String?; let auto_updates: Bool?; let homepage: String?; let artifacts: [Artifact]? }
+    // A cask's artifacts are a mixed list; only {"app": ["Discord.app", …]} entries are read, and only the plain names in them.
+    private struct Artifact: Decodable {
+        let app: [String]?
+        private enum Key: CodingKey { case app }
+        private struct Name: Decodable { let text: String?; init(from decoder: Decoder) throws { text = try? decoder.singleValueContainer().decode(String.self) } }
+        init(from decoder: Decoder) throws {
+            let container = try? decoder.container(keyedBy: Key.self)
+            let names = try? container?.decodeIfPresent([Name].self, forKey: .app)
+            app = names?.compactMap(\.text)
+        }
+    }
     static func load(_ kind: String) async throws -> HomebrewMetadata {
-        let data = try await Fetch.data("https://formulae.brew.sh/api/\(kind).json", limit: 150_000_000)
+        try parse(try await Fetch.data("https://formulae.brew.sh/api/\(kind).json", limit: 150_000_000), kind: kind)
+    }
+    static func parse(_ data: Data, kind: String) throws -> HomebrewMetadata {
         var metadata = HomebrewMetadata()
         do {
             if kind == "formula" {
@@ -193,10 +208,23 @@ struct HomebrewMetadata: Sendable {
                     guard let version = row.version else { continue }
                     metadata.latest[row.token] = version.components(separatedBy: ",")[0]
                     metadata.casks[row.token] = CaskInfo(autoUpdates: row.auto_updates ?? false, homepage: row.homepage)
+                    for app in Set((row.artifacts ?? []).flatMap { $0.app ?? [] }) { metadata.apps[app, default: []].append(row.token) }
                 }
             }
         } catch { throw MonitorError(message: "Homebrew \(kind) metadata was not in the expected format") }
         return metadata
+    }
+    // Apps Homebrew didn't install, matched to the cask that installs an app of the same name, so their newest release
+    // is known. A name more than one cask installs isn't matched, nor is a cask older than the installed app, which is
+    // most likely another app with the same name.
+    func matched(_ items: [Installation]) -> [Installation] {
+        items.compactMap { item in
+            guard let tokens = apps[(item.path as NSString).lastPathComponent], tokens.count == 1, !Catalog.excludedCasks.contains(tokens[0]),
+                  let target = latest[tokens[0]], target != "latest", !looseLess(target, item.version) else { return nil }
+            var matched = item
+            matched.package = tokens[0]
+            return matched
+        }
     }
 }
 
@@ -485,11 +513,14 @@ enum Scanner {
         var context = CommandContext.detect()
         let formulae = report.installations.filter { $0.manager == "brew" && $0.package != nil }
         let apps = report.installations.filter { ($0.manager == "cask" || $0.manager == "app") && $0.package != nil }
+        // Other apps are matched to a cask by name, unless their own Sparkle feed already says what's newest.
+        let unmatched = report.installations.filter { $0.manager == "app" && $0.package == nil && $0.feed == nil }
         var newestFormulae: [String: String] = [:], compared = 0, newer = 0
-        for (kind, items) in [("formula", formulae), ("cask", apps)] where !items.isEmpty {
+        for (kind, listed) in [("formula", formulae), ("cask", apps)] where !listed.isEmpty || (kind == "cask" && !unmatched.isEmpty) {
             show("Reading Homebrew's \(kind) list")
             do {
                 let metadata = try await HomebrewMetadata.load(kind)
+                let matched = kind == "cask" ? metadata.matched(unmatched) : [], items = listed + matched
                 let latest = metadata.latest, builds = metadata.builds
                 for token in Set(items.compactMap(\.package)) { if let info = metadata.casks[token] { context.casks[token] = info } }
                 if kind == "formula" { newestFormulae = latest }
@@ -512,6 +543,7 @@ enum Scanner {
                 compared += items.count - own.count
                 newer += candidates
                 record("homebrew-\(kind)", "Homebrew \(kind) metadata", "\(items.count - own.count) installations compared with Homebrew's current releases; \(candidates) newer."
+                       + (matched.isEmpty ? "" : " \(Alerts.list(matched.map(\.name))) \(matched.count == 1 ? "wasn't" : "weren't") installed with Homebrew, so \(matched.count == 1 ? "it was" : "they were") matched to the cask that installs an app of the same name.")
                        + (own.isEmpty ? "" : " \(own.map(\.name).joined(separator: ", ")) \(own.count == 1 ? "updates itself" : "update themselves") on a release channel Homebrew doesn't track, so \(own.count == 1 ? "it isn't" : "they aren't") compared."), url: "https://formulae.brew.sh/")
             } catch { failure("homebrew-\(kind)", "Homebrew \(kind) metadata", error) }
         }
@@ -528,7 +560,7 @@ enum Scanner {
         }
 
         markAwaiting(&report.findings, newest: newestFormulae, waiting: waiting)
-        markBundledAwaiting(&report.findings, currentApps: currentApps, fresh: freshApps, waiting: Set(waiting.keys))
+        markBundledAwaiting(&report.findings, currentApps: currentApps, fresh: freshApps)
         let skipped = dropSameReleaseUpdates(&report.findings)
         if skipped > 0 {
             record("same-release", "Update sanity check", "\(skipped) update\(skipped == 1 ? "" : "s") skipped because the newer version was the installed release written differently.", status: "checked")
@@ -622,12 +654,12 @@ enum Scanner {
     // A vulnerable Sparkle or Electron inside an app that is already at its newest release can't be fixed by updating;
     // only the app's developer can ship a newer one. Like an NVD finding with no fixed release, it waits in
     // "No fix released yet", and becomes an ordinary finding again, with an alert, once a newer release appears.
-    // One that was waiting keeps waiting until something shows a newer release, so an update feed that can't be
-    // read this time doesn't pass for a new release.
+    // Without a newer release it keeps waiting, so an update feed that can't be read this time doesn't pass for a new
+    // release; it says the app is current only when its feed or Homebrew says so.
     // A bundled framework is fixed only by a newer release of its app, so it needs attention only when such a release
     // has been out long enough for the app's own updater to have offered it (SparkleFeeds.settled). Otherwise it
     // waits: the app is current, its newer release is still reaching copies, or Shipshape can't see its releases.
-    static func markBundledAwaiting(_ findings: inout [Finding], currentApps: Set<String>, fresh: [String: SparkleFeeds.Release] = [:], waiting: Set<String> = []) {
+    static func markBundledAwaiting(_ findings: inout [Finding], currentApps: Set<String>, fresh: [String: SparkleFeeds.Release] = [:]) {
         // Apps with a newer release: from their feed or Homebrew, or a fixed release of the app itself. A feed that dates
         // its newer releases as too recent outranks Homebrew, which gives no dates.
         let newer = Set(findings.filter { $0.kind == .update || ($0.kind == .security && $0.awaitingFix != true && $0.fixed.first?.isNumber == true) }.map(\.installation.path))
@@ -641,7 +673,7 @@ enum Scanner {
                 let day = release.date.map { " on " + $0.formatted(.dateTime.month(.abbreviated).day()) } ?? ""
                 findings[index].action = "\(name) \(release.version ?? release.build) came out\(day), and it may bundle a newer \(framework). \(name) installs its own updates, usually within days. "
                     + "If it hasn't after a week, this moves to Needs attention. Only \(name)'s developer can update the \(framework) it bundles."
-            } else if currentApps.contains(app) || waiting.contains(finding.id) {
+            } else if currentApps.contains(app) {
                 findings[index].action = "You have the newest \(name), and it still bundles \(framework) \(item.version). Only its developer can update \(framework), so let them know. Shipshape alerts you when a newer \(name) is released."
             } else if framework == "Sparkle" {
                 findings[index].action = "Shipshape can't see whether a newer \(name) is out, because it couldn't find or read \(name)'s update feed. \(name) updates itself; "
