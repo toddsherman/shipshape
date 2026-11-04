@@ -2,6 +2,13 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.31 — November 3, 2026
+
+- **Hide a finding until something changes.** The eye button on a card hides a finding that doesn't apply to how you use the software, or that you've decided to live with, or every finding on a combined card. It leaves the counts, badge, tiles, menu bar and alerts, and is listed under **Hidden** at the end of the Security page, where it can be shown again. It comes back by itself when the installed version changes, a fix can be installed, CISA lists it as exploited, or it's reported as malware; new advisories alone don't bring it back. Requested in [#6](https://github.com/toddsherman/shipshape/issues/6).
+- **Project folders suggested from Claude Code and Codex.** The welcome screen and Settings suggest folders Claude Code and Codex have worked in that have lockfiles, read from the project paths in `~/.claude.json` and `~/.codex/config.toml`. Two or more projects in one folder are suggested as that folder; the home folder and anything above it never are. Nothing is added until you click.
+- **Browsers test tools download are checked.** Puppeteer's and Selenium's Chrome for Testing and Firefox builds (`~/.cache/puppeteer`, `~/.cache/selenium`) are checked against NVD like Playwright's, and each Cypress version's app in `~/Library/Caches/Cypress` as an app built on Electron. None of these tools records which project uses which build, so each card offers to delete the build and says to update the tool where you use it.
+- **Apple's Python waits on Apple.** The Python in Xcode and its Command Line Tools, which `/usr/bin/python3` runs, is 3.9, which stopped getting security fixes on October 31, 2025. It's now listed under Waiting for a fix, naming the oldest Python still supported, since only a new Xcode or Command Line Tools updates it. Its version is read from the framework, so nothing is run, and python.org's release cycle is downloaded to check it.
+
 ## 0.3.30 — November 3, 2026
 
 - **Newer releases of apps Homebrew didn't install.** Shipshape already downloads Homebrew's list of apps and their newest versions, but compared only apps Homebrew installed. An app without its own Sparkle feed is now matched to the one cask that installs an app of the same name, so apps such as Discord and Obsidian get an update when Homebrew lists a newer release. That also ends the wait on an Electron app's card, which now says to update the app. A cask older than the installed app is most likely a different app with the same name, so it isn't matched, and neither is a name two casks share.
