@@ -108,7 +108,8 @@ enum Ownership {
              "mise", "gem", "extension": return [parent]
         case "cargo-install", "go-install": return item.location.map { [$0.hasSuffix("/bin") ? $0 : ($0 as NSString).deletingLastPathComponent] } ?? []
         case "npx-cache", "playwright-npx": return item.location.map { [($0 as NSString).deletingLastPathComponent, $0] } ?? []
-        case "playwright-unused": return [parent, item.path]
+        case "playwright-unused", "puppeteer-cache", "selenium-cache": return [parent, item.path]
+        case "cypress-cache": return item.location.map { [($0 as NSString).deletingLastPathComponent, $0] } ?? []
         case "playwright-npm", "playwright-pnpm", "playwright-yarn", "playwright-bun": return item.location.map { [$0, $0 + "/node_modules", parent] } ?? []
         case "mcp": return item.location.map { [$0] } ?? []
         case let manager where projectManagers.contains(manager):
@@ -340,6 +341,14 @@ enum Commands {
         case "pip-req":
             let requirements = item.sourceFile
             return [file(requirements, "Change the pin to \(item.packageName ?? item.name)==\(fix ?? "a fixed release"), then reinstall the project's environment.")]
+        // Browser builds Puppeteer, Selenium Manager and Cypress downloaded (Inventory.testToolBrowsers): deleting one is safe,
+        // since a tool that needs it again downloads it, but updating the tool is what brings a fixed build.
+        case "puppeteer-cache", "selenium-cache":
+            let tool = item.manager == "puppeteer-cache" ? "Puppeteer" : "Selenium"
+            return batch(["rm -rf ", ""], Shell.quote(item.path), "Deletes this build. A \(tool) that still needs it downloads it again" + (tool == "Puppeteer" ? " (npx puppeteer browsers install)." : "."))
+        case "cypress-cache":
+            guard let folder = item.location else { return [] }
+            return batch(["rm -rf ", ""], Shell.quote(folder), "Deletes this Cypress version from the cache. A project that still uses it downloads it again with npx cypress install.")
         // Playwright's browser builds (see Playwright): delete one nothing uses, or update the Playwright that uses it.
         case "playwright-unused":
             guard let folder = safe((item.path as NSString).lastPathComponent, "^[a-z][a-z0-9_]*-[0-9]+$") else { return [] }

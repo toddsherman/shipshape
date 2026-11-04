@@ -16,6 +16,7 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     @Published var section = "Security"
     @Published var feedbackOpen = false
     @Published var filter: FindingCategory? = nil  // the Security page's selected tile; nil lists what needs attention
+    @Published var suggestions: [ProjectSuggestions.Suggestion] = []
     private var timer: Timer?
     private var pathMonitor: NWPathMonitor?
     private var launchCheckStarted = false
@@ -126,12 +127,25 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = true; panel.prompt = "Add"
         panel.message = "Choose folders that contain your projects. Lockfiles up to five levels deep are checked; nothing in them is run."
         guard panel.runModal() == .OK else { return }
-        state.projectFolders = Array(Set(projectFolders + panel.urls.map(\.path))).sorted()
-        save()
-        let warnings = panel.urls.compactMap { Ownership.folderWarning($0.path, access: .live) }
-        if !warnings.isEmpty { message = warnings.joined(separator: " ") }
+        addProjectFolders(panel.urls.map(\.path))
     }
-    func removeProjectFolder(_ path: String) { state.projectFolders = projectFolders.filter { $0 != path }; save() }
+    func removeProjectFolder(_ path: String) { state.projectFolders = projectFolders.filter { $0 != path }; save(); loadSuggestions() }
+    // Folders Claude Code and Codex have worked in (ProjectSuggestions). A scenario preview shows none, since they'd be this
+    // Mac's own folders.
+    func loadSuggestions() {
+        guard !Monitor.checksOff else { return }
+        let existing = projectFolders
+        Task {
+            suggestions = await Task.detached(priority: .utility) { ProjectSuggestions.suggest(ProjectSuggestions.known(), existing: existing) }.value
+        }
+    }
+    func addProjectFolders(_ paths: [String]) {
+        state.projectFolders = Array(Set(projectFolders + paths)).sorted()
+        save()
+        let warnings = paths.compactMap { Ownership.folderWarning($0, access: .live) }
+        if !warnings.isEmpty { message = warnings.joined(separator: " ") }
+        loadSuggestions()
+    }
     func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
     // Every launch, including at login, starts a fresh check once the network is up. After 30 seconds it
     // checks anyway; sources that can't be reached are reported as usual and earlier findings are kept.
@@ -197,9 +211,10 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         let previous = state.report, folders = projectFolders
         let wasAwaiting = Set(previous?.awaiting.map(\.id) ?? [])
         task = Task {
-            let result = await Task.detached(priority: .utility) {
+            var result = await Task.detached(priority: .utility) {
                 await Scanner.run(previous: previous, projectFolders: folders) { live in Task { @MainActor in if self.scanning { self.progress = live } } }
             }.value
+            state.hidden = Hiding.apply(state.hidden ?? [:], to: &result)
             state.report = result
             var history = state.history ?? []
             History.update(&history, with: result, projectFolders: folders, at: result.date)
@@ -209,6 +224,23 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
             await notifyChanges(wasAwaiting: wasAwaiting)
             save()
         }
+    }
+    // Hides findings until something changes (see Hiding), or shows them again.
+    func hide(_ findings: [Finding]) {
+        var hidden = state.hidden ?? [:]
+        for finding in findings { hidden[finding.id] = Hiding.signature(finding) }
+        setHidden(hidden)
+    }
+    func unhide(_ findings: [Finding]) {
+        var hidden = state.hidden ?? [:]
+        for finding in findings { hidden[finding.id] = nil }
+        setHidden(hidden)
+    }
+    private func setHidden(_ hidden: [String: String]) {
+        guard var report = state.report else { return }
+        state.hidden = Hiding.apply(hidden, to: &report)
+        state.report = report
+        save()
     }
     // Findings that were waiting for a fix and now have one, or whose app has a new release, get their own alert (see Alerts).
     // Returns whether the record of delivered alerts changed and needs saving.
@@ -431,6 +463,7 @@ struct Dashboard: View {
     @Environment(\.openWindow) private var openWindow
     @State private var query = ""
     @State private var domain = "all"
+    @State private var showHidden = false
     let sections = [("Security", "exclamationmark.shield"), ("History", "clock.arrow.circlepath"), ("Inventory", "desktopcomputer"), ("Coverage", "checklist"), ("Settings", "gearshape")]
     let domains = [("all", "All"), ("projects", "Projects"), ("packages", "Packages"), ("mcp", "MCP"), ("tools", "Runtimes"), ("brew", "Homebrew"), ("apps", "Apps"), ("signatures", "Signatures")]
     var body: some View {
@@ -504,6 +537,7 @@ struct Dashboard: View {
                 Button("Enable notifications") { monitor.enableNotifications() }.disabled(monitor.notificationStatus == "Enabled")
             }
             if !monitor.projectFolders.isEmpty { Text("Projects: " + monitor.projectFolders.map { Inventory.display($0) }.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
+            SuggestedFolders()
             Spacer()
         }.padding(32).frame(maxWidth: 680, alignment: .leading).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -511,7 +545,8 @@ struct Dashboard: View {
         switch monitor.section {
         case "Security":
             let filter = monitor.filter
-            let findings = filter.map { category in (monitor.report?.findings ?? []).filter { FindingCategory(of: $0) == category } } ?? monitor.attention
+            let findings = filter.map { category in (monitor.report?.shown ?? []).filter { FindingCategory(of: $0) == category } } ?? monitor.attention
+            let hidden = (monitor.report?.findings ?? []).filter { $0.hidden == true && (filter == nil || FindingCategory(of: $0) == filter) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
@@ -535,6 +570,16 @@ struct Dashboard: View {
                         if !dependencies.isEmpty {
                             Text("Project dependencies · \(dependencies.count) in \(Set(dependencies.compactMap(\.installation.location)).count) folders").font(.headline).padding(.top, 10)
                             FindingList(findings: dependencies)
+                        }
+                        // Hidden findings, folded away; each card can show its finding again.
+                        if !hidden.isEmpty {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text("Hidden · \(hidden.count)").font(.headline)
+                                Button(showHidden ? "Fold away" : "Show") { withAnimation { showHidden.toggle() } }.buttonStyle(.link)
+                            }.padding(.top, 10)
+                            Text("Out of the counts and alerts until something changes: the installed version, whether a fix can be installed, known exploitation or a malware report.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            if showHidden { FindingList(findings: hidden) }
                         }
                     }.padding(.horizontal, 28).padding(.bottom, 24)
                 }
@@ -598,6 +643,7 @@ struct Dashboard: View {
                         }
                     }
                     Button("Add project folders…") { monitor.addProjectFolders() }
+                    SuggestedFolders().padding(.top, 6)
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 10) {
@@ -1034,11 +1080,49 @@ struct FindingEvidence: View {
                 if !finding.advisories.isEmpty { advisories }
             }
             Spacer()
+            HideButton(findings: [finding])
             Button { reporting = true } label: { Image(systemName: "ladybug") }.buttonStyle(.borderless).font(.callout).foregroundStyle(Color.accentColor)
                 .help("Report a problem: opens a GitHub issue about this finding, filled in for you to check and submit.").accessibilityLabel("Report a problem")
         }.sheet(isPresented: $reporting) { ReportSheet(findings: [finding]).environmentObject(monitor) }
     }
     func flash() { copied = true; DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false } }
+}
+// Folders Claude Code and Codex have worked in that hold lockfiles, to add as project folders with a click.
+struct SuggestedFolders: View {
+    @EnvironmentObject var monitor: Monitor
+    var body: some View {
+        let shown = Array(monitor.suggestions.prefix(8))
+        VStack(alignment: .leading, spacing: 6) {
+            if !shown.isEmpty {
+                Text("Suggested from Claude Code and Codex").font(.subheadline.weight(.semibold))
+                Text("Folders they've worked in that have lockfiles, read from ~/.claude.json and ~/.codex/config.toml. Nothing is added until you click.").font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(shown) { suggestion in
+                    HStack {
+                        Image(systemName: "folder.badge.plus").foregroundStyle(.secondary)
+                        Text(Inventory.display(suggestion.path)).textSelection(.enabled)
+                        if suggestion.projects > 1 { Text("\(suggestion.projects) projects").font(.caption).foregroundStyle(.secondary) }
+                        Spacer()
+                        Button("Add") { monitor.addProjectFolders([suggestion.path]) }.buttonStyle(.link)
+                    }
+                }
+                if shown.count > 1 { Button("Add all \(shown.count)") { monitor.addProjectFolders(shown.map(\.path)) } }
+            }
+        }.onAppear { monitor.loadSuggestions() }
+    }
+}
+// Hides a card's findings until something changes, or shows hidden ones again.
+struct HideButton: View {
+    @EnvironmentObject var monitor: Monitor
+    let findings: [Finding]
+    var body: some View {
+        let hidden = findings.allSatisfy { $0.hidden == true }, them = findings.count == 1 ? "this finding" : "these \(findings.count) findings"
+        Button { hidden ? monitor.unhide(findings) : monitor.hide(findings) } label: { Image(systemName: hidden ? "eye" : "eye.slash") }
+            .buttonStyle(.borderless).font(.callout).foregroundStyle(Color.accentColor)
+            .help(hidden ? "Show again: puts \(them) back in the counts and alerts."
+                  : "Hide until something changes: takes \(them) out of the counts, badge and alerts until the installed version, whether a fix can be installed, known exploitation or a malware report changes.")
+            .accessibilityLabel(hidden ? "Show again" : "Hide until something changes")
+    }
 }
 // Shows a location in a Finder window. A folder opens in its own window; a file, or a bundle such as an app, is
 // selected in a window of its folder, so nothing is opened or launched. Finder won't open a window at a folder
@@ -1233,6 +1317,7 @@ struct FindingGroupCard: View {
                 Text("\(findings.count) \(findings[0].kind == .update ? "updates" : "findings")" + (group.command == nil ? "" : ", one command")).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Text(badge.0).font(.caption2.weight(.bold)).foregroundStyle(badge.1)
+                HideButton(findings: findings)
                 // Reports the whole card, such as its shared command failing; each finding below keeps its own button.
                 Button { reporting = true } label: { Image(systemName: "ladybug") }.buttonStyle(.borderless).font(.callout).foregroundStyle(Color.accentColor)
                     .help("Report a problem: opens a GitHub issue about these \(findings.count) findings, filled in for you to check and submit.").accessibilityLabel("Report a problem with all of them")

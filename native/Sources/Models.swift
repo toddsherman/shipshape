@@ -210,6 +210,7 @@ struct Finding: Codable, Identifiable {
     var awaitingFix: Bool? = nil      // newest release installed and no fixed release yet: nothing to install
     var blocked: String? = nil        // why this account can't make the change; its commands are left out (see Ownership)
     var heldBack: HeldBack? = nil     // a fixed version exists but the tool that needs this package rules it out
+    var hidden: Bool? = nil           // hidden by the user until something changes (see Hiding)
     // When each advisory was first published, by ID, and the IDs that name an issue already listed (a CVE beside its
     // GHSA), with the ID that has the date. CISA's date is when it listed a matching CVE as exploited. They're shown
     // only, never part of the fingerprint, so a changed date never alerts again.
@@ -345,7 +346,7 @@ enum FindingCategory: Int, CaseIterable, Identifiable, Comparable {
     // Everything to act on now; waiting findings and plain updates are left out.
     var needsAttention: Bool { self < .waiting }
     static func counts(in report: ScanReport) -> [FindingCategory: Int] {
-        report.findings.reduce(into: [:]) { $0[FindingCategory(of: $1), default: 0] += 1 }
+        report.shown.reduce(into: [:]) { $0[FindingCategory(of: $1), default: 0] += 1 }
     }
     // The Security summary's status, set by the most urgent kind of finding rather than by how much of the inventory is
     // clean: one malicious package among hundreds of clean items is still the most urgent thing Shipshape can find.
@@ -376,7 +377,7 @@ enum FindingCategory: Int, CaseIterable, Identifiable, Comparable {
     static func items(in report: ScanReport) -> [FindingCategory: Int] {
         func rank(_ category: FindingCategory) -> Int { category == .waiting ? Int.max : category.rawValue }
         var worst: [String: FindingCategory] = [:]
-        for finding in report.findings {
+        for finding in report.shown {
             let category = FindingCategory(of: finding), current = worst[finding.installation.id] ?? category
             worst[finding.installation.id] = rank(category) < rank(current) ? category : current
         }
@@ -421,7 +422,9 @@ struct ScanReport: Codable {
     var awaiting: [Finding] { findings.filter { $0.kind != .update && $0.awaitingFix == true } }
     var updates: [Finding] { findings.filter { $0.kind == .update } }
     // What the Security page lists first: everything to act on now, including known exploitation with no fix yet.
-    var attention: [Finding] { findings.filter { FindingCategory(of: $0).needsAttention } }
+    var attention: [Finding] { shown.filter { FindingCategory(of: $0).needsAttention } }
+    // Findings not hidden by the user, which the counts, badge, tiles and alerts go by.
+    var shown: [Finding] { findings.filter { $0.hidden != true } }
 
     // Failed discovery or advisory requests cannot erase previously confirmed evidence. Findings from a
     // source this version no longer runs are dropped rather than kept as permanently unverified.
@@ -449,6 +452,27 @@ struct SavedState: Codable {
     var lastScheduledDay: String? = nil
     var projectFolders: [String]? = nil
     var history: [HistoryEntry]? = nil
+    var hidden: [String: String]? = nil  // finding ID → Hiding.signature when the user hid it
+}
+// Findings the user hid until something changes, for advisories that don't apply to how they use the software or that
+// they've decided to live with. A hidden finding stays in the report, listed apart, and leaves the counts, badge, tiles
+// and alerts. It comes back by itself when what it was hidden as changes: the installed version, the kind of finding,
+// whether a fix can be installed, known exploitation or a malware report. New advisories alone don't bring it back, so
+// a Chromium that NVD adds CVEs to every week stays hidden.
+enum Hiding {
+    static func signature(_ finding: Finding) -> String {
+        [finding.installation.version, finding.kind.rawValue, String(finding.awaitingFix == true), String(finding.exploited), String(finding.malicious == true)].joined(separator: "|")
+    }
+    // Marks the report's hidden findings, and returns the hidings still in force: those whose finding is listed unchanged.
+    static func apply(_ hidden: [String: String], to report: inout ScanReport) -> [String: String] {
+        var kept: [String: String] = [:]
+        for index in report.findings.indices {
+            let finding = report.findings[index], still = hidden[finding.id] == signature(finding)
+            report.findings[index].hidden = still ? true : nil
+            if still { kept[finding.id] = hidden[finding.id] }
+        }
+        return kept
+    }
 }
 // What the alert about new or changed findings says. `released` holds the findings that were waiting for a fix.
 // A bundled Sparkle or Electron that stops waiting isn't known to be fixed: its app has a new release, which may or may
@@ -463,7 +487,7 @@ enum Alerts {
     // The findings to alert about now: new or changed ones with something to install, and waiting ones newly exploited.
     static func due(_ report: ScanReport, delivered: [String: String]) -> [Finding] {
         report.findings.filter { finding in
-            guard !finding.stale, finding.kind != .update, finding.awaitingFix != true || finding.exploited else { return false }
+            guard !finding.stale, finding.hidden != true, finding.kind != .update, finding.awaitingFix != true || finding.exploited else { return false }
             return delivered[finding.id] != signature(finding)
         }
     }

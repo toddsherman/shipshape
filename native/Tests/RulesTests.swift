@@ -1271,6 +1271,67 @@ import Foundation
                && placeholderFindings[0].reason.hasPrefix("This is npm's empty placeholder for fs, 0.0.1-security") && Commands.commands(for: placeholderFindings[0]).first?.text.hasSuffix("npm uninstall fs") == true
                && placeholderFindings[1].malicious == true && ScanReport(findings: [placeholderFindings[0]]).attention.isEmpty,
                "npm's placeholder is an update to remove it, with the uninstall command; other versions of the name are still malware")
+
+        // Hiding until something changes: out of the counts and alerts, back when the version, fix, exploitation or malware changes.
+        var hideReport = ScanReport(findings: [chatOld, leftPad])
+        let hiddenNow = Hiding.apply([chatOld.id: Hiding.signature(chatOld)], to: &hideReport)
+        expect(hiddenNow.count == 1 && hideReport.findings[0].hidden == true && hideReport.attention.map(\.id) == [leftPad.id] && FindingCategory.counts(in: hideReport)[.security] == 1
+               && Alerts.due(hideReport, delivered: [:]).map(\.id) == [leftPad.id] && hideReport.findings.count == 2,
+               "a hidden finding stays in the report but leaves attention, the counts and alerts")
+        var moreCVEs = chatOld; moreCVEs.advisories.append("CVE-2026-55555"); moreCVEs.severity = "LOW"
+        var nowExploited = chatOld; nowExploited.exploited = true
+        var nowWaiting = chatOld; nowWaiting.awaitingFix = true
+        func stillHidden(_ finding: Finding) -> Bool { var report = ScanReport(findings: [finding]); return !Hiding.apply(hiddenNow, to: &report).isEmpty && report.findings[0].hidden == true }
+        expect(stillHidden(moreCVEs) && !stillHidden(nowExploited) && !stillHidden(nowWaiting) && !stillHidden(Finding(source: chatOld.source, installation: electronItem("44.9.3"), kind: .security, fixed: "44.10.2", reason: "", action: "", links: [])),
+               "new advisories keep it hidden; exploitation, a change in whether a fix can be installed, or another version brings it back")
+        var withoutChat = ScanReport(findings: [leftPad])
+        expect(Hiding.apply(hiddenNow, to: &withoutChat).isEmpty, "a hiding is forgotten once its finding is gone")
+
+        // Project folders suggested from Claude Code and Codex: projects with lockfiles, grouped by folder, never the home folder or above it.
+        let suggestHome = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-suggest-\(UUID().uuidString)").path
+        try FileManager.default.createDirectory(atPath: suggestHome + "/.codex", withIntermediateDirectories: true)
+        try Data(#"{"projects": {"/Users/me/Code/shop": {}, "/Users/me/Code/api": {}}, "mcpServers": {}}"#.utf8).write(to: URL(fileURLWithPath: suggestHome + "/.claude.json"))
+        try Data("model = \"x\"\n[projects.\"/Users/me\"]\ntrust_level = \"trusted\"\n[projects.\"/Users/me/Desktop/demo\"]\n[projects.\"/Volumes/Work/site\"]\n".utf8).write(to: URL(fileURLWithPath: suggestHome + "/.codex/config.toml"))
+        let knownProjects = ProjectSuggestions.known(home: suggestHome)
+        try? FileManager.default.removeItem(atPath: suggestHome)
+        expect(Set(knownProjects) == ["/Users/me/Code/shop", "/Users/me/Code/api", "/Users/me", "/Users/me/Desktop/demo", "/Volumes/Work/site"], "Claude Code's and Codex's project paths are read, and nothing else")
+        let withLockfiles: Set<String> = ["/Users/me/Code/shop", "/Users/me/Code/api", "/Users/me/Desktop/demo", "/Users/me", "/Users/me/.claude/worktrees/x", "/Volumes/Work/site"]
+        let suggested = ProjectSuggestions.suggest(knownProjects + ["/Users/me/.claude/worktrees/x", "/Users/me/Code/notes"], existing: [], home: "/Users/me", isProject: withLockfiles.contains)
+        expect(suggested.map { "\($0.path) \($0.projects)" } == ["/Users/me/Code 2", "/Users/me/Desktop/demo 1", "/Volumes/Work/site 1"]
+               && ProjectSuggestions.suggest(knownProjects, existing: ["/Users/me/Code"], home: "/Users/me", isProject: withLockfiles.contains).map(\.path) == ["/Users/me/Desktop/demo", "/Volumes/Work/site"],
+               "two projects in one folder suggest the folder; one alone suggests itself; the home folder, hidden folders, projects without lockfiles and covered ones are left out")
+
+        // Browser builds test tools download, and Apple's Python.
+        let toolHome = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-testtools-\(UUID().uuidString)").path
+        for folder in [".cache/puppeteer/chrome/mac_arm-131.0.6778.204", ".cache/puppeteer/chrome-headless-shell/mac_arm-131.0.6778.204", ".cache/puppeteer/firefox/mac-stable_133.0.3",
+                       ".cache/puppeteer/chromedriver/mac_arm-131.0.6778.204", ".cache/selenium/chrome/mac-arm64/130.0.6723.91", ".cache/selenium/chromedriver/mac-arm64/130.0.6723.91",
+                       "Library/Caches/Cypress/13.6.0/Cypress.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources"] {
+            try FileManager.default.createDirectory(atPath: toolHome + "/" + folder, withIntermediateDirectories: true)
+        }
+        try PropertyListSerialization.data(fromPropertyList: ["CFBundleVersion": "37.6.0"], format: .xml, options: 0)
+            .write(to: URL(fileURLWithPath: toolHome + "/Library/Caches/Cypress/13.6.0/Cypress.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/Info.plist"))
+        let developerTools = toolHome + "/CommandLineTools", pythonResources = developerTools + "/Library/Frameworks/Python3.framework/Versions/3.9/Resources"
+        try FileManager.default.createDirectory(atPath: pythonResources, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: developerTools + "/Library/Frameworks/Python3.framework/Versions/Current", withDestinationPath: "3.9")
+        try PropertyListSerialization.data(fromPropertyList: ["CFBundleShortVersionString": "3.9.6"], format: .xml, options: 0).write(to: URL(fileURLWithPath: pythonResources + "/Info.plist"))
+        let toolBuilds = Inventory.testToolBrowsers(home: toolHome), applePython = Inventory.applePythons(developerFolders: [developerTools])
+        try? FileManager.default.removeItem(atPath: toolHome)
+        expect(toolBuilds.map { "\($0.name) \($0.version) \($0.product) \($0.manager!)" }
+               == ["Chrome for Testing (Puppeteer) 131.0.6778.204 puppeteer-chrome puppeteer-cache", "Chrome headless shell (Puppeteer) 131.0.6778.204 puppeteer-chrome puppeteer-cache",
+                   "Firefox (Puppeteer) 133.0.3 puppeteer-firefox puppeteer-cache", "Chrome for Testing (Selenium) 130.0.6723.91 selenium-chrome selenium-cache", "Cypress 13.6.0 37.6.0 electron cypress-cache"],
+               "Puppeteer's and Selenium's Chrome and Firefox builds are read by version, drivers are skipped, and a cached Cypress app is read by its Electron")
+        let puppeteerBuild = Finding(source: "nvd:puppeteer-chrome", installation: toolBuilds[0], kind: .security, fixed: "156.0.8078.73", reason: "", action: "", links: [])
+        let cypressApp = toolBuilds[4], cypressFinding = Electron.finding(cypressApp, releases: electronReleases, hits: chromeHits)
+        expect(Commands.commands(for: puppeteerBuild).first?.text == "rm -rf " + Shell.quote(toolBuilds[0].path) && Commands.commands(for: cypressFinding!).first?.text == "rm -rf " + Shell.quote(cypressApp.location!)
+               && cypressFinding?.fixed == "Newer Cypress" && cypressFinding?.reason.hasPrefix("Cypress 13.6.0 is built on Electron 37.6.0") == true && cypressFinding?.action.hasPrefix("Update Cypress in the projects that use it") == true,
+               "a cached build is deleted with rm -rf; a Cypress app's card says to update Cypress")
+        let cycle: [String: Any] = ["3.9": ["status": "end-of-life", "end_of_life": "2025-10-31"], "3.10": ["status": "end-of-life"], "3.11": ["status": "security"], "3.14": ["status": "bugfix"], "3.15": ["status": "prerelease"]]
+        let appleEOL = applePython.first.flatMap { Rules.applePython($0, cycle: cycle) }
+        expect(applePython.map { "\($0.name) \($0.version) \($0.path.hasSuffix("/CommandLineTools/usr/bin/python3"))" } == ["Python (Command Line Tools) 3.9.6 true"]
+               && appleEOL?.kind == .unsupported && appleEOL?.awaitingFix == true && appleEOL?.fixed == "Python 3.11 or later, not from Apple yet"
+               && appleEOL?.reason.hasPrefix("Python 3.9 stopped getting security fixes on Oct 31, 2025.") == true && ScanReport(findings: [appleEOL!]).attention.isEmpty
+               && Rules.applePython(Installation(product: "apple-python", name: "Python (Xcode)", version: "3.14.1", path: "/x", domain: "tools"), cycle: cycle) == nil,
+               "Apple's Python past its end of support waits on Apple, naming the oldest supported branch; a supported one has no finding")
         let pruned = Alerts.pruned([waitingSparkle.id: "before it waited", leftPad.id: "delivered", "gone": "removed"], report: ScanReport(findings: [waitingSparkle, leftPad]))
         expect(pruned == [leftPad.id: "delivered"], "a waiting finding forgets its earlier alert, so a new release alerts again")
 

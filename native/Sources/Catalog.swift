@@ -70,6 +70,12 @@ enum Catalog {
         // The Chromium inside apps built on Electron, found by Inventory.apps. NVD is asked about the Chromium version of
         // each app's Electron release, and only the app's next release updates it (see Electron).
         Product(id: "electron", name: "Chromium in Electron apps", cpe: "google:chrome"),
+        // Browser builds Puppeteer and Selenium Manager download, found by Inventory.testToolBrowsers. Cypress's apps are
+        // Electron, checked as "electron".
+        Product(id: "puppeteer-chrome", name: "Chrome for Testing (Puppeteer)", cpe: "google:chrome"),
+        Product(id: "puppeteer-firefox", name: "Firefox (Puppeteer)", cpe: "mozilla:firefox"),
+        Product(id: "selenium-chrome", name: "Chrome for Testing (Selenium)", cpe: "google:chrome"),
+        Product(id: "selenium-firefox", name: "Firefox (Selenium)", cpe: "mozilla:firefox"),
         Product(id: "brave", name: "Brave", bundleIDs: ["com.brave.Browser"], casks: ["brave-browser"], cpe: "brave:brave", download: "https://brave.com/download/"),
         Product(id: "edge", name: "Microsoft Edge", bundleIDs: ["com.microsoft.edgemac"], casks: ["microsoft-edge"], cpe: "microsoft:edge_chromium", download: "https://www.microsoft.com/edge/download"),
         Product(id: "iterm2", name: "iTerm2", bundleIDs: ["com.googlecode.iterm2"], casks: ["iterm2"], cpe: "iterm2:iterm2", download: "https://iterm2.com/downloads.html"),

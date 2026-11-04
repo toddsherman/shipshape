@@ -69,6 +69,19 @@ final class LimitedReceiver: NSObject, URLSessionDataDelegate {
 }
 
 enum Rules {
+    // Apple's Python past its branch's end of support, from python.org's release cycle. Only Apple can update it, with a new
+    // Xcode or Command Line Tools, so it waits; the fix named is the oldest branch python.org still supports.
+    static func applePython(_ item: Installation, cycle: [String: Any]) -> Finding? {
+        let branch = NVD.branch(item.version)
+        guard let entry = cycle[branch] as? [String: Any], entry["status"] as? String == "end-of-life" else { return nil }
+        let supported = cycle.filter { ["bugfix", "security"].contains(($0.value as? [String: Any])?["status"] as? String ?? "") }.keys.min(by: looseLess)
+        let ended = advisoryDate(entry["end_of_life"] as? String).map { " on " + $0.formatted(date: .abbreviated, time: .omitted) } ?? ""
+        let owner = item.name.contains("Xcode") ? "Xcode" : "the Command Line Tools"
+        return Finding(source: "python-eol", installation: item, kind: .unsupported, fixed: supported.map { "Python \($0) or later, not from Apple yet" } ?? "Not from Apple yet",
+                       reason: "Python \(branch) stopped getting security fixes\(ended). This is Apple's copy in \(owner), which /usr/bin/python3 runs when no other python3 comes first on your PATH.",
+                       action: "Only Apple can update it, with a new \(owner == "Xcode" ? "Xcode" : "release of the Command Line Tools"). For your own work, use a supported Python, such as one from Homebrew, python.org or uv, ahead of /usr/bin on your PATH.",
+                       links: ["https://devguide.python.org/versions/"], awaitingFix: true)
+    }
     static func node(_ item: Installation, releases: [[String: Any]], schedule: [String: Any], now: Date = Date()) throws -> Finding? {
         guard let installed = Version(item.version) else { throw MonitorError(message: "Unrecognized Node version") }
         let branch = releases.filter { row in (row["version"] as? String).flatMap(Version.init)?.major == installed.major }
@@ -365,11 +378,23 @@ enum Scanner {
                    + (unpublished.isEmpty ? "" : " No vulnerabilities are published yet for OpenSSL \(unpublished.joined(separator: ", ")); OpenSSL's index doesn't list \(unpublished.count == 1 ? "that branch" : "those branches")."),
                    url: "https://openssl-library.org/news/vulnerabilities/")
         } catch { failure("openssl", "OpenSSL security", error) }
+        // Apple's Python is updated only with Xcode, so one past its end of support waits on Apple.
+        do {
+            let installed = items("apple-python")
+            if !installed.isEmpty {
+                vendors.append("Python")
+                show("Reading Python's release cycle")
+                guard let cycle = try await Fetch.json("https://peps.python.org/api/release-cycle.json") as? [String: Any] else { throw MonitorError(message: "Python's release cycle couldn't be read") }
+                for item in installed { if let finding = Rules.applePython(item, cycle: cycle) { report.findings.append(finding) } }
+            }
+            record("python-eol", "Apple's Python", installed.isEmpty ? "No Python from Xcode or the Command Line Tools." : "\(installed.count) cop\(installed.count == 1 ? "y" : "ies") of Apple's Python in Xcode and its Command Line Tools checked against python.org's release cycle. Other Pythons aren't checked for end of support.",
+                   url: "https://devguide.python.org/versions/")
+        } catch { failure("python-eol", "Apple's Python", error) }
         // Electron's release list says which Chromium each app's Electron has, for NVD below, and which Electron versions
         // still get fixes.
         var electron: Electron.Releases? = nil
         do {
-            let installed = report.installations.filter { $0.manager == "electron-framework" }
+            let installed = report.installations.filter { $0.product == "electron" }
             if !installed.isEmpty {
                 vendors.append("Electron")
                 show("Reading Electron's releases")
@@ -453,7 +478,7 @@ enum Scanner {
         // allows about five requests per 30 seconds, so requests are spaced and results reused for 20 hours.
         var cache = (previous?.nvdCache ?? [:]).filter { Date().timeIntervalSince($0.value.date) < 20 * 3600 }
         // An Electron app is looked up by its Electron release's Chromium, so one whose release isn't known is left out.
-        func nvdVersion(_ item: Installation) -> String? { item.manager == "electron-framework" ? electron?.all[item.version]?.chromium : item.version }
+        func nvdVersion(_ item: Installation) -> String? { item.product == "electron" ? electron?.all[item.version]?.chromium : item.version }
         let nvdItems = report.installations.filter { item in
             guard let product = Catalog.byID[item.product], product.cpe != nil, nvdVersion(item) != nil else { return false }
             return !Catalog.vendorRules.contains(product.id) && item.manager != "brew-old" && item.manager != "uv-python-old" && item.manager != "playwright-unused"
@@ -466,7 +491,7 @@ enum Scanner {
         for (index, item) in nvdItems.enumerated() {
             let product = Catalog.byID[item.product]!, key = nvdKey(item), version = nvdVersion(item)!
             let requests = Set(nvdItems[index...].map(nvdKey)).filter { cache[$0] == nil }.count
-            let label = item.bundledApp.map { "Chromium \(version) in \($0)" } ?? "\(product.name) \(version)"
+            let label = item.product == "electron" ? "Chromium \(version) in \(item.bundledApp ?? item.name)" : "\(product.name) \(version)"
             show("Checking NVD (\(index + 1) of \(nvdItems.count)): \(label)", why: CheckProgress.nvdNote(requests: requests))
             do {
                 var hits = cache[key]?.hits
@@ -479,7 +504,7 @@ enum Scanner {
                         hits = cache[key]!.hits
                     } else { cache[key] = NVDCacheEntry(date: Date(), hits: hits!) }
                 } else { saved += 1 }
-                let finding = item.manager == "electron-framework" ? electron.flatMap { Electron.finding(item, releases: $0, hits: hits!) } : NVD.finding(item, product: product, hits: hits!)
+                let finding = item.product == "electron" ? electron.flatMap { Electron.finding(item, releases: $0, hits: hits!) } : NVD.finding(item, product: product, hits: hits!)
                 if let finding { report.findings.append(finding) }
                 nvdResults[product.id, default: (0, [])].checked += 1
             } catch { nvdResults[product.id, default: (0, [])].problems.append("\(item.version): \(error.localizedDescription)") }
@@ -490,6 +515,10 @@ enum Scanner {
                    url: "https://nvd.nist.gov/products/cpe/search", status: result.problems.isEmpty ? "checked" : "failed")
         }
         Electron.combine(&report.findings)
+        // A browser build Puppeteer or Selenium Manager downloaded is replaced by updating the tool, or deleted.
+        for index in report.findings.indices where ["nvd:puppeteer-", "nvd:selenium-"].contains(where: report.findings[index].source.hasPrefix) {
+            report.findings[index].action = testBrowserAction(puppeteer: report.findings[index].source.hasPrefix("nvd:puppeteer-"))
+        }
         let backported = Set(nvdItems.flatMap { cache[nvdKey($0)]?.backported ?? [] }).sorted()
         if !backported.isEmpty {
             record("nvd-backports", "Fixes already in older branches", "NVD lists \(backported.count == 1 ? "1 advisory" : "\(backported.count) advisories") against an installed release that already has the fix, going by the affected releases OSV works out from the fix commits, so \(backported.count == 1 ? "it isn't a finding" : "they aren't findings"): \(backported.joined(separator: ", ")).", url: "https://osv.dev/list", status: "checked")
@@ -625,6 +654,10 @@ enum Scanner {
         report.findings.sort(by: mostUrgentFirst)
         report.date = Date()
         return report
+    }
+    static func testBrowserAction(puppeteer: Bool) -> String {
+        puppeteer ? "Puppeteer never updates this build. Update Puppeteer in the projects that use it, and its next install downloads a newer browser; then delete this one. Shipshape can't tell which projects use it."
+            : "Selenium Manager downloaded this build when a test asked for a browser that wasn't installed, and keeps it. Delete it; Selenium downloads a current build when it needs one."
     }
     // The order findings are listed in: malware, known exploitation, then fixes before updates, installed software
     // before project dependencies, higher severity first, then by name.

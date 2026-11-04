@@ -90,7 +90,8 @@ enum Inventory {
         let (tools, toolErrors) = runtimes(existing: report.installations)
         add(tools)
         add(mise())
-        check("inventory-tools", "Runtimes and AI coding tools", "tools", toolErrors, "Node (standard, nvm, Volta, fnm), Bun, Deno, uv, Go, python.org, uv and pyenv Pythons, runtimes installed with mise, and native installs of Claude Code, OpenCode and Copilot CLI.")
+        add(applePythons())
+        check("inventory-tools", "Runtimes and AI coding tools", "tools", toolErrors, "Node (standard, nvm, Volta, fnm), Bun, Deno, uv, Go, python.org, uv and pyenv Pythons, Apple's Python in Xcode and its Command Line Tools, runtimes installed with mise, and native installs of Claude Code, OpenCode and Copilot CLI.")
         progress("Reading global packages")
         let (packages, packageErrors) = globalPackages()
         add(packages)
@@ -121,6 +122,11 @@ enum Inventory {
         if browsers.isEmpty { detail = "No browsers downloaded by Playwright in ~/Library/Caches/ms-playwright." }
         if !browserErrors.isEmpty { detail = browserErrors.prefix(8).joined(separator: "; ") }
         report.checks.append(SourceCheck(id: "inventory-playwright", name: "Playwright's browsers", status: browserErrors.isEmpty ? "checked" : "partial", detail: detail))
+        let testBrowsers = testToolBrowsers()
+        add(testBrowsers)
+        report.checks.append(SourceCheck(id: "inventory-test-browsers", name: "Browsers Puppeteer, Selenium and Cypress downloaded", status: "checked",
+                                         detail: testBrowsers.isEmpty ? "None in ~/.cache/puppeteer, ~/.cache/selenium or ~/Library/Caches/Cypress."
+                                             : "Read \(CheckProgress.count(testBrowsers.count, "browser build")) from ~/.cache/puppeteer, ~/.cache/selenium and ~/Library/Caches/Cypress. Which projects use each one can't be told, so each is checked."))
         report.domains["apple"] = true
         report.installations.sort { ($0.domain, $0.name.lowercased(), $0.path) < ($1.domain, $1.name.lowercased(), $1.path) }
         return report
@@ -629,5 +635,102 @@ enum Inventory {
             items.append(item)
         }
         return (items, errors)
+    }
+}
+
+// Folders to suggest as project folders: those Claude Code (~/.claude.json) and Codex (~/.codex/config.toml) have worked
+// in, read for their paths only. A folder with no lockfile within two levels is left out, as are the home folder, the
+// folders above it, hidden and Library folders, and anything already covered. Two or more projects in one folder are
+// suggested as that folder, unless it's that broad itself. Nothing is added until the user clicks.
+enum ProjectSuggestions {
+    struct Suggestion: Hashable, Identifiable { let path: String; let projects: Int; var id: String { path } }
+    static func known(home: String = Inventory.home) -> [String] {
+        var paths = (Inventory.json(home + "/.claude.json")?["projects"] as? [String: Any]).map { Array($0.keys) } ?? []
+        if let toml = Inventory.read(home + "/.codex/config.toml", limit: 4_000_000).flatMap({ String(data: $0, encoding: .utf8) }) {
+            paths += captures("(?m)^\\[projects\\.\"([^\"\\n]+)\"\\]", toml).map { $0[1] }
+        }
+        return paths
+    }
+    static func suggest(_ known: [String], existing: [String], home: String = Inventory.home, isProject: (String) -> Bool = hasLockfile) -> [Suggestion] {
+        func broad(_ path: String) -> Bool {
+            (path as NSString).pathComponents.count < 4 || path == home || home.hasPrefix(path + "/") || path.contains("/.") || path.contains("/Library/")
+                || path.hasPrefix("/private/") || path.hasPrefix("/tmp/")
+        }
+        func covered(_ path: String) -> Bool { existing.contains { path == $0 || path.hasPrefix($0 + "/") } }
+        let projects = Set(known.map { ($0 as NSString).standardizingPath }).filter { $0.hasPrefix("/") && !broad($0) && !covered($0) && isProject($0) }
+        var byFolder: [String: [String]] = [:]
+        for project in projects { byFolder[(project as NSString).deletingLastPathComponent, default: []].append(project) }
+        var suggestions: [Suggestion] = []
+        for (folder, members) in byFolder {
+            if members.count >= 2 && !broad(folder) { suggestions.append(Suggestion(path: folder, projects: members.count)) }
+            else { suggestions += members.map { Suggestion(path: $0, projects: 1) } }
+        }
+        return suggestions.sorted { $0.projects != $1.projects ? $0.projects > $1.projects : $0.path < $1.path }
+    }
+    static func hasLockfile(_ path: String) -> Bool {
+        Lockfiles.find(in: path, depth: 2).contains { !$0.hasSuffix(".mcp.json") && !$0.contains("/.github/") }
+    }
+}
+
+extension Inventory {
+    // Apple's Python, which /usr/bin/python3 runs when nothing else comes first on the PATH: one in the Command Line Tools
+    // and one in the Xcode that xcode-select points at. Read from the framework's Info.plist, so nothing is run.
+    static func applePythons(developerFolders: [String]? = nil) -> [Installation] {
+        let selected = (try? fm.destinationOfSymbolicLink(atPath: "/var/db/xcode_select_link")) ?? "/Applications/Xcode.app/Contents/Developer"
+        var items: [Installation] = []
+        for folder in developerFolders ?? Array(Set(["/Library/Developer/CommandLineTools", selected])).sorted() {
+            let plist = folder + "/Library/Frameworks/Python3.framework/Versions/Current/Resources/Info.plist"
+            guard let data = read(plist, limit: 1_000_000, followLinks: true),
+                  let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
+                  let version = Commands.safe(info["CFBundleShortVersionString"] as? String, "^[0-9]+\\.[0-9]+\\.[0-9]+$") else { continue }
+            let owner = folder.hasSuffix("/CommandLineTools") ? "the Command Line Tools" : "Xcode"
+            items.append(Installation(product: "apple-python", name: "Python (\(owner == "Xcode" ? "Xcode" : "Command Line Tools"))", version: version, path: folder + "/usr/bin/python3",
+                                      domain: "tools", note: "Apple's Python in \(owner), which /usr/bin/python3 runs when no other python3 comes first on your PATH. Apple updates it only with \(owner).",
+                                      manager: "apple-python"))
+        }
+        return items
+    }
+
+    // Browser builds that test tools download and never update, as Playwright does (see playwrightBrowsers): Puppeteer's
+    // Chrome for Testing and Firefox in ~/.cache/puppeteer/<browser>/<platform>-<build>, Selenium Manager's in
+    // ~/.cache/selenium/<browser>/<platform>/<version>, and each Cypress version's app in ~/Library/Caches/Cypress/<version>,
+    // which runs tests in its own Electron. Which project uses which build isn't recorded anywhere, so each is checked.
+    static func testToolBrowsers(home: String = Inventory.home) -> [Installation] {
+        var items: [Installation] = []
+        func day(_ path: String) -> String {
+            ((try? fm.attributesOfItem(atPath: path))?[.creationDate] as? Date).map { " on " + $0.formatted(date: .abbreviated, time: .omitted) } ?? ""
+        }
+        func browser(_ tool: String, _ kind: String, _ version: String, _ path: String) {
+            guard let product = ["chrome": "\(tool)-chrome", "chrome-headless-shell": "\(tool)-chrome", "firefox": "\(tool)-firefox"][kind] else { return }
+            let name = (kind == "firefox" ? "Firefox" : kind == "chrome" ? "Chrome for Testing" : "Chrome headless shell") + (tool == "puppeteer" ? " (Puppeteer)" : " (Selenium)")
+            items.append(Installation(product: product, name: name, version: version, path: path, domain: "tools",
+                                      note: "Downloaded by \(tool == "puppeteer" ? "Puppeteer" : "Selenium Manager")\(day(path)). It never updates itself; a newer \(tool == "puppeteer" ? "Puppeteer" : "Selenium") downloads a build of its own.",
+                                      manager: tool + "-cache"))
+        }
+        let puppeteer = home + "/.cache/puppeteer"
+        for kind in children(puppeteer) where directory(puppeteer + "/" + kind) {
+            for folder in children(puppeteer + "/" + kind) {
+                // mac_arm-131.0.6778.204, or for Firefox mac-stable_133.0.3
+                guard let build = captures("^(?:mac|mac_arm|mac-arm64|linux|win32|win64)-(?:[a-z]+_)?([0-9]+(?:\\.[0-9]+)+)$", folder).first?[1] else { continue }
+                browser("puppeteer", kind, build, puppeteer + "/" + kind + "/" + folder)
+            }
+        }
+        let selenium = home + "/.cache/selenium"
+        for kind in children(selenium) where directory(selenium + "/" + kind) {
+            for platform in children(selenium + "/" + kind) where directory(selenium + "/" + kind + "/" + platform) {
+                for version in children(selenium + "/" + kind + "/" + platform) where Commands.safe(version, "^[0-9]+(\\.[0-9]+)+$") != nil {
+                    browser("selenium", kind, version, selenium + "/" + kind + "/" + platform + "/" + version)
+                }
+            }
+        }
+        let cypress = home + "/Library/Caches/Cypress"
+        for version in children(cypress) where Commands.safe(version, "^[0-9]+\\.[0-9]+\\.[0-9]+$") != nil {
+            let app = cypress + "/" + version + "/Cypress.app"
+            guard let electron = electronVersion(app) else { continue }
+            items.append(Installation(product: "electron", name: "Cypress \(version)", version: electron, path: app + "/Contents/Frameworks/Electron Framework.framework", domain: "tools",
+                                      note: "The app Cypress \(version) runs tests in, downloaded to the Cypress cache\(day(cypress + "/" + version)). It's built on Electron, with its own Chromium, and never updates itself; a newer Cypress downloads an app of its own.",
+                                      ecosystem: "npm", packageName: "electron", manager: "cypress-cache", location: cypress + "/" + version))
+        }
+        return items
     }
 }

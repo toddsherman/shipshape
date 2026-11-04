@@ -184,6 +184,18 @@ import Foundation
         findings[0].exploitedSince = now.addingTimeInterval(-20 * day)
         return finish(findings[0])
     }()
+    // Apple's Python 3.9 in the Command Line Tools, past its end of support and waiting on Apple, marked by the real rule.
+    static let applePython = finish(Rules.applePython(Installation(product: "apple-python", name: "Python (Command Line Tools)", version: "3.9.6",
+                                                                   path: "/Library/Developer/CommandLineTools/usr/bin/python3", domain: "tools", note: "Apple's Python in the Command Line Tools, which /usr/bin/python3 runs when no other python3 comes first on your PATH. Apple updates it only with the Command Line Tools.", manager: "apple-python"),
+                                                      cycle: ["3.9": ["status": "end-of-life", "end_of_life": "2025-10-31"], "3.11": ["status": "security"], "3.14": ["status": "bugfix"]])!)
+    // A Puppeteer build hidden as not reachable in how the user tests.
+    static let puppeteerHidden: Finding = {
+        let item = Installation(product: "puppeteer-chrome", name: "Chrome for Testing (Puppeteer)", version: "131.0.6778.204", path: home + "/.cache/puppeteer/chrome/mac_arm-131.0.6778.204", domain: "tools",
+                                note: "Downloaded by Puppeteer on Jan 6, 2026. It never updates itself; a newer Puppeteer downloads a build of its own.", manager: "puppeteer-cache")
+        var finding = security(item, fixed: "156.0.8078.73", severity: "HIGH", ids: ["CVE-2026-118306", "CVE-2026-118331"], titles: ["Use after free in FileSystem", "Heap overflow in FileAPI"])
+        finding.action = Scanner.testBrowserAction(puppeteer: true)
+        return dated(finding, 6, 5)
+    }()
     static let ffmpeg = dated(waiting(brew("ffmpeg", "9.0.2"), severity: "HIGH", ids: ["CVE-2026-107675", "CVE-2026-107676"], titles: ["Heap overflow in the HEVC decoder", "Use after free in the MOV demuxer"],
                                 action: "You have Homebrew's newest ffmpeg (9.0.2), and no release fixes these yet. Shipshape alerts you when a fixed release is available."), 412, 98)
     static let folxSparkle = dated(waiting(sparkle(in: "Folx", "1.20.0"), severity: "HIGH", ids: ["GHSA-g3hp-f6mg-559v"], titles: ["Sparkle's installer XPC listener accepts unvalidated connections"],
@@ -213,6 +225,7 @@ import Foundation
     struct Scenario {
         let name: String; let description: String; let findings: [Finding]
         var clean = 220; var checks = Scenarios.checks(); var history: [Finding] = []; var current: [Installation] = []; var noReport = false
+        var hidden: [Finding] = []  // findings the user hid until something changes
         var title: String { Scenarios.titles[name] ?? name }
     }
     // Menu titles, in menu order.
@@ -236,7 +249,7 @@ import Foundation
             Scenario(name: "first-run", description: "No check yet: the welcome screen.", findings: [], noReport: true),
             Scenario(name: "all-clear", description: "Nothing found: every tile empty and the gauge at 100%.", findings: []),
             Scenario(name: "waiting-only", description: "Nothing to install: only findings waiting for a fix, plus updates.",
-                     findings: [ffmpeg, folxSparkle, waiting(sparkle(in: "Ice", "2.8.0"), severity: "MODERATE", ids: ["GHSA-hg88-v3cw-3qrh"], titles: ["Binary delta symlink traversal in Sparkle"],
+                     findings: [ffmpeg, folxSparkle, applePython, waiting(sparkle(in: "Ice", "2.8.0"), severity: "MODERATE", ids: ["GHSA-hg88-v3cw-3qrh"], titles: ["Binary delta symlink traversal in Sparkle"],
                                                                   fixed: "2.9.2, not in Ice yet", action: "Ice 0.11.13 came out on Oct 27, and it may bundle a newer Sparkle. Ice installs its own updates, usually within days. If it hasn't after a week, this moves to Needs attention. Only Ice's developer can update the Sparkle it bundles."),
                                 gitUpdate, zedUpdate] + heldByTool),
             Scenario(name: "typical", description: "A normal day: a couple of security fixes, updates and waiting items.",
@@ -256,12 +269,12 @@ import Foundation
                                 stale(security(brew("node@20", "20.11.0", product: "node"), fixed: "20.19.5", severity: "HIGH", ids: ["CVE-2025-23166"], titles: ["Node.js crypto error handling crash"])),
                                 endOfSupport(brew("node@18", "18.20.4", product: "node"), what: "Node", fixed: "Supported LTS branch", link: "https://nodejs.org/en/about/previous-releases"),
                                 endOfSupport(brew("python@3.9", "3.9.23", product: "python"), what: "Python", fixed: "Python 3.12 or later", link: "https://devguide.python.org/versions/"),
-                                ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate, update(brew("gh", "2.80.0"), to: "2.81.0"), update(brew("jq", "1.7.1"), to: "1.8.0"), playwrightInUse, electronApp] + heldByTool + playwrightUnused,
+                                ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate, update(brew("gh", "2.80.0"), to: "2.81.0"), update(brew("jq", "1.7.1"), to: "1.8.0"), playwrightInUse, electronApp, applePython] + heldByTool + playwrightUnused,
                      clean: 150, checks: checks(failed: 1, partial: 1),
                      history: [security(npm("shop", "next", "14.0.0"), fixed: "14.2.25", severity: "CRITICAL", ids: ["GHSA-f82v-jwr5-mffw"], titles: ["Authorization bypass in Next.js middleware"]),
                                security(pypi("api-server", "gunicorn", "20.0.4"), fixed: "22.0.0", severity: "HIGH", ids: ["GHSA-w3h3-4rj7-4ph4"], titles: ["Request smuggling in gunicorn"]),
                                update(brew("wget", "1.24.5"), to: "1.25.0")],
-                     current: [npm("shop", "next", "14.2.25"), brew("wget", "1.25.0")]),
+                     current: [npm("shop", "next", "14.2.25"), brew("wget", "1.25.0")], hidden: [puppeteerHidden]),
             Scenario(name: "crowded", description: "Two hundred findings across six projects, to test long lists and scrolling.", findings: crowded, clean: 300),
             Scenario(name: "check-issues", description: "Three failed and two partial checks, with earlier findings kept as unverified.",
                      findings: [stale(lodash), stale(opensslDated), requestsDated, gitUpdate], checks: checks(failed: 3, partial: 2)),
@@ -273,10 +286,11 @@ import Foundation
         state.projectFolders = [projects]
         state.lastScheduledDay = Schedule.day(now)
         guard !scenario.noReport else { return state }
-        let findings = scenario.findings.sorted(by: Scanner.mostUrgentFirst)
+        let findings = (scenario.findings + scenario.hidden).sorted(by: Scanner.mostUrgentFirst)
         var installations = clean(scenario.clean) + scenario.current + feedApps
         for item in findings.map(\.installation) where !installations.contains(where: { $0.path == item.path }) { installations.append(item) }
         var report = ScanReport(date: now.addingTimeInterval(-4 * 60), installations: installations, findings: findings, checks: scenario.checks)
+        state.hidden = Hiding.apply(Dictionary(scenario.hidden.map { ($0.id, Hiding.signature($0)) }, uniquingKeysWith: { first, _ in first }), to: &report)
         report.domains = ["projects": true, "packages": true, "mcp": true, "tools": true, "brew": true, "apps": true]
         report.signatures = signatures
         // History: an earlier check three days ago found these, and today's check no longer does.

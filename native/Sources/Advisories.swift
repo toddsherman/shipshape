@@ -496,7 +496,8 @@ enum Electron {
     // fix is the newest release of its major, or of the oldest major still supported once its own has stopped. An Electron
     // that isn't a public release has no known Chromium, so it gets no finding.
     static func finding(_ item: Installation, releases: Releases, hits: [NVDHit]) -> Finding? {
-        guard let release = releases.all[item.version], let major = major(item.version), let oldest = releases.supported.last, let app = item.bundledApp else { return nil }
+        guard let release = releases.all[item.version], let major = major(item.version), let oldest = releases.supported.last else { return nil }
+        let app = item.bundledApp ?? item.name, cypress = item.manager == "cypress-cache"
         let open = hits.filter { ($0.published ?? .distantFuture) > release.date.addingTimeInterval(grace) }
         let ended = releases.ended(major)
         guard !open.isEmpty || ended != nil else { return nil }
@@ -512,9 +513,12 @@ enum Electron {
         } else {
             reason += target.version == item.version ? " Electron \(major) still gets Chrome's fixes, but no Electron \(major) release has these yet." : " Electron \(major) still gets Chrome's fixes; its newest release is \(target.version)."
         }
-        let fixed = target.version == item.version ? NVD.noFixListed : target.version
+        // A cached Cypress app is replaced by updating Cypress, whose newer releases are built on newer Electron.
+        let fixed = cypress ? "Newer Cypress" : target.version == item.version ? NVD.noFixListed : target.version
+        let action = cypress ? "Update Cypress in the projects that use it (npm install --save-dev cypress@latest), and it downloads a newer app; then delete this one."
+            : fixed == NVD.noFixListed ? "No Electron \(major) release has these fixes yet. A newer \(app) may be built on a newer Electron that does." : Commands.action(for: item, malicious: false, fixed: fixed)
         var finding = Finding(source: "nvd:electron", installation: item, kind: open.isEmpty ? .unsupported : .security, fixed: fixed, reason: reason,
-                              action: fixed == NVD.noFixListed ? "No Electron \(major) release has these fixes yet. A newer \(app) may be built on a newer Electron that does." : Commands.action(for: item, malicious: false, fixed: fixed),
+                              action: action,
                               links: open.prefix(3).map { "https://nvd.nist.gov/vuln/detail/" + $0.id } + [timelines], advisories: open.map(\.id).sorted(),
                               severity: open.reduce(nil) { worse($0, $1.severity) })
         OSV.dates(&finding, open.map { ($0.id, [], $0.published) })
@@ -524,7 +528,7 @@ enum Electron {
     // fix, a supported Electron release, covers them too. Without that finding they keep a card of their own.
     static func combine(_ findings: inout [Finding]) {
         var merged = Set<String>()
-        for own in findings where own.source == "osv" && own.installation.manager == "electron-framework" && own.malicious != true {
+        for own in findings where own.source == "osv" && ["electron-framework", "cypress-cache"].contains(own.installation.manager ?? "") && own.malicious != true {
             guard let index = findings.firstIndex(where: { $0.source == "nvd:electron" && $0.installation.path == own.installation.path }) else { continue }
             // OSV's reason reads "45 published advisories: Electron: <title>; …"; its titles all start with Electron's name.
             let parts = own.reason.components(separatedBy: ": ")
