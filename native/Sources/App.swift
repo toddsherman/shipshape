@@ -571,7 +571,7 @@ struct Dashboard: View {
                             Text("Project dependencies · \(dependencies.count) in \(Set(dependencies.compactMap(\.installation.location)).count) folders").font(.headline).padding(.top, 10)
                             FindingList(findings: dependencies)
                         }
-                        // Hidden findings, folded away; each card can show its finding again.
+                        // Hidden findings, folded away; each card's Unhide button puts its finding back.
                         if !hidden.isEmpty {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Text("Hidden · \(hidden.count)").font(.headline)
@@ -1117,11 +1117,11 @@ struct HideButton: View {
     let findings: [Finding]
     var body: some View {
         let hidden = findings.allSatisfy { $0.hidden == true }, them = findings.count == 1 ? "this finding" : "these \(findings.count) findings"
-        Button { hidden ? monitor.unhide(findings) : monitor.hide(findings) } label: { Image(systemName: hidden ? "eye" : "eye.slash") }
+        Button(hidden ? "Unhide" : "Hide") { hidden ? monitor.unhide(findings) : monitor.hide(findings) }
             .buttonStyle(.borderless).font(.callout).foregroundStyle(Color.accentColor)
-            .help(hidden ? "Show again: puts \(them) back in the counts and alerts."
+            .help(hidden ? "Unhide: puts \(them) back in the counts and alerts."
                   : "Hide until something changes: takes \(them) out of the counts, badge and alerts until the installed version, whether a fix can be installed, known exploitation or a malware report changes.")
-            .accessibilityLabel(hidden ? "Show again" : "Hide until something changes")
+            .accessibilityLabel(hidden ? "Unhide" : "Hide until something changes")
     }
 }
 // Shows a location in a Finder window. A folder opens in its own window; a file, or a bundle such as an app, is

@@ -1,4 +1,5 @@
 import Foundation
+import Compression
 
 // OSV covers package ecosystems (npm, PyPI, crates.io, Go, RubyGems) and OpenSSF's malicious-package
 // reports. OSV decides applicability with each ecosystem's own version rules; this code only collapses
@@ -492,6 +493,16 @@ enum Electron {
         guard releases.supported.count == 3 else { throw MonitorError(message: "Electron's release list names too few releases") }
         return releases
     }
+    // How many of a finding's advisories an Electron release has the fixes for, by the rule the finding was made with: one
+    // published no more than a week after the release came out counts as fixed in it. Complete means every fix, in a
+    // major that still gets fixes. An Electron that isn't a public release can't be judged.
+    static func fixes(_ finding: Finding, in version: String, releases: Releases) -> (fixes: Int, total: Int, complete: Bool)? {
+        guard let release = releases.all[version], let major = major(version) else { return nil }
+        let dates = Array((finding.published ?? [:]).values)
+        guard version != finding.installation.version else { return (0, dates.count, false) }
+        let fixed = dates.filter { $0 <= release.date.addingTimeInterval(grace) }.count
+        return (fixed, dates.count, fixed == dates.count && releases.ended(major) == nil)
+    }
     // An app's Electron: the Chrome vulnerabilities its Chromium still has, and whether its Electron still gets fixes. The
     // fix is the newest release of its major, or of the oldest major still supported once its own has stopped. An Electron
     // that isn't a public release has no known Chromium, so it gets no finding.
@@ -549,6 +560,125 @@ enum Electron {
     }
 }
 
+// What's inside an app's newest release, read from its update zip without downloading it. A zip ends with a directory of
+// its files, so four small ranges are enough: the download's size, its end with the directory's place, the directory, and
+// the one file wanted, the bundled framework's Info.plist. That's about 200 KB of a 150 MB update. Disk images and
+// installer packages can't be read in parts, so their contents stay unknown.
+enum ReleasePeek {
+    struct Result: Codable, Equatable { var bundles: String?; var modified: Date? }
+    struct Entry: Equatable { let offset: Int; let compressed: Int; let size: Int; let method: Int }
+    static func readable(_ address: String) -> Bool { URL(string: address).map { $0.scheme == "https" && $0.path.lowercased().hasSuffix(".zip") } ?? false }
+    // framework is the bundle's name: "Electron Framework" or "Sparkle".
+    static func bundled(_ framework: String, in address: String) async throws -> Result {
+        let probe = try await Fetch.range(address, from: 0, to: 0, limit: 1024)
+        guard let total = probe.response.value(forHTTPHeaderField: "Content-Range")?.split(separator: "/").last.flatMap({ Int($0) }), total > 22 else {
+            throw MonitorError(message: "The download didn't say its size")
+        }
+        let modified = probe.response.value(forHTTPHeaderField: "Last-Modified").flatMap(httpDate)
+        let tail = try await Fetch.range(address, from: max(0, total - 65_558), to: total - 1, limit: 70_000).data
+        guard let place = directory(tail, size: total), place.length <= 16_000_000 else { throw MonitorError(message: "The download isn't a zip Shipshape can read") }
+        let listing = try await Fetch.range(address, from: place.offset, to: place.offset + place.length - 1, limit: place.length + 1024).data
+        guard let entry = entry(framework, in: listing) else { return Result(bundles: nil, modified: modified) }
+        guard entry.compressed <= 4_000_000, entry.size <= 4_000_000 else { throw MonitorError(message: "The framework's Info.plist is too large") }
+        let local = try await Fetch.range(address, from: entry.offset, to: entry.offset + 30 + 4_096 + entry.compressed - 1, limit: entry.compressed + 8_192).data
+        guard let plist = contents(local, entry: entry) else { throw MonitorError(message: "The framework's Info.plist couldn't be read") }
+        return Result(bundles: version(framework, plist: plist), modified: modified)
+    }
+    // Where the zip's directory is, from the end-of-directory record in the download's last bytes (and its zip64 record,
+    // when a large zip uses one and it's among those bytes).
+    static func directory(_ tail: Data, size: Int) -> (offset: Int, length: Int)? {
+        let bytes = [UInt8](tail)
+        guard bytes.count >= 22 else { return nil }
+        guard let end = stride(from: bytes.count - 22, through: 0, by: -1).first(where: { u32(bytes, $0) == 0x06054b50 }) else { return nil }
+        let length = Int(u32(bytes, end + 12)), offset = Int(u32(bytes, end + 16))
+        guard length == 0xFFFF_FFFF || offset == 0xFFFF_FFFF else { return (offset, length) }
+        guard end >= 20, u32(bytes, end - 20) == 0x07064b50 else { return nil }
+        let record = Int(u64(bytes, end - 12)) - (size - bytes.count)
+        guard record >= 0, record + 56 <= bytes.count, u32(bytes, record) == 0x06064b50 else { return nil }
+        return (Int(u64(bytes, record + 48)), Int(u64(bytes, record + 40)))
+    }
+    // The framework's Info.plist in the app at the zip's top level, or in one folder: Versions/A or a flattened framework.
+    static func entry(_ framework: String, in listing: Data) -> Entry? {
+        let bytes = [UInt8](listing)
+        let pattern = "^(?:[^/]+/)?[^/]+\\.app/Contents/Frameworks/" + NSRegularExpression.escapedPattern(for: framework) + "\\.framework/(?:Versions/[^/]+/)?Resources/Info\\.plist$"
+        var p = 0
+        while p + 46 <= bytes.count, u32(bytes, p) == 0x02014b50 {
+            let method = Int(u16(bytes, p + 10)), compressed = Int(u32(bytes, p + 20)), size = Int(u32(bytes, p + 24)), offset = Int(u32(bytes, p + 42))
+            let nameLength = Int(u16(bytes, p + 28)), extra = Int(u16(bytes, p + 30)), comment = Int(u16(bytes, p + 32))
+            guard p + 46 + nameLength <= bytes.count else { return nil }
+            let name = String(decoding: bytes[(p + 46)..<(p + 46 + nameLength)], as: UTF8.self)
+            if name.range(of: pattern, options: .regularExpression) != nil, method == 0 || method == 8, compressed != 0xFFFF_FFFF, offset != 0xFFFF_FFFF {
+                return Entry(offset: offset, compressed: compressed, size: size, method: method)
+            }
+            p += 46 + nameLength + extra + comment
+        }
+        return nil
+    }
+    // A file's bytes from its local header onward: stored as is, or deflated.
+    static func contents(_ local: Data, entry: Entry) -> Data? {
+        let bytes = [UInt8](local)
+        guard bytes.count >= 30, u32(bytes, 0) == 0x04034b50 else { return nil }
+        let start = 30 + Int(u16(bytes, 26)) + Int(u16(bytes, 28))
+        guard start + entry.compressed <= bytes.count, entry.size > 0 else { return nil }
+        let packed = Array(bytes[start..<(start + entry.compressed)])
+        if entry.method == 0 { return Data(packed) }
+        var output = [UInt8](repeating: 0, count: entry.size)
+        let written = compression_decode_buffer(&output, entry.size, packed, packed.count, nil, COMPRESSION_ZLIB)
+        return written == entry.size ? Data(output) : nil
+    }
+    static func version(_ framework: String, plist: Data) -> String? {
+        guard let info = (try? PropertyListSerialization.propertyList(from: plist, format: nil)) as? [String: Any] else { return nil }
+        if framework == "Sparkle" { return ((info["CFBundleShortVersionString"] ?? info["CFBundleVersion"]) as? String).flatMap(Inventory.trimmedSparkleVersion) }
+        return Commands.safe((info["CFBundleVersion"] ?? info["CFBundleShortVersionString"]) as? String, "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-(?:alpha|beta|nightly)\\.[0-9]+)?$")
+    }
+    static func httpDate(_ text: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter.date(from: text)
+    }
+    private static func u16(_ b: [UInt8], _ i: Int) -> UInt16 { UInt16(b[i]) | UInt16(b[i + 1]) << 8 }
+    private static func u32(_ b: [UInt8], _ i: Int) -> UInt32 { (0..<4).reduce(0) { $0 | UInt32(b[i + $1]) << (8 * UInt32($1)) } }
+    private static func u64(_ b: [UInt8], _ i: Int) -> UInt64 { (0..<8).reduce(0) { $0 | UInt64(b[i + $1]) << (8 * UInt64($1)) } }
+}
+
+// Apps built with electron-builder's updater name their update feed in Contents/Resources/app-update.yml: a GitHub
+// repository's releases or a plain URL. Its latest-mac.yml names the newest release, when it came out and its downloads,
+// including the zip the updater installs from, which ReleasePeek can read.
+enum ElectronUpdater {
+    struct Release: Equatable { let version: String; let date: Date?; let download: String? }
+    static func feed(app: String) -> (feed: String, base: String)? {
+        guard let data = Inventory.read(app + "/Contents/Resources/app-update.yml", limit: 100_000) else { return nil }
+        return feed(String(decoding: data, as: UTF8.self))
+    }
+    static func feed(_ settings: String) -> (feed: String, base: String)? {
+        switch field("provider", settings) {
+        case "github":
+            guard let owner = Commands.safe(field("owner", settings), "^[A-Za-z0-9_.-]+$"), let repo = Commands.safe(field("repo", settings), "^[A-Za-z0-9_.-]+$") else { return nil }
+            let base = "https://github.com/\(owner)/\(repo)/releases/latest/download/"
+            return (base + "latest-mac.yml", base)
+        case "generic":
+            guard let url = field("url", settings), url.hasPrefix("https://"), !url.contains("${") else { return nil }
+            let base = url.hasSuffix("/") ? url : url + "/"
+            return (base + "latest-mac.yml", base)
+        default: return nil
+        }
+    }
+    // The newest release in a latest-mac.yml, with the zip for this Mac's processor: arm64 or x64 in its name, a universal
+    // one, or one that names no processor.
+    static func release(_ text: String, base: String, machine: String = SparkleFeeds.machine) -> Release? {
+        guard let version = field("version", text) else { return nil }
+        let zips = captures("(?m)^\\s*-\\s*url:\\s*['\"]?([^'\"\\n]+?)['\"]?\\s*$", text).map { $0[1] }.filter { $0.lowercased().hasSuffix(".zip") }
+        let own = machine == "arm64" ? zips.first { $0.contains("arm64") } : zips.first { $0.contains("x64") || $0.contains("x86_64") }
+        let pick = own ?? zips.first { $0.contains("universal") } ?? zips.first { !$0.contains("arm64") && !$0.contains("x64") }
+        let download = pick.map { $0.hasPrefix("https://") ? $0 : base + ($0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? $0) }
+        return Release(version: version, date: field("releaseDate", text).flatMap(advisoryDate), download: download)
+    }
+    private static func field(_ key: String, _ text: String) -> String? {
+        captures("(?m)^" + key + ":[ \\t]*['\"]?([^'\"\\n]+?)['\"]?[ \\t]*$", text).first?[1]
+    }
+}
+
 enum EditorExtensions {
     static let source = "https://raw.githubusercontent.com/microsoft/vsmarketplace/main/RemovedPackages.md"
     static let page = "https://github.com/microsoft/vsmarketplace/blob/main/RemovedPackages.md"
@@ -587,6 +717,7 @@ enum SparkleFeeds {
         var date: Date? = nil              // pubDate
         var rollout: TimeInterval? = nil   // sparkle:phasedRolloutInterval: copies get the release in seven groups this far apart
         var hardware: [String]? = nil      // sparkle:hardwareRequirements, such as arm64
+        var url: String? = nil             // the enclosure's download
     }
     final class Reader: NSObject, XMLParserDelegate {
         var releases: [Release] = []
@@ -597,6 +728,7 @@ enum SparkleFeeds {
             guard inItem else { return }
             element = name; text = ""
             if name == "enclosure" {
+                current.url = attributes["url"]
                 for (key, value) in attributes where key.contains(":") {
                     switch Self.local(key) {
                     case "version": current.build = value
@@ -690,14 +822,21 @@ enum SparkleFeeds {
                        action: "Open \(item.name) and check for updates, or download the release from its developer.", links: [])
     }
     // Whether the app already has the newest release its feed offers this Mac.
+    // Whether a Sparkle version has a finding's fix: at least the fixed version OSV names. All or none, since OSV's fixes
+    // aren't kept per advisory.
+    static func fixes(_ finding: Finding, in version: String) -> (fixes: Int, total: Int, complete: Bool) {
+        let total = max((finding.published ?? [:]).count, 1)
+        guard let fix = Commands.safe(finding.fixed, "^[0-9][a-z0-9.+_-]*$"), !looseLess(version, fix) else { return (0, total, false) }
+        return (total, total, true)
+    }
     static func current(_ item: Installation, releases: [Release], system: String = ProcessInfo.processInfo.operatingSystemVersionString) -> Bool {
         guard let installed = item.build ?? Optional(item.version), let release = newest(releases, system: system) else { return false }
         return !older(installed, release.build)
     }
     static func findings(_ items: [Installation], skipping paths: Set<String>) async
-        -> (findings: [Finding], current: Set<String>, fresh: [String: Release], read: Int, unreadable: Int) {
+        -> (findings: [Finding], current: Set<String>, fresh: [String: Release], newest: [String: Release], read: Int, unreadable: Int) {
         let apps = items.filter { $0.feed != nil && !paths.contains($0.path) }
-        var findings: [Finding] = [], current = Set<String>(), fresh: [String: Release] = [:], read = 0, unreadable = 0
+        var findings: [Finding] = [], current = Set<String>(), fresh: [String: Release] = [:], newest: [String: Release] = [:], read = 0, unreadable = 0
         await withTaskGroup(of: (Installation, Data?).self) { group in
             for app in apps { group.addTask { (app, try? await Fetch.data(app.feed!, limit: 5_000_000)) } }
             for await (app, data) in group {
@@ -705,13 +844,14 @@ enum SparkleFeeds {
                 let releases = Self.releases(data)
                 if releases.isEmpty { unreadable += 1; continue }
                 read += 1
+                if let release = Self.newest(releases) { newest[app.path] = release }
                 if let finding = finding(app, releases: releases) {
                     findings.append(finding)
                     if let release = Self.fresh(app, releases: releases) { fresh[app.path] = release }
                 } else if Self.current(app, releases: releases) { current.insert(app.path) }
             }
         }
-        return (findings, current, fresh, read, unreadable)
+        return (findings, current, fresh, newest, read, unreadable)
     }
 }
 

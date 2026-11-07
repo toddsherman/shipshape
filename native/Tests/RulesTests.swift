@@ -1,4 +1,5 @@
 import Foundation
+import Compression
 
 @main struct RulesTests {
     static var count = 0
@@ -825,6 +826,22 @@ import Foundation
         let newestPlaywright = try await Playwright.newest()
         expect(newestPlaywright == Playwright.Release(version: "1.64.1", browsers: ["chromium": "156.0.8078.4", "chromium_headless_shell": "156.0.8078.4"]),
                "Playwright's newest release and its browsers come from npm and the browsers.json at its tag")
+        // Inside an app's update zip: a few small ranges read the bundled framework's version, not the whole download. A helper
+        // app's framework isn't mistaken for the app's, and a server that would send the whole file is refused.
+        let updateZip = TestZip.make([("Chat.app/Contents/Resources/app.asar", Data(count: 2_000_000), false),
+                                      ("Chat.app/Contents/Frameworks/Chat Helper.app/Contents/Frameworks/Electron Framework.framework/Resources/Info.plist", TestZip.plist(["CFBundleVersion": "1.0.0"]), true),
+                                      ("Chat.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/Info.plist", TestZip.plist(["CFBundleVersion": "45.2.2"]), true),
+                                      ("Chat.app/Contents/Frameworks/Sparkle.framework/Versions/B/Resources/Info.plist", TestZip.plist(["CFBundleShortVersionString": "2.9.2 12-g0123456"]), false)])
+        StubProtocol.ranged = ["https://stub.test/Chat-1.2.zip": updateZip]
+        StubProtocol.responses = ["https://stub.test/whole.zip": (200, ["Content-Length": "150000000"], Data(count: 10))]
+        StubProtocol.served = 0
+        let peekedElectron = try await ReleasePeek.bundled("Electron Framework", in: "https://stub.test/Chat-1.2.zip")
+        let peekedSparkle = try await ReleasePeek.bundled("Sparkle", in: "https://stub.test/Chat-1.2.zip")
+        let wholeRefused = (try? await ReleasePeek.bundled("Electron Framework", in: "https://stub.test/whole.zip")) == nil
+        expect(peekedElectron == ReleasePeek.Result(bundles: "45.2.2", modified: ISO8601DateFormatter().date(from: "2026-11-05T15:45:48Z")) && peekedSparkle.bundles == "2.9.2"
+               && StubProtocol.served < 150_000 && updateZip.count > 2_000_000 && wholeRefused,
+               "the bundled Electron and Sparkle versions are read from under 75 KB each of a 2 MB zip, with its date; a whole-file answer is refused")
+        StubProtocol.ranged = [:]
         Fetch.configuration = realConfiguration
 
         // More project ecosystems: Swift, PHP, Dart and Flutter, .NET, Elixir and Gradle lockfiles.
@@ -987,8 +1004,9 @@ import Foundation
         </rss>
         """.utf8)
         let feedReleases = SparkleFeeds.releases(appcast)
-        expect(feedReleases == [SparkleFeeds.Release(build: "111", version: "2.0.4", minimumSystem: "14.0"), SparkleFeeds.Release(build: "110", version: "2.0.3", minimumSystem: nil)],
-               "appcast items in both layouts; beta channels and other platforms skipped")
+        expect(feedReleases == [SparkleFeeds.Release(build: "111", version: "2.0.4", minimumSystem: "14.0", url: "https://example.com/a.zip"),
+                                SparkleFeeds.Release(build: "110", version: "2.0.3", minimumSystem: nil, url: "https://example.com/c.zip")],
+               "appcast items in both layouts, with their downloads; beta channels and other platforms skipped")
         expect(SparkleFeeds.newest(feedReleases, system: "Version 27.0 (Build 27A1)")?.version == "2.0.4" && SparkleFeeds.newest(feedReleases, system: "Version 13.6 (Build 22G1)")?.version == "2.0.3",
                "releases needing a newer macOS are skipped")
         expect(SparkleFeeds.releases(Data("<rss><item>".utf8)).isEmpty, "a broken feed yields nothing")
@@ -1332,6 +1350,41 @@ import Foundation
                && appleEOL?.reason.hasPrefix("Python 3.9 stopped getting security fixes on Oct 31, 2025.") == true && ScanReport(findings: [appleEOL!]).attention.isEmpty
                && Rules.applePython(Installation(product: "apple-python", name: "Python (Xcode)", version: "3.14.1", path: "/x", domain: "tools"), cycle: cycle) == nil,
                "Apple's Python past its end of support waits on Apple, naming the oldest supported branch; a supported one has no finding")
+
+        // What an app's newest release bundles. electron-builder's feeds: GitHub releases or a plain URL, with the zip for this processor.
+        let githubFeed = ElectronUpdater.feed("owner: stablyai\nrepo: orca\nprovider: github\nupdaterCacheDirName: orca-updater\n")
+        let genericFeed = ElectronUpdater.feed("provider: generic\nurl: 'https://updates.signal.org/desktop'\n")
+        let latestMac = "version: 8.34.0\nfiles:\n  - url: signal-desktop-mac-x64-8.34.0.zip\n    size: 1\n  - url: signal-desktop-mac-arm64-8.34.0.zip\n  - url: signal-desktop-mac-universal-8.34.0.dmg\nreleaseDate: '2026-11-05T15:45:48.123Z'\n"
+        let orcaMac = "version: 1.4.253\nfiles:\n  - url: Orca-1.4.253-mac.zip\n  - url: Orca-1.4.253-arm64-mac.zip\n  - url: orca-macos-arm64.dmg\n"
+        expect(githubFeed?.feed == "https://github.com/stablyai/orca/releases/latest/download/latest-mac.yml" && genericFeed?.feed == "https://updates.signal.org/desktop/latest-mac.yml"
+               && ElectronUpdater.feed("provider: generic\nurl: http://example.com/x\n") == nil
+               && ElectronUpdater.release(latestMac, base: genericFeed!.base, machine: "arm64") == ElectronUpdater.Release(version: "8.34.0", date: ISO8601DateFormatter().date(from: "2026-11-05T15:45:48Z"), download: "https://updates.signal.org/desktop/signal-desktop-mac-arm64-8.34.0.zip")
+               && ElectronUpdater.release(orcaMac, base: githubFeed!.base, machine: "x86_64")?.download == "https://github.com/stablyai/orca/releases/latest/download/Orca-1.4.253-mac.zip",
+               "electron-builder feeds name the newest release, its date and the zip for this Mac's processor")
+        // Which of a card's fixes a release has: Electron by the finding's own date rule; Sparkle by the fixed version.
+        expect(Electron.fixes(chatOld, in: "45.2.2", releases: electronReleases).map { "\($0.fixes)/\($0.total) \($0.complete)" } == "2/2 true"
+               && Electron.fixes(chatOld, in: "42.0.0", releases: electronReleases).map { "\($0.fixes)/\($0.total) \($0.complete)" } == "2/2 false"
+               && Electron.fixes(chatOld, in: "37.6.0", releases: electronReleases).map { "\($0.fixes)/\($0.total) \($0.complete)" } == "0/2 false"
+               && Electron.fixes(chatOld, in: "45.9.9", releases: electronReleases) == nil
+               && SparkleFeeds.fixes(waitingSparkle, in: "2.6.4").complete == false && SparkleFeeds.fixes(freshSparkle[0], in: "2.6.4").complete && !SparkleFeeds.fixes(freshSparkle[0], in: "2.6.3").complete,
+               "a release on a supported Electron from after the advisories has every fix; one whose major ended doesn't count as complete; a Sparkle at the fixed version has it")
+        // The card says what the newest release has: the fix (with its date, out of waiting), some fixes, or none (waiting, naming the release).
+        let nov5 = ISO8601DateFormatter().date(from: "2026-11-05T15:45:48Z")!
+        func described(_ fix: ParentFix) -> Finding { var findings = [chatOld]; Scanner.markBundledAwaiting(&findings, currentApps: [], parent: [chatOld.id: fix]); return findings[0] }
+        let available = described(ParentFix(version: "0.0.390", date: nov5, bundles: "45.2.2", fixes: 2, total: 2, complete: true, newer: true))
+        let partial = described(ParentFix(version: "0.0.390", date: nil, bundles: "44.10.2", fixes: 1, total: 2, complete: false, newer: true))
+        let stillOld = described(ParentFix(version: "0.0.390", date: nov5, bundles: "37.6.0", fixes: 0, total: 2, complete: false, newer: true))
+        let current = described(ParentFix(version: "0.0.380", date: nil, bundles: "37.6.0", fixes: 0, total: 2, complete: false, newer: false))
+        expect(available.awaitingFix == nil && available.fixed == "Fix available as of Nov 5 in Chat 0.0.390" && available.action == "Chat 0.0.390, out Nov 5, bundles Electron 45.2.2, which has these fixes. Update Chat to it."
+               && Commands.commands(for: available).first?.note == "Chat 0.0.390 bundles Electron 45.2.2, with these fixes. Check for updates in Chat to get it."
+               && partial.awaitingFix == nil && partial.fixed == "Some fixes in Chat 0.0.390" && partial.action.contains("which has 1 of these 2 fixes")
+               && stillOld.awaitingFix == true && stillOld.fixed == "43.8.7, not in Chat 0.0.390 yet" && stillOld.action.hasPrefix("Chat's newest release, 0.0.390, out Nov 5, still bundles Electron 37.6.0, without these fixes.")
+               && stillOld.action.hasSuffix("Shipshape looks inside each new release of Chat and alerts you when one has the fix.")
+               && current.awaitingFix == true && current.action.hasPrefix("You have the newest Chat, 0.0.380, and it still bundles Electron 37.6.0."),
+               "a release with the fix takes the card out of waiting, dated; some fixes say how many; none keeps it waiting, naming the release")
+        let fixAlert = Alerts.findings([available], released: [chatOld.id])
+        expect(fixAlert.title == "Fix now available" && fixAlert.body.contains("Chat 0.0.390 bundles Electron 45.2.2, with the fix.") && !fixAlert.body.contains("may include"),
+               "the alert says the fix is in the new release, not that it may be")
         let pruned = Alerts.pruned([waitingSparkle.id: "before it waited", leftPad.id: "delivered", "gone": "removed"], report: ScanReport(findings: [waitingSparkle, leftPad]))
         expect(pruned == [leftPad.id: "delivered"], "a waiting finding forgets its earlier alert, so a new release alerts again")
 
@@ -1453,7 +1506,8 @@ import Foundation
                                         length: 2_750_261, signature: String(repeating: "A", count: 86) + "==", notes: releaseNotes + "]]>"))
         expect(feedXML.contains("<enclosure url=\"https://github.com/toddsherman/shipshape/releases/download/v1.2.0/Shipshape-1.2.0.dmg\" length=\"2750261\"")
                && feedXML.contains("<pubDate>Thu, 01 Jan 1970 00:00:00 +0000</pubDate>"), "appcast enclosure and date")
-        expect(SparkleFeeds.releases(Data(feedXML.utf8)) == [SparkleFeeds.Release(build: "30", version: "1.2.0", minimumSystem: "13.0", date: Date(timeIntervalSince1970: 0))],
+        expect(SparkleFeeds.releases(Data(feedXML.utf8)) == [SparkleFeeds.Release(build: "30", version: "1.2.0", minimumSystem: "13.0", date: Date(timeIntervalSince1970: 0),
+                                                                                  url: "https://github.com/toddsherman/shipshape/releases/download/v1.2.0/Shipshape-1.2.0.dmg")],
                "Shipshape's own Sparkle feed reader understands its appcast, even with ]]> in the notes")
         if let info = NSDictionary(contentsOfFile: root + "/../Resources/Info.plist") as? [String: Any] {
             expect(info["SUFeedURL"] as? String == Appcast.feed, "the app reads the appcast attached to the latest GitHub release")
@@ -1540,9 +1594,22 @@ import Foundation
 // Serves canned responses to Fetch in tests, delivered in 64 KB chunks like a real transfer.
 final class StubProtocol: URLProtocol {
     static var responses: [String: (status: Int, headers: [String: String], body: Data)] = [:]
+    static var ranged: [String: Data] = [:]  // downloads served in parts, as a CDN serves byte ranges
+    static var served = 0                    // bytes of ranged downloads sent
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        if let whole = Self.ranged[request.url!.absoluteString], let match = captures("^bytes=([0-9]+)-([0-9]+)$", request.value(forHTTPHeaderField: "Range") ?? "").first,
+           let start = Int(match[1]), let last = Int(match[2]), start < whole.count {
+            let end = min(last, whole.count - 1), body = whole.subdata(in: start..<(end + 1))
+            Self.served += body.count
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 206, httpVersion: "HTTP/1.1",
+                                                                  headerFields: ["Content-Range": "bytes \(start)-\(end)/\(whole.count)", "Content-Length": "\(body.count)", "Last-Modified": "Thu, 05 Nov 2026 15:45:48 GMT"])!,
+                                cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: body)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         let stub = Self.responses[request.url!.absoluteString] ?? (404, [:], Data())
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: stub.status, httpVersion: "HTTP/1.1", headerFields: stub.headers)!, cacheStoragePolicy: .notAllowed)
         var offset = 0
@@ -1554,4 +1621,35 @@ final class StubProtocol: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+}
+
+// A zip built for tests, with each file stored or deflated, its directory and end record. CRCs are left zero, since
+// ReleasePeek doesn't check them.
+enum TestZip {
+    static func plist(_ values: [String: String]) -> Data { try! PropertyListSerialization.data(fromPropertyList: values, format: .xml, options: 0) }
+    static func make(_ files: [(name: String, data: Data, deflate: Bool)]) -> Data {
+        func le16(_ value: Int) -> Data { withUnsafeBytes(of: UInt16(value).littleEndian) { Data($0) } }
+        func le32(_ value: Int) -> Data { withUnsafeBytes(of: UInt32(value).littleEndian) { Data($0) } }
+        var zip = Data(), directory = Data()
+        for file in files {
+            let name = Data(file.name.utf8)
+            var packed = file.data
+            if file.deflate {
+                var output = [UInt8](repeating: 0, count: file.data.count + 1024)
+                let source = [UInt8](file.data)
+                let written = compression_encode_buffer(&output, output.count, source, source.count, nil, COMPRESSION_ZLIB)
+                packed = Data(output.prefix(written))
+            }
+            let offset = zip.count, method = file.deflate ? 8 : 0
+            let sizes: [Data] = [le32(0), le32(packed.count), le32(file.data.count), le16(name.count)]
+            let local: [Data] = [le32(0x04034b50), le16(20), le16(0), le16(method), le16(0), le16(0)] + sizes + [le16(0), name, packed]
+            let entry: [Data] = [le32(0x02014b50), le16(20), le16(20), le16(0), le16(method), le16(0), le16(0)] + sizes + [le16(0), le16(0), le16(0), le16(0), le32(0), le32(offset), name]
+            local.forEach { zip.append($0) }
+            entry.forEach { directory.append($0) }
+        }
+        let start = zip.count
+        let end: [Data] = [directory, le32(0x06054b50), le16(0), le16(0), le16(files.count), le16(files.count), le32(directory.count), le32(start), le16(0)]
+        end.forEach { zip.append($0) }
+        return zip
+    }
 }

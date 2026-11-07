@@ -191,6 +191,18 @@ struct UpdateCommand: Codable, Hashable {
     var template: [String]? = nil  // for combining: text is template.joined(separator: argument)
     var argument: String? = nil
 }
+// What the newest release of an app bundles, for a finding about the Sparkle or Electron inside it: the framework version,
+// read from inside the release's update zip (ReleasePeek) or, for the installed release, from the app itself, and how many
+// of the finding's advisories it has the fixes for.
+struct ParentFix: Codable, Equatable {
+    let version: String     // the app's newest release
+    var date: Date? = nil   // when it came out, from its feed or its download
+    let bundles: String     // the Sparkle or Electron version inside it
+    let fixes: Int          // how many of the finding's advisories it fixes
+    let total: Int
+    let complete: Bool      // every fix, in a framework version still supported
+    let newer: Bool         // newer than the installed app
+}
 struct Finding: Codable, Identifiable {
     var id: String { source + "|" + installation.path }
     let source: String
@@ -211,6 +223,7 @@ struct Finding: Codable, Identifiable {
     var blocked: String? = nil        // why this account can't make the change; its commands are left out (see Ownership)
     var heldBack: HeldBack? = nil     // a fixed version exists but the tool that needs this package rules it out
     var hidden: Bool? = nil           // hidden by the user until something changes (see Hiding)
+    var parentFix: ParentFix? = nil   // a bundled Sparkle or Electron: what its app's newest release bundles
     // When each advisory was first published, by ID, and the IDs that name an issue already listed (a CVE beside its
     // GHSA), with the ID that has the date. CISA's date is when it listed a matching CVE as exploited. They're shown
     // only, never part of the fingerprint, so a changed date never alerts again.
@@ -415,6 +428,7 @@ struct ScanReport: Codable {
     var checks: [SourceCheck] = []
     var domains: [String: Bool] = [:]
     var nvdCache: [String: NVDCacheEntry]? = nil
+    var peeks: [String: ReleasePeek.Result]? = nil  // "framework|download URL" → what that release bundles, read once
     var signatures: [AppSignature]? = nil  // every app read, for Inventory's Signatures list; nil in reports saved before 0.3.22
     var errors: [String] { checks.filter { $0.status == "failed" || $0.status == "partial" }.map { "\($0.name): \($0.detail)" } }
     // Findings with something to install. Those waiting for a fixed release are listed separately.
@@ -492,7 +506,9 @@ enum Alerts {
         }
     }
     static func findings(_ changed: [Finding], released: Set<String>) -> (title: String, body: String) {
-        let newRelease = { (finding: Finding) in released.contains(finding.id) && finding.installation.bundledApp != nil }
+        // A release Shipshape looked inside and found the fix in is a fix, not just a new release.
+        let confirmed = { (finding: Finding) in finding.parentFix.map { $0.newer && ($0.complete || $0.fixes > 0) } == true }
+        let newRelease = { (finding: Finding) in released.contains(finding.id) && finding.installation.bundledApp != nil && !confirmed(finding) }
         let exploitedWaiting = changed.filter { $0.awaitingFix == true }
         let others = changed.filter { !newRelease($0) && $0.awaitingFix != true }
         let apps = Array(Set(changed.filter(newRelease).compactMap(\.installation.bundledApp))).sorted()
@@ -507,6 +523,10 @@ enum Alerts {
         if !others.isEmpty {
             let names = Array(Set(others.map { $0.installation.bundledApp != nil ? $0.installation.name : $0.installation.packageName ?? $0.installation.name })).sorted()
             body.append(names.prefix(4).joined(separator: ", ") + (names.count > 4 ? " and \(names.count - 4) more" : "") + ".")
+        }
+        for finding in changed.filter(confirmed).prefix(3) {
+            guard let fix = finding.parentFix, let app = finding.installation.bundledApp, let framework = finding.installation.bundledFramework else { continue }
+            body.append("\(app) \(fix.version) bundles \(framework) \(fix.bundles), with \(fix.complete ? "the fix" : "some of the fixes").")
         }
         if !exploitedWaiting.isEmpty {
             let names = Array(Set(exploitedWaiting.map { $0.installation.bundledApp != nil ? $0.installation.name : $0.installation.packageName ?? $0.installation.name })).sorted()

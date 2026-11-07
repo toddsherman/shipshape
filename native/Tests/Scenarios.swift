@@ -200,6 +200,12 @@ import Foundation
                                 action: "You have Homebrew's newest ffmpeg (9.0.2), and no release fixes these yet. Shipshape alerts you when a fixed release is available."), 412, 98)
     static let folxSparkle = dated(waiting(sparkle(in: "Folx", "1.20.0"), severity: "HIGH", ids: ["GHSA-g3hp-f6mg-559v"], titles: ["Sparkle's installer XPC listener accepts unvalidated connections"],
                                      fixed: "2.9.2, not in Folx yet", action: "You have the newest Folx, and it still bundles Sparkle 1.20.0. Only its developer can update Sparkle, so let them know. Shipshape alerts you when a newer Folx is released."), 19)
+    // A bundled Sparkle whose app's newest release Shipshape looked inside and found the fix in, described by the real rule.
+    static let iceFixAvailable: Finding = {
+        var finding = dated(security(sparkle(in: "Ice", "2.8.0"), fixed: "2.9.2", severity: "MODERATE", ids: ["GHSA-hg88-v3cw-3qrh"], titles: ["Binary delta symlink traversal in Sparkle"]), 19)
+        Scanner.describe(&finding, ParentFix(version: "0.11.14", date: now.addingTimeInterval(-2 * 86_400), bundles: "2.9.2", fixes: 1, total: 1, complete: true, newer: true), name: "Ice", framework: "Sparkle")
+        return finish(finding)
+    }()
     static let gitUpdate = update(brew("git", "2.51.0"), to: "2.51.1")
     static let zedUpdate = update(app("Zed", "0.210.4", id: "dev.zed.Zed"), to: "0.211.2", source: "homebrew-cask")
     static let nodeUpdate = update(brew("node", "25.8.0"), to: "25.9.0")
@@ -269,7 +275,7 @@ import Foundation
                                 stale(security(brew("node@20", "20.11.0", product: "node"), fixed: "20.19.5", severity: "HIGH", ids: ["CVE-2025-23166"], titles: ["Node.js crypto error handling crash"])),
                                 endOfSupport(brew("node@18", "18.20.4", product: "node"), what: "Node", fixed: "Supported LTS branch", link: "https://nodejs.org/en/about/previous-releases"),
                                 endOfSupport(brew("python@3.9", "3.9.23", product: "python"), what: "Python", fixed: "Python 3.12 or later", link: "https://devguide.python.org/versions/"),
-                                ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate, update(brew("gh", "2.80.0"), to: "2.81.0"), update(brew("jq", "1.7.1"), to: "1.8.0"), playwrightInUse, electronApp, applePython] + heldByTool + playwrightUnused,
+                                ffmpeg, folxSparkle, gitUpdate, nodeUpdate, zedUpdate, update(brew("gh", "2.80.0"), to: "2.81.0"), update(brew("jq", "1.7.1"), to: "1.8.0"), playwrightInUse, electronApp, applePython, iceFixAvailable] + heldByTool + playwrightUnused,
                      clean: 150, checks: checks(failed: 1, partial: 1),
                      history: [security(npm("shop", "next", "14.0.0"), fixed: "14.2.25", severity: "CRITICAL", ids: ["GHSA-f82v-jwr5-mffw"], titles: ["Authorization bypass in Next.js middleware"]),
                                security(pypi("api-server", "gunicorn", "20.0.4"), fixed: "22.0.0", severity: "HIGH", ids: ["GHSA-w3h3-4rj7-4ph4"], titles: ["Request smuggling in gunicorn"]),

@@ -24,7 +24,23 @@ enum Fetch {
         guard let url = URL(string: address), url.scheme == "https" else { throw MonitorError(message: "Invalid source URL") }
         var request = URLRequest(url: url)
         if let body { request.httpMethod = "POST"; request.httpBody = body; request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-        // One shared session keeps connections alive across requests; each request has its own receiver.
+        let (data, response) = try await send(request, limit: limit)
+        guard (200..<300).contains(response.statusCode) else { throw HTTPStatusError(host: url.host ?? "Vendor source", status: response.statusCode) }
+        return data
+    }
+    // Part of a download, such as the end of an app's update zip (see ReleasePeek). Only a partial answer is accepted: a
+    // server that ignores the range would send the whole file, which the limit cuts off before it arrives.
+    static func range(_ address: String, from start: Int, to end: Int, limit: Int) async throws -> (data: Data, response: HTTPURLResponse) {
+        guard let url = URL(string: address), url.scheme == "https", start >= 0, end >= start else { throw MonitorError(message: "Invalid download URL") }
+        var request = URLRequest(url: url)
+        request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        let (data, response) = try await send(request, limit: limit)
+        guard response.statusCode == 206 else { throw MonitorError(message: "\(url.host ?? "The server") doesn't send parts of its downloads") }
+        return (data, response)
+    }
+    // One shared session keeps connections alive across requests; each request has its own receiver.
+    private static func send(_ request: URLRequest, limit: Int) async throws -> (Data, HTTPURLResponse) {
         let receiver = LimitedReceiver(limit: limit)
         let (data, response) = try await withCheckedThrowingContinuation { continuation in
             receiver.continuation = continuation
@@ -32,10 +48,8 @@ enum Fetch {
             task.delegate = receiver
             task.resume()
         }
-        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
-            throw HTTPStatusError(host: url.host ?? "Vendor source", status: (response as? HTTPURLResponse)?.statusCode ?? 0)
-        }
-        return data
+        guard let response = response as? HTTPURLResponse else { throw HTTPStatusError(host: request.url?.host ?? "Vendor source", status: 0) }
+        return (data, response)
     }
     static func json(_ url: String, limit: Int = 12_000_000, body: Data? = nil) async throws -> Any {
         try JSONSerialization.jsonObject(with: await data(url, limit: limit, body: body))
@@ -189,10 +203,11 @@ struct HomebrewMetadata: Sendable {
     var builds: [String: String] = [:]
     var casks: [String: CaskInfo] = [:]
     var apps: [String: [String]] = [:]  // app bundle name, such as Discord.app → the casks that install it
+    var downloads: [String: String] = [:]  // cask → its download URL
     // Only the fields a check compares are decoded, which is faster and lighter than parsing every field of
     // these 20–30 MB lists.
     private struct Formula: Decodable { let name: String; let versions: Versions; let revision: Int?; struct Versions: Decodable { let stable: String? } }
-    private struct Cask: Decodable { let token: String; let version: String?; let auto_updates: Bool?; let homepage: String?; let artifacts: [Artifact]? }
+    private struct Cask: Decodable { let token: String; let version: String?; let auto_updates: Bool?; let homepage: String?; let url: String?; let artifacts: [Artifact]? }
     // A cask's artifacts are a mixed list; only {"app": ["Discord.app", …]} entries are read, and only the plain names in them.
     private struct Artifact: Decodable {
         let app: [String]?
@@ -221,6 +236,7 @@ struct HomebrewMetadata: Sendable {
                     guard let version = row.version else { continue }
                     metadata.latest[row.token] = version.components(separatedBy: ",")[0]
                     metadata.casks[row.token] = CaskInfo(autoUpdates: row.auto_updates ?? false, homepage: row.homepage)
+                    if let url = row.url, url.hasPrefix("https://") { metadata.downloads[row.token] = url }
                     for app in Set((row.artifacts ?? []).flatMap { $0.app ?? [] }) { metadata.apps[app, default: []].append(row.token) }
                 }
             }
@@ -452,14 +468,15 @@ enum Scanner {
             end(CheckProgress.count(references, "action reference"))
         } else { live.skip("actions") }
         // Apps already at their newest release, from their Sparkle feed or Homebrew's cask data.
-        var currentApps = Set<String>(), freshApps: [String: SparkleFeeds.Release] = [:]
+        var currentApps = Set<String>(), freshApps: [String: SparkleFeeds.Release] = [:], feedNewest: [String: SparkleFeeds.Release] = [:]
         // Sparkle feeds name the newest release of self-updating apps, including apps outside the catalog.
         if report.installations.contains(where: { $0.feed != nil }) {
             begin("sparkle", "Reading apps' own update feeds", why: "Each self-updating app's feed says what its newest release is.")
-            let (found, current, fresh, read, unreadable) = await SparkleFeeds.findings(report.installations, skipping: Set(report.findings.map(\.installation.path)))
+            let (found, current, fresh, newest, read, unreadable) = await SparkleFeeds.findings(report.installations, skipping: Set(report.findings.map(\.installation.path)))
             report.findings += found
             currentApps.formUnion(current)
             freshApps = fresh
+            feedNewest = newest
             record("sparkle-feeds", "Sparkle update feeds", "\(read) self-updating apps' own update feeds checked for newer releases."
                    + (unreadable > 0 ? " \(unreadable) feed\(unreadable == 1 ? "" : "s") couldn't be read; those apps still check for updates themselves." : ""), url: "https://sparkle-project.org/documentation/publishing/")
             end(CheckProgress.count(read, "feed") + " read" + (unreadable > 0 ? ", \(unreadable) unreadable" : ""))
@@ -544,13 +561,16 @@ enum Scanner {
         let apps = report.installations.filter { ($0.manager == "cask" || $0.manager == "app") && $0.package != nil }
         // Other apps are matched to a cask by name, unless their own Sparkle feed already says what's newest.
         let unmatched = report.installations.filter { $0.manager == "app" && $0.package == nil && $0.feed == nil }
-        var newestFormulae: [String: String] = [:], compared = 0, newer = 0
+        var newestFormulae: [String: String] = [:], compared = 0, newer = 0, caskReleases: [String: (version: String, url: String)] = [:]
         for (kind, listed) in [("formula", formulae), ("cask", apps)] where !listed.isEmpty || (kind == "cask" && !unmatched.isEmpty) {
             show("Reading Homebrew's \(kind) list")
             do {
                 let metadata = try await HomebrewMetadata.load(kind)
                 let matched = kind == "cask" ? metadata.matched(unmatched) : [], items = listed + matched
                 let latest = metadata.latest, builds = metadata.builds
+                for item in items where kind == "cask" {
+                    if let token = item.package, let version = latest[token], version != "latest", let url = metadata.downloads[token] { caskReleases[item.path] = (version, url) }
+                }
                 for token in Set(items.compactMap(\.package)) { if let info = metadata.casks[token] { context.casks[token] = info } }
                 if kind == "formula" { newestFormulae = latest }
                 var candidates = 0
@@ -588,8 +608,53 @@ enum Scanner {
                                            action: "Remove retained copies once nothing depends on them.", links: ["https://docs.brew.sh/Manpage#cleanup-options-formulacask-"]))
         }
 
+        // What the newest release of each app with a vulnerable Sparkle or Electron inside bundles, read from inside its update
+        // zip, so its card can say when a release has the fix. The app's own channel comes first: its electron-builder feed,
+        // then its Sparkle feed, then Homebrew. Only these apps' downloads are read, a few hundred kilobytes each, and each
+        // release once.
+        var parentFixes: [String: ParentFix] = [:], peeks: [String: ReleasePeek.Result] = [:], looked: [String] = [], unread: [String] = []
+        let bundledFindings = report.findings.filter { $0.installation.bundledApp != nil && $0.kind != .update && $0.malicious != true }
+        for path in Set(bundledFindings.compactMap(\.installation.location)).sorted() {
+            guard let app = report.installations.first(where: { $0.path == path && ($0.manager == "app" || $0.manager == "cask") }), !Catalog.ownChannels.contains(app.product) else { continue }
+            var source: (version: String, date: Date?, url: String, newer: Bool)? = nil
+            if let feed = ElectronUpdater.feed(app: path), let text = try? await Fetch.string(feed.feed), let release = ElectronUpdater.release(text, base: feed.base), let url = release.download {
+                source = (release.version, release.date, url, looseLess(app.version, release.version))
+            } else if let release = feedNewest[path], let url = release.url {
+                source = (release.version ?? release.build, release.date, url, app.build.map { looseLess($0, release.build) } ?? looseLess(app.version, release.version ?? release.build))
+            } else if let cask = caskReleases[path] {
+                source = (cask.version, nil, cask.url, looseLess(app.version, cask.version))
+            }
+            guard let source else { continue }
+            guard ReleasePeek.readable(source.url) else { if source.newer { unread.append(app.name) }; continue }
+            for finding in bundledFindings where finding.installation.location == path {
+                guard let framework = finding.installation.bundledFramework else { continue }
+                var bundles = finding.installation.version, date = source.date
+                if source.newer {
+                    let key = framework + "|" + source.url
+                    if peeks[key] == nil, let saved = previous?.peeks?[key] { peeks[key] = saved }
+                    if peeks[key] == nil {
+                        show("Looking inside \(app.name) \(source.version)", why: "A few hundred kilobytes of its update download show which \(framework) it bundles.")
+                        peeks[key] = try? await ReleasePeek.bundled(framework == "Electron" ? "Electron Framework" : "Sparkle", in: source.url)
+                    }
+                    guard let peek = peeks[key], let found = peek.bundles else { unread.append(app.name); continue }
+                    bundles = found
+                    date = date ?? peek.modified
+                    looked.append("\(app.name) \(source.version) (\(framework) \(found))")
+                }
+                let verdict = framework == "Electron" ? electron.flatMap { Electron.fixes(finding, in: bundles, releases: $0) } : SparkleFeeds.fixes(finding, in: bundles)
+                guard let verdict else { continue }
+                parentFixes[finding.id] = ParentFix(version: source.version, date: date, bundles: bundles, fixes: verdict.fixes, total: verdict.total, complete: verdict.complete, newer: source.newer)
+            }
+        }
+        report.peeks = peeks.isEmpty ? nil : peeks.filter { $0.value.bundles != nil }
+        if !looked.isEmpty || !unread.isEmpty {
+            record("app-releases", "Inside apps' newest releases", (looked.isEmpty ? "" : "Read which framework the newest release of these apps bundles, from a few hundred kilobytes of each update zip: \(Alerts.list(Array(Set(looked)).sorted())). ")
+                   + (unread.isEmpty ? "" : "\(Alerts.list(Array(Set(unread)).sorted())) \(Set(unread).count == 1 ? "has" : "have") a newer release whose download can't be read in parts, such as a disk image, so whether it has the fix is known only once it's installed."),
+                   status: "checked")
+        }
+
         markAwaiting(&report.findings, newest: newestFormulae, waiting: waiting)
-        markBundledAwaiting(&report.findings, currentApps: currentApps, fresh: freshApps)
+        markBundledAwaiting(&report.findings, currentApps: currentApps, fresh: freshApps, parent: parentFixes)
         let skipped = dropSameReleaseUpdates(&report.findings)
         if skipped > 0 {
             record("same-release", "Update sanity check", "\(skipped) update\(skipped == 1 ? "" : "s") skipped because the newer version was the installed release written differently.", status: "checked")
@@ -692,14 +757,17 @@ enum Scanner {
     // A bundled framework is fixed only by a newer release of its app, so it needs attention only when such a release
     // has been out long enough for the app's own updater to have offered it (SparkleFeeds.settled). Otherwise it
     // waits: the app is current, its newer release is still reaching copies, or Shipshape can't see its releases.
-    static func markBundledAwaiting(_ findings: inout [Finding], currentApps: Set<String>, fresh: [String: SparkleFeeds.Release] = [:]) {
+    // When Shipshape looked inside the app's newest release (parent), the card says what it found instead (describe).
+    static func markBundledAwaiting(_ findings: inout [Finding], currentApps: Set<String>, fresh: [String: SparkleFeeds.Release] = [:], parent: [String: ParentFix] = [:]) {
         // Apps with a newer release: from their feed or Homebrew, or a fixed release of the app itself. A feed that dates
         // its newer releases as too recent outranks Homebrew, which gives no dates.
         let newer = Set(findings.filter { $0.kind == .update || ($0.kind == .security && $0.awaitingFix != true && $0.fixed.first?.isNumber == true) }.map(\.installation.path))
             .subtracting(fresh.keys)
         for index in findings.indices {
             let finding = findings[index], item = finding.installation
-            guard finding.kind != .update, finding.malicious != true, let name = item.bundledApp, let framework = item.bundledFramework, let app = item.location, !newer.contains(app) else { continue }
+            guard finding.kind != .update, finding.malicious != true, let name = item.bundledApp, let framework = item.bundledFramework, let app = item.location else { continue }
+            if let fix = parent[finding.id] { describe(&findings[index], fix, name: name, framework: framework); continue }
+            guard !newer.contains(app) else { continue }
             findings[index].awaitingFix = true
             findings[index].fixed = finding.fixed.first?.isNumber == true ? "\(finding.fixed), not in \(name) yet" : "No fix released yet"
             if let release = fresh[app] {
@@ -719,6 +787,28 @@ enum Scanner {
         }
     }
 
+    // A bundled framework whose app's newest release Shipshape looked inside. If that release has every fix, the fix is
+    // available as of the release's date and the card asks for the update; if it has some, it says how many. Otherwise
+    // the card keeps waiting, naming the release it looked at, and comes out of waiting, with an alert, once a release has
+    // the fix.
+    static func describe(_ finding: inout Finding, _ fix: ParentFix, name: String, framework: String) {
+        let release = "\(name) \(fix.version)", day = fix.date.map { $0.formatted(.dateTime.month(.abbreviated).day()) }
+        let out = day.map { ", out \($0)," } ?? ""
+        finding.parentFix = fix
+        if fix.newer && (fix.complete || fix.fixes > 0) {
+            finding.awaitingFix = nil
+            finding.fixed = (fix.complete ? "Fix available" : "Some fixes") + (day.map { " as of \($0)" } ?? "") + " in " + release
+            finding.action = fix.complete ? "\(release)\(out) bundles \(framework) \(fix.bundles), which has these fixes. Update \(name) to it."
+                : "\(release)\(out) bundles \(framework) \(fix.bundles), which has " + (fix.fixes == fix.total ? "these fixes, but that \(framework) no longer gets security fixes" : "\(fix.fixes) of these \(fix.total) fixes")
+                    + ". Update \(name) for those; Shipshape keeps looking inside new releases for the rest."
+            return
+        }
+        finding.awaitingFix = true
+        finding.fixed = finding.fixed.first?.isNumber == true ? "\(finding.fixed), not in \(release) yet" : "No fix released yet"
+        finding.action = (fix.newer ? "\(name)'s newest release, \(fix.version)\(out) still bundles \(framework) \(fix.bundles), without these fixes."
+                                    : "You have the newest \(name), \(fix.version), and it still bundles \(framework) \(fix.bundles).")
+            + " Only its developer can update \(framework), so let them know. Shipshape looks inside each new release of \(name) and alerts you when one has the fix."
+    }
     // An NVD finding with no fixed release, on a copy that is already Homebrew's newest: nothing to install yet.
     // It becomes an ordinary finding again, with its command, once Homebrew ships a newer release.
     // Without Homebrew's data nothing shows a newer release, so one that was waiting keeps waiting.

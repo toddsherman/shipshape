@@ -333,7 +333,9 @@ enum Commands {
             return [file(config, "Pin the server's package to \(fix ?? "a fixed release") or later, then restart the app that runs it.")]
         case "sparkle-framework", "electron-framework":
             guard let app = item.location, let name = item.bundledApp, let framework = item.bundledFramework else { return [] }
-            return [UpdateCommand(text: "Open \(name)", note: "Check for updates in \(name). A release that bundles \(framework) \(fix ?? "with the fix") or later fixes this.", kind: "app", target: app)]
+            let note = finding.parentFix.map { "\(name) \($0.version) bundles \(framework) \($0.bundles), with " + ($0.complete ? "these fixes" : "\($0.fixes) of these \($0.total) fixes") + ". Check for updates in \(name) to get it." }
+                ?? "Check for updates in \(name). A release that bundles \(framework) \(fix ?? "with the fix") or later fixes this."
+            return [UpdateCommand(text: "Open \(name)", note: note, kind: "app", target: app)]
         case "extension":
             guard let id = safe(item.name, "^[a-z0-9][a-z0-9-]*\\.[a-z0-9][a-z0-9._-]*$") else { return [] }
             if let cli = item.location { return command(Shell.quote(cli) + " --uninstall-extension " + Shell.quote(id), "Uninstalls the extension from \(item.package ?? "the editor").") }
