@@ -1296,6 +1296,8 @@ import Compression
         expect(hiddenNow.count == 1 && hideReport.findings[0].hidden == true && hideReport.attention.map(\.id) == [leftPad.id] && FindingCategory.counts(in: hideReport)[.security] == 1
                && Alerts.due(hideReport, delivered: [:]).map(\.id) == [leftPad.id] && hideReport.findings.count == 2,
                "a hidden finding stays in the report but leaves attention, the counts and alerts")
+        expect(FindingCategory.hiddenCounts(in: hideReport) == [FindingCategory(of: chatOld): 1] && FindingCategory.hiddenCounts(in: ScanReport(findings: [chatOld, leftPad])).isEmpty,
+               "each tile says how many of its findings are hidden")
         var moreCVEs = chatOld; moreCVEs.advisories.append("CVE-2026-55555"); moreCVEs.severity = "LOW"
         var nowExploited = chatOld; nowExploited.exploited = true
         var nowWaiting = chatOld; nowWaiting.awaitingFix = true

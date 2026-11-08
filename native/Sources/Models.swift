@@ -361,6 +361,10 @@ enum FindingCategory: Int, CaseIterable, Identifiable, Comparable {
     static func counts(in report: ScanReport) -> [FindingCategory: Int] {
         report.shown.reduce(into: [:]) { $0[FindingCategory(of: $1), default: 0] += 1 }
     }
+    // Findings the user hid, by the category they'd count in, so a tile can say how many it leaves out.
+    static func hiddenCounts(in report: ScanReport) -> [FindingCategory: Int] {
+        report.findings.filter { $0.hidden == true }.reduce(into: [:]) { $0[FindingCategory(of: $1), default: 0] += 1 }
+    }
     // The Security summary's status, set by the most urgent kind of finding rather than by how much of the inventory is
     // clean: one malicious package among hundreds of clean items is still the most urgent thing Shipshape can find.
     enum Urgency: Int, Comparable {

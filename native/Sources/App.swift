@@ -562,7 +562,7 @@ struct Dashboard: View {
                             Text("Nothing you can install fixes these yet: you have the newest release and no fixed one is out, the app that bundles the affected code hasn't shipped a fix to you yet, or a tool you run with npx still requires the affected version. These don't count as needing attention; \(appName) alerts you when a fix is out.").font(.callout).foregroundStyle(.secondary)
                         }
                         if findings.isEmpty {
-                            Label(filter == nil ? "Nothing needs attention in covered checks." : "None found in covered checks.", systemImage: "tray").foregroundStyle(.secondary).padding(.vertical, 30)
+                            Label(filter == nil ? "Nothing needs attention in covered checks." : hidden.isEmpty ? "None found in covered checks." : "None shown. \(hidden.count == 1 ? "The one you hid is" : "The \(hidden.count) you hid are") listed under Hidden.", systemImage: "tray").foregroundStyle(.secondary).padding(.vertical, 30)
                         }
                         let installed = findings.filter { $0.installation.domain != "projects" }, dependencies = findings.filter { $0.installation.domain == "projects" }
                         if !installed.isEmpty && !dependencies.isEmpty { Text("Installed on this Mac · \(installed.count)").font(.headline).padding(.top, 6) }
@@ -585,6 +585,8 @@ struct Dashboard: View {
                 }
                 // Also when the page opens from the menu bar panel with a tile already chosen.
                 .onReceive(monitor.$filter) { chosen in
+                    // A tile whose findings are all hidden opens with its Hidden list unfolded.
+                    if let chosen, let report = monitor.report, !report.shown.contains(where: { FindingCategory(of: $0) == chosen }) { showHidden = true }
                     if chosen != nil { DispatchQueue.main.async { withAnimation { proxy.scrollTo("findings", anchor: .top) } } }
                 }
             }
@@ -789,7 +791,7 @@ func historyBadge(_ entry: HistoryEntry) -> (String, Color) {
     switch entry.kind {
     case .security: return ((entry.severity.map { $0 + " · " } ?? "") + "SECURITY FIX", entry.resolved != nil ? .secondary : entry.severity == "CRITICAL" ? .red : .orange)
     case .unsupported: return ("END OF SUPPORT", entry.resolved != nil ? .secondary : .orange)
-    case .update: return ("UPDATE", entry.resolved != nil ? .secondary : .blue)
+    case .update: return ("UPDATE", .secondary)  // not blue, which reads as something to click
     }
 }
 // The top of the Security page: how much of the inventory has no findings, then the findings sorted into the
@@ -812,8 +814,9 @@ struct Overview: View {
         }
     }
     func tiles(_ categories: [FindingCategory], counts: [FindingCategory: Int]) -> some View {
-        ForEach(categories) { category in
-            CategoryTile(category: category, count: counts[category] ?? 0, selected: monitor.filter == category) {
+        let hidden = FindingCategory.hiddenCounts(in: report)
+        return ForEach(categories) { category in
+            CategoryTile(category: category, count: counts[category] ?? 0, hidden: hidden[category] ?? 0, selected: monitor.filter == category) {
                 monitor.filter = monitor.filter == category ? nil : category
             }
         }
@@ -897,18 +900,24 @@ struct ShareBar: View {
 // One kind of finding: how many, what it means and a button that lists them. A tile with findings has its bar color
 // as a stripe and on its count; malware and known exploitation are filled red instead, so they stand out. Empty
 // tiles are dimmed.
+// Hidden findings stay out of the count, which says beside it how many are hidden; a tile whose findings are all hidden
+// still opens, to list them under Hidden.
 struct CategoryTile: View {
     let category: FindingCategory
     let count: Int
+    var hidden = 0
     let selected: Bool
     let action: () -> Void
     var body: some View {
-        let hot = category.urgent && count > 0
+        let hot = category.urgent && count > 0, opens = count > 0 || hidden > 0
         let ink: Color = hot ? .white : count == 0 ? .secondary : .primary
-        Button { if count > 0 { action() } } label: {
+        Button { if opens { action() } } label: {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("\(count)").font(.system(size: 30, weight: .semibold, design: .rounded)).foregroundStyle(count > 0 && !hot ? category.color : ink)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("\(count)").font(.system(size: 30, weight: .semibold, design: .rounded)).foregroundStyle(count > 0 && !hot ? category.color : ink)
+                        if hidden > 0 { Text("(\(hidden) hidden)").font(.callout).foregroundStyle(hot ? Color.white.opacity(0.85) : .secondary) }
+                    }
                     Text(category.title).font(.headline)
                     Text(category.detail).font(.callout).foregroundStyle(hot ? Color.white.opacity(0.9) : .secondary).fixedSize(horizontal: false, vertical: true)
                 }
@@ -918,11 +927,11 @@ struct CategoryTile: View {
                 }
                 Rectangle().fill(hot ? Color.white.opacity(0.25) : Color.primary.opacity(0.08)).frame(height: 1)
                 HStack {
-                    Text(count == 0 ? "None found" : selected ? "Showing below" : "Show items")
+                    Text(!opens ? "None found" : selected ? "Showing below" : count == 0 ? "Show hidden" : "Show items")
                     Spacer()
-                    Image(systemName: count == 0 ? "checkmark" : selected ? "arrow.down" : "arrow.right")
+                    Image(systemName: !opens ? "checkmark" : selected ? "arrow.down" : "arrow.right")
                 }
-                .font(.callout).foregroundStyle(hot ? Color.white : count == 0 ? Color.secondary : Color.accentColor)
+                .font(.callout).foregroundStyle(hot ? Color.white : !opens ? Color.secondary : Color.accentColor)
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
             .foregroundStyle(ink)
@@ -971,7 +980,7 @@ func findingBadge(_ finding: Finding) -> (String, Color) {
     switch finding.kind {
     case .security: return ((finding.severity.map { $0 + " · " } ?? "") + "SECURITY FIX", finding.severity == "CRITICAL" ? .red : .orange)
     case .unsupported: return ("END OF SUPPORT", .orange)
-    case .update: return ("UPDATE", .blue)
+    case .update: return ("UPDATE", .secondary)  // not blue, which reads as something to click
     }
 }
 // Text in a card can be selected and copied, as in a document: a drag, a double-click or Command-A selects within

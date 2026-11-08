@@ -48,8 +48,13 @@ if [ ! -x "$BINARY" ] || [ -n "$(find "$SOURCES" "$ROOT/native/Resources" "$ROOT
   for item in "$FRAMEWORK/Versions/B/Autoupdate" "$FRAMEWORK/Versions/B/Updater.app" "$FRAMEWORK" "$APP"; do codesign --force --sign - "$item" 2>/dev/null; done
 fi
 
-STATE="$WORK/run/$NAME"
-rm -rf "$STATE"; mkdir -p "$STATE"
+# The copy's data goes in the temporary folder on the startup disk: when this checkout is on an external drive, macOS
+# asks before each new build of the copy reads files there, and the copy waits without a window until it's answered.
+RUN="${TMPDIR:-/tmp}/shipshape-scenarios"
+rm -rf "$RUN"; mkdir -p "$RUN/run"
+cp -R "$WORK/states" "$RUN/states"
+STATE="$RUN/run/$NAME"
+mkdir -p "$STATE"
 cp "$WORK/states/$NAME/state.json" "$STATE/state.json"
 # Quit a running copy the normal way first; a copy killed outright may come back without its window.
 if pgrep -f "$APP/Contents/MacOS/Shipshape" >/dev/null; then
@@ -60,7 +65,7 @@ fi
 # The dev copy's own setting (its bundle ID's defaults), the same one apps use to opt out of dark mode.
 if [ "${2:-}" = light ]; then defaults write sh.todd.security-monitor.dev NSRequiresAquaSystemAppearance -bool true
 else defaults delete sh.todd.security-monitor.dev NSRequiresAquaSystemAppearance 2>/dev/null || true; fi
-open -n --env SHIPSHAPE_STATE_DIR="$STATE" --env SHIPSHAPE_NO_CHECKS=1 --env SHIPSHAPE_SCENARIOS="$WORK/states" --env SHIPSHAPE_SCENARIO="$NAME" "$APP"
+open -n --env SHIPSHAPE_STATE_DIR="$STATE" --env SHIPSHAPE_NO_CHECKS=1 --env SHIPSHAPE_SCENARIOS="$RUN/states" --env SHIPSHAPE_SCENARIO="$NAME" "$APP"
 # Opening it again once it's running brings its window forward, in case it came up without one.
 sleep 2; open "$APP"
 printf 'Opened the %s scenario in Shipshape Dev%s.\n' "$NAME" "$([ "${2:-}" = light ] && echo ' in light mode')"
