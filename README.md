@@ -49,7 +49,7 @@ bash native/build.sh
 open dist/Shipshape.app
 ```
 
-The one third-party dependency is [Sparkle](https://sparkle-project.org), which installs Shipshape's own updates; `native/sparkle.sh` downloads its pinned release and checks the checksum. See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved, [SECURITY.md](SECURITY.md) to report a vulnerability privately, and [CHANGELOG.md](CHANGELOG.md) for what changed.
+The one third-party dependency is [Sparkle](https://sparkle-project.org), which installs Shipshape's own updates; `native/sparkle.sh` downloads its pinned release and checks the checksum. See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved, [SECURITY.md](SECURITY.md) to report a vulnerability privately, [CHANGELOG.md](CHANGELOG.md) for what changed and [ROADMAP.md](ROADMAP.md) for what's planned.
 
 ## License
 
