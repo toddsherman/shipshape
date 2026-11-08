@@ -2,6 +2,11 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.33 — November 8, 2026
+
+- **Tiles count hidden findings.** A tile's count leaves out what you hid, and now says how many beside it, such as **Known exploitation 0 (2 hidden)**. A tile whose findings are all hidden still opens, to show them under Hidden.
+- **Only things you can click are blue.** The **UPDATE** label on a card was blue, beside the blue Hide button, so it looked like a button too. It's gray now.
+
 ## 0.3.32 — November 7, 2026
 
 - **"Fix available as of Nov 7 in Orca 1.4.253."** A vulnerable Sparkle or Electron inside an app waits for the app's developer to ship a release with the fix. Shipshape now finds the app's newest release, from its electron-builder feed, its Sparkle feed or Homebrew, and when that release is a zip, reads the Sparkle or Electron version inside it from a few hundred kilobytes of the download instead of the whole thing. Once a release has the fix, the card changes to **Fix available as of** that release's date, leaves Waiting for a fix, and you get an alert saying the fix is in it. A release with only some of the fixes says how many. One with none keeps the card waiting as **43.8.7, not in inMusic Software Center 1.40.1 yet**, naming the release it looked at. Apps that ship only as disk images or installer packages, such as Discord or Mullvad VPN, can't be read in parts, so their cards still say only that a newer release is out.
