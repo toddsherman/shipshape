@@ -6,7 +6,7 @@ Thanks for helping. The most useful contributions are:
 - **Accuracy:** findings that are wrong (false positives) and known fixes it misses (false negatives). Include the product, installed version, advisory ID and how it was installed.
 - **Update routes:** better commands or links for installing a fix, for each way software can be installed.
 
-Open an issue before starting anything large, so we can agree on the approach.
+Open an issue before starting anything large, so we can agree on the approach. [ROADMAP.md](ROADMAP.md) lists what's planned and what isn't.
 
 ## Build and test
 
