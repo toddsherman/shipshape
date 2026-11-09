@@ -37,6 +37,14 @@ Shipshape checks when it opens, daily at 9 a.m. Pacific and whenever you click *
 
 Download the latest `Shipshape-<version>.dmg` from [Releases](https://github.com/toddsherman/shipshape/releases), drag Shipshape into Applications and open it. Builds are signed with Developer ID and notarized by Apple. Requires macOS 13 or later on Apple silicon or Intel.
 
+Or install the same disk image with [Homebrew](https://brew.sh), from Shipshape's [tap](https://github.com/toddsherman/homebrew-shipshape):
+
+```sh
+brew install --cask toddsherman/shipshape/shipshape
+```
+
+If Homebrew says the tap is untrusted, run `brew trust --cask toddsherman/shipshape/shipshape` first. Shipshape still installs its own updates, so Homebrew leaves it alone after that.
+
 Add the folders that hold your projects (Shipshape suggests the ones Claude Code and Codex have worked in), run the first check and turn on notifications. The first check takes a few minutes, because NVD limits requests made without an API key.
 
 From 0.3.14, Shipshape updates itself. When a new version is out, it shows the release notes; **Install Update** downloads it, checks that it's signed by Shipshape's developer, then quits, replaces and reopens the app. You can turn off the daily check in Settings. Copies older than 0.3.14 need one manual download to get there.
