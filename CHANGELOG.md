@@ -2,7 +2,7 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
-## 0.3.34 — not yet released
+## 0.3.34 — November 10, 2026
 
 Fixes from a review of the whole app. Most are vulnerabilities Shipshape could miss while reporting the check as complete.
 
