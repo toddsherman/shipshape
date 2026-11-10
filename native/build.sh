@@ -12,6 +12,9 @@ if [ -n "${SIGN_IDENTITY:-}" ] && ! plutil -extract SUPublicEDKey raw -o - "$PLI
   exit 1
 fi
 SPARKLE="$(bash "$ROOT/native/sparkle.sh")"
+# Start from an empty bundle: one left by an earlier release has a notarization ticket stapled inside it, and files
+# this build no longer makes, and neither belongs in a new build.
+rm -rf "$APP"
 mkdir -p "$BUILD" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
 for ARCH in arm64 x86_64; do

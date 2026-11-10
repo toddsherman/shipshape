@@ -2,6 +2,31 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.34 — not yet released
+
+Fixes from a review of the whole app. Most are vulnerabilities Shipshape could miss while reporting the check as complete.
+
+- **Gemfile.lock with more than one gem source.** Only the first source's gems were read, so with a private source listed first, every gem from rubygems.org was skipped. Every source is read now.
+- **uv.lock from Artifactory.** A registry whose address contains "virtual", Artifactory's usual name, made Shipshape skip every package in the file.
+- **Yarn aliases.** An alias such as `string-width-cjs@npm:string-width@^4.2.0` was looked up under a name that doesn't exist. It's checked as the package it installs.
+- **GitHub Actions with capitals in their names,** such as `SonarSource/sonarqube-scan-action`, were never matched: OSV matches the name exactly, and Shipshape asked in lowercase.
+- **Moving tags and "last affected" advisories.** `@v4` wasn't matched by an advisory that names only a last affected 4.x release. It is now, and the card says the tag may already point past it.
+- **Large OSV answers.** OSV sends big answers in pages; Shipshape read the first and counted the rest as clean. It asks for every page.
+- **Deep and very large folders.** Lockfiles are read eight levels down, up from five, which reaches Xcode projects inside a repository. Coverage says when deeper folders weren't read, and the check is partial when a folder has more than 2,000 lockfiles.
+- **Sparkle feeds that can't be read** now mark that check partial instead of checked.
+- **Flaws in another platform's build.** An NVD entry for the Windows, Linux, Android or iOS build of an app could match the Mac copy.
+- **go.mod.** Versions in `exclude` blocks were listed as dependencies, and a `replace` was ignored. The replacement is what's checked now.
+- **A fix that looked like a commit.** An advisory whose only fix was a commit hash could put the hash on the card as the fixed version.
+- **"Fix available" for apps that reuse one download address.** What a release bundles was remembered by address alone, so a newer release at the same address kept the old answer. A feed's delta patches also hid the release's real download.
+- **The right command for the right copy.** When a project has two versions of a package, only the one package.json asks for gets `yarn upgrade`, `pnpm add` or `bun add`; an old npm lockfile's dev flag no longer turns a package nobody asked for into a dev dependency. `cargo update` names the version, so it works when Cargo.lock has two.
+- **Duplicates.** Gems in a mise Ruby were listed once per alias, and same-named MCP servers set for different projects in one settings file showed as one, chosen at random.
+- **A malformed update zip could crash Shipshape** on every check. Sizes that don't fit, or point outside the download, are refused.
+- **Unreadable saved data.** If Shipshape's saved data couldn't be read, it was replaced and the warning vanished within a second. The file is now kept beside the new one, and the message stays until you dismiss it. Messages have a **Dismiss** button.
+- **The first check waits for you.** It used to start by itself before you could add project folders. Adding or removing a folder now starts a check.
+- **The daily check retries.** A check that ran before the network was back used up the day. The day now counts only once a check reaches OSV, and a missed one runs when the Mac is back online.
+- **Clicking an alert opens the window** even after the window was closed, and **Enable notifications** opens System Settings once macOS has stopped asking.
+- **Shipshape Dev keeps its own data** when opened without its script, instead of sharing the installed app's.
+
 ## 0.3.33 — November 8, 2026
 
 - **Tiles count hidden findings.** A tile's count leaves out what you hid, and now says how many beside it, such as **Known exploitation 0 (2 hidden)**. A tile whose findings are all hidden still opens, to show them under Hidden.

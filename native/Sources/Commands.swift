@@ -435,7 +435,8 @@ enum Commands {
         case "poetry": return projectBatch("poetry", ["poetry update ", ""], quoted, "Updates this package in poetry.lock within allowed ranges.")
         case "cargo":
             guard let fix else { return [] }
-            return project("cargo", "cargo update -p " + quoted + " --precise " + fix, "Updates Cargo.lock. Raise the version requirement in Cargo.toml if Cargo refuses.")
+            // Cargo.lock often holds two versions of a crate, and cargo refuses a bare name then, so the version is named too.
+            return project("cargo", "cargo update -p " + Shell.quote(package + "@" + item.version) + " --precise " + fix, "Updates Cargo.lock. Raise the version requirement in Cargo.toml if Cargo refuses.")
         case "bundler": return projectBatch("bundle", ["bundle update ", " --conservative"], quoted, "Updates this gem in Gemfile.lock with minimal other changes.")
         case "go":
             guard let fix else { return [] }

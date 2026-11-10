@@ -97,16 +97,21 @@ enum Inventory {
         add(packages)
         check("inventory-packages", "Global packages", "packages", packageErrors, "Read \(packages.count) globally installed npm, Bun, pnpm, pip, pipx, uv tool, cargo, Ruby gem and go install packages, the npx cache, and VS Code, Cursor and Windsurf extensions.")
         if !projectFolders.isEmpty { progress("Reading lockfiles in \(projectFolders.count) project folder\(projectFolders.count == 1 ? "" : "s")") }
-        var lockfiles: [String] = [], mcpFiles: [String] = [], projectErrors: [String] = []
+        var lockfiles: [String] = [], mcpFiles: [String] = [], projectErrors: [String] = [], deeper = 0
         for folder in projectFolders {
             guard fm.fileExists(atPath: folder) else { projectErrors.append("Cannot read \(display(folder))"); continue }
-            for path in Lockfiles.find(in: folder) { if path.hasSuffix(".mcp.json") { mcpFiles.append(path) } else { lockfiles.append(path) } }
+            let search = Lockfiles.search(in: folder)
+            for path in search.files { if path.hasSuffix(".mcp.json") { mcpFiles.append(path) } else { lockfiles.append(path) } }
+            deeper += search.deeper
+            // Reading stopped part-way, so projects in this folder are missing: the check is partial, not complete.
+            if search.full { projectErrors.append("Stopped reading \(display(folder)) after \(Lockfiles.fileLimit) lockfiles and workflows, so some of its projects weren't checked. Choose the folders inside it instead") }
         }
         let projectItems = projects(lockfiles, errors: &projectErrors)
         add(projectItems)
         check("inventory-projects", "Project dependencies", "projects", projectErrors, projectFolders.isEmpty
               ? "No project folders chosen. Add them in Settings to check your apps' dependencies."
-              : "Read \(projectItems.count) package versions from \(lockfiles.count) lockfiles in \(projectFolders.count) project folder\(projectFolders.count == 1 ? "" : "s").")
+              : "Read \(projectItems.count) package versions from \(lockfiles.count) lockfiles in \(projectFolders.count) project folder\(projectFolders.count == 1 ? "" : "s")."
+                + (deeper == 0 ? "" : " \(CheckProgress.count(deeper, "folder")) more than eight levels down \(deeper == 1 ? "wasn't" : "weren't") read; add a project that deep as its own folder."))
         progress("Reading MCP server settings")
         let (servers, mcpErrors) = mcpServers(projectFiles: mcpFiles)
         add(servers)
@@ -144,7 +149,7 @@ enum Inventory {
             while let url = enumerator.nextObject() as? URL {
                 if url.pathExtension == "app" {
                     enumerator.skipDescendants()
-                    let data = try? Data(contentsOf: url.appendingPathComponent("Contents/Info.plist"))
+                    let data = read(url.appendingPathComponent("Contents/Info.plist").path, limit: 8_000_000, followLinks: true)
                     let info = data.flatMap { (try? PropertyListSerialization.propertyList(from: $0, format: nil)) as? [String: Any] } ?? [:]
                     let bundleID = info["CFBundleIdentifier"] as? String
                     let excluded = bundleID.map { Catalog.excludedBundleIDs.contains($0) } ?? false
@@ -419,7 +424,10 @@ enum Inventory {
         func add(_ root: String, ruby: String?) { for version in children(root) { homes.append(("\(root)/\(version)", ruby.map { $0 + "/bin/gem" })) } }
         for prefix in ["/opt/homebrew", "/usr/local"] { add(prefix + "/lib/ruby/gems", ruby: prefix + "/opt/ruby") }
         for (root, layout) in [(home + "/.rbenv/versions", ""), (home + "/.local/share/mise/installs/ruby", "")] {
-            for version in children(root) { add("\(root)/\(version)\(layout)/lib/ruby/gems", ruby: "\(root)/\(version)") }
+            // mise links aliases such as "3.3" and "latest" to a version's folder; following them would count its gems again.
+            for version in children(root) where (try? fm.destinationOfSymbolicLink(atPath: "\(root)/\(version)")) == nil {
+                add("\(root)/\(version)\(layout)/lib/ruby/gems", ruby: "\(root)/\(version)")
+            }
         }
         add(home + "/.gem/ruby", ruby: nil)
         return homes.flatMap { gems(in: $0.gems, gem: $0.gem) }
@@ -552,25 +560,28 @@ enum Inventory {
          home + "/.codeium/windsurf/mcp_config.json", home + "/Library/Application Support/Code/User/mcp.json", home + "/.gemini/settings.json", home + "/.codex/config.toml"]
     }
     static func mcpServers(projectFiles: [String]) -> ([Installation], [String]) {
-        var servers: [(config: String, name: String, command: String, args: [String])] = [], errors: [String] = []
-        func collect(_ config: String, _ table: Any?) {
-            for (name, value) in (table as? [String: Any]) ?? [:] {
-                guard let server = value as? [String: Any], let command = server["command"] as? String else { continue }
-                servers.append((config, name, command, (server["args"] as? [Any])?.compactMap { $0 as? String } ?? []))
+        // `scope` is the project a server is set for inside ~/.claude.json, which keeps servers per project folder.
+        var servers: [(config: String, name: String, command: String, args: [String], scope: String?)] = [], errors: [String] = []
+        func collect(_ config: String, _ table: Any?, scope: String? = nil) {
+            let table = (table as? [String: Any]) ?? [:]
+            for name in table.keys.sorted() {
+                guard let server = table[name] as? [String: Any], let command = server["command"] as? String else { continue }
+                servers.append((config, name, command, (server["args"] as? [Any])?.compactMap { $0 as? String } ?? [], scope))
             }
         }
         for file in mcpConfigFiles.filter({ $0.hasSuffix(".json") }) + projectFiles where fm.fileExists(atPath: file) {
             guard let obj = json(file) else { errors.append("Cannot parse \(display(file))"); continue }
             collect(file, obj["mcpServers"])
             collect(file, obj["servers"])
-            for project in ((obj["projects"] as? [String: Any]) ?? [:]).values { collect(file, (project as? [String: Any])?["mcpServers"]) }
+            let projects = (obj["projects"] as? [String: Any]) ?? [:]
+            for project in projects.keys.sorted() { collect(file, (projects[project] as? [String: Any])?["mcpServers"], scope: project) }
         }
         let codex = mcpConfigFiles.first { $0.hasSuffix(".toml") }!
         if let text = read(codex, limit: 4_000_000, followLinks: true).map({ String(decoding: $0, as: UTF8.self) }) {
             for section in text.components(separatedBy: "\n[").dropFirst() {
                 guard let name = captures("^mcp_servers\\.([A-Za-z0-9_\"-]+)\\]", section).first?[1], let command = captures("(?m)^command\\s*=\\s*\"([^\"]*)\"", section).first?[1] else { continue }
                 let args = captures("(?m)^args\\s*=\\s*\\[([^\\]]*)\\]", section).first.map { captures("\"([^\"]*)\"", $0[1]).map { $0[1] } } ?? []
-                servers.append((codex, name.replacingOccurrences(of: "\"", with: ""), command, args))
+                servers.append((codex, name.replacingOccurrences(of: "\"", with: ""), command, args, nil))
             }
         }
         // Unpinned npm servers run whatever npx last cached; report that version when it is present.
@@ -580,15 +591,26 @@ enum Inventory {
                 cached[item.name] = item.version
             }
         }
-        var items: [Installation] = []
+        // One settings file can set a server of the same name for several projects. The first keeps the plain
+        // "file#name" path, others that run the same package and version are the same finding, and one that runs
+        // something else gets its project in the path, so neither hides the other.
+        var items: [Installation] = [], taken: [String: Set<String>] = [:]
         for server in servers {
             guard let (ecosystem, spec) = mcpPackage(command: server.command, args: server.args) else { continue }
             let (name, version) = pinned(spec, ecosystem)
             guard Commands.safe(name, Commands.namePatterns[ecosystem]!) != nil else { continue }
             let running = version ?? (ecosystem == "npm" ? cached[name] : nil)
             let pin = version != nil ? "pinned" : running != nil ? "unpinned; npx cache holds \(running!)" : "unpinned; runs the latest release"
-            items.append(Installation(product: "mcp:" + name, name: "\(server.name) (\(name))", version: running ?? "unpinned", path: server.config + "#" + server.name, domain: "mcp",
-                                      note: "MCP server in \(display(server.config)) · \(pin)", ecosystem: running == nil ? nil : ecosystem, packageName: name, manager: "mcp", location: server.config, file: server.config))
+            var path = server.config + "#" + server.name
+            let runs = name + "@" + (version ?? "")
+            if let earlier = taken[path] {
+                if earlier.contains(runs) { continue }
+                taken[path, default: []].insert(runs)
+                path += "#" + (server.scope ?? runs)
+            } else { taken[path] = [runs] }
+            let place = server.scope.map { " for " + display($0) } ?? ""
+            items.append(Installation(product: "mcp:" + name, name: "\(server.name) (\(name))", version: running ?? "unpinned", path: path, domain: "mcp",
+                                      note: "MCP server in \(display(server.config))\(place) · \(pin)", ecosystem: running == nil ? nil : ecosystem, packageName: name, manager: "mcp", location: server.config, file: server.config))
         }
         return (items, errors)
     }

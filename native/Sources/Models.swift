@@ -691,6 +691,12 @@ enum History {
 // first launch; if that move fails, the old folder keeps being used so nothing appears lost.
 enum StateFolder {
     static let formerName = "Security Monitor"
+    // The installed app's folder, or a separate one for a development copy, whose bundle ID ends in ".dev". The copy
+    // never takes part in the move from the former name, which belongs to the installed app's data.
+    static func folder(in support: URL, bundleID: String?) -> URL {
+        if bundleID?.hasSuffix(".dev") == true { return support.appendingPathComponent(appName + " Dev", isDirectory: true) }
+        return resolve(in: support)
+    }
     static func resolve(in support: URL, name: String = appName) -> URL {
         let fm = FileManager.default
         let current = support.appendingPathComponent(name, isDirectory: true), former = support.appendingPathComponent(formerName, isDirectory: true)
@@ -704,9 +710,18 @@ enum Schedule {
         let c = calendar.dateComponents([.year, .month, .day], from: date)
         return "\(c.year!)-\(c.month!)-\(c.day!)"
     }
-    static func isDue(now: Date, lastDay: String?) -> Bool {
-        calendar.component(.hour, from: now) >= 9 && day(now) != lastDay
+    static let retry: TimeInterval = 30 * 60
+    // Due from 9 a.m. until a check has counted for the day. A check that didn't count is tried again, but not
+    // sooner than `retry` after the last attempt, so a source that is down isn't asked every minute.
+    static func isDue(now: Date, lastDay: String?, lastAttempt: Date? = nil) -> Bool {
+        guard calendar.component(.hour, from: now) >= 9 && day(now) != lastDay else { return false }
+        return lastAttempt.map { now.timeIntervalSince($0) >= retry || now < $0 } ?? true
     }
+    // A check that finishes from 8 a.m. on counts as that day's: one run at launch just before 9 isn't repeated at 9.
+    static func counts(_ finished: Date) -> Bool { calendar.component(.hour, from: finished) >= 8 }
+    // Whether a check got through to the advisory services. OSV is asked on every check, so when it failed, the
+    // Mac was most likely offline, and the day's check hasn't really happened.
+    static func reached(_ checks: [SourceCheck]) -> Bool { !checks.contains { $0.id == "osv" && $0.status == "failed" } }
 }
 struct MonitorError: LocalizedError {
     let message: String
