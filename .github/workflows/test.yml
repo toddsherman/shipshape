@@ -12,13 +12,20 @@ jobs:
   test:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to a commit, with its version beside it, the way Shipshape itself asks of workflows.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check the scripts' syntax
+        run: for script in native/*.sh native/*.command; do bash -n "$script"; done
       - name: Swift version
         run: xcrun swift --version
       - name: Rule tests
         run: bash native/test.sh
+      # For macOS 13 on both processors, as the release is built, so an API that needs a newer macOS fails here.
       - name: Type-check the app
-        run: xcrun swiftc -swift-version 5 -parse-as-library -typecheck -F "$(bash native/sparkle.sh)" native/Sources/*.swift
+        run: |
+          for arch in arm64 x86_64; do
+            xcrun swiftc -swift-version 5 -parse-as-library -typecheck -target "$arch-apple-macos13.0" -F "$(bash native/sparkle.sh)" native/Sources/*.swift
+          done
       - name: Type-check the appcast tool
         run: xcrun swiftc -swift-version 5 -parse-as-library -typecheck native/Release/*.swift
       - name: Type-check the scenario generator

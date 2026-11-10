@@ -102,6 +102,7 @@ import Compression
         expect(Lockfiles.gemfile("GEM\n  remote: https://rubygems.org/\n  specs:\n    nokogiri (1.16.0-arm64-darwin)\n      racc (~> 1.4)\n    rake (13.0.6)\n\nPLATFORMS\n  arm64-darwin\n").map { $0.name + "@" + $0.version } == ["nokogiri@1.16.0", "rake@13.0.6"], "Gemfile.lock specs")
         expect(Lockfiles.goModules("module x\n\ngo 1.22\n\nrequire golang.org/x/net v0.17.0\n\nrequire (\n\tgithub.com/a/b v1.2.3\n\tgithub.com/c/d v0.0.0-2023 // indirect\n)\n").map { "\($0.name)@\($0.version):\($0.dependency!)" } == ["golang.org/x/net@0.17.0:direct", "github.com/a/b@1.2.3:direct", "github.com/c/d@0.0.0-2023:transitive"], "go.mod requirements")
 
+
         // MCP server commands
         expect(Inventory.mcpPackage(command: "npx", args: ["-y", "@modelcontextprotocol/server-github"])! == ("npm", "@modelcontextprotocol/server-github"), "npx -y package")
         expect(Inventory.mcpPackage(command: "/usr/local/bin/uvx", args: ["--python", "3.12", "mcp-server-fetch==0.6.2"])! == ("PyPI", "mcp-server-fetch==0.6.2"), "uvx skips flag values")
@@ -1589,6 +1590,89 @@ import Compression
         let actionsDated = GitHubActions.advisories(try JSONSerialization.jsonObject(with: Data(#"{"vulns":[{"id":"GHSA-x","published":"2025-03-14T22:00:00Z","aliases":["CVE-2025-30066"],"affected":[{"package":{"name":"o/a"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}]}"#.utf8)) as! [String: Any], name: "o/a")
         let actionFinding = GitHubActions.finding(Installation(product: "x", name: "o/a", version: "v1.0.0", path: "/w/.github/workflows/ci.yml#o/a", domain: "projects", ecosystem: "GitHub Actions", packageName: "o/a", manager: "actions", location: "/w"), advisories: actionsDated)
         expect(actionFinding?.published == ["GHSA-x": advisoryDate("2025-03-14T22:00:00Z")!] && actionFinding?.sameIssue == ["CVE-2025-30066": "GHSA-x"], "GitHub Actions advisories' dates and aliases")
+        // Fixes from the November 2026 review, in a scope of their own.
+        do {
+            // Parsers that used to drop or misread entries.
+            let twoSources = "GEM\n  remote: https://gems.example.com/\n  specs:\n    private-gem (1.0.0)\n\nGEM\n  remote: https://rubygems.org/\n  specs:\n    rack (2.2.8)\n    rails (7.1.0)\n\nPLATFORMS\n  ruby\n"
+            expect(Lockfiles.gemfile(twoSources).map { $0.name + "@" + $0.version } == ["private-gem@1.0.0", "rack@2.2.8", "rails@7.1.0"], "every GEM section of a Gemfile.lock is read, one per gem source")
+            let artifactory = "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\nsource = { registry = \"https://example.jfrog.io/artifactory/api/pypi/pypi-virtual/simple\" }\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { virtual = \".\" }\n\n[[package]]\nname = \"local\"\nversion = \"1.0\"\nsource = { path = \"../local\" }\n"
+            expect(Lockfiles.parse("/nowhere/uv.lock", data: Data(artifactory.utf8))?.packages.map(\.name) == ["requests"], "a registry whose address contains \"virtual\" is still a registry; the project itself and a path aren't")
+            let aliases = "\"string-width-cjs@npm:string-width@^4.2.0\":\n  version \"4.2.3\"\n\n\"@scope/old@npm:@scope/real@^1.0.0\":\n  version \"1.2.0\"\n\n\"lodash@npm:^4.17.21\":\n  version: 4.17.21\n"
+            expect(Lockfiles.yarn(aliases).map { $0.name + "@" + $0.version } == ["string-width@4.2.3", "@scope/real@1.2.0", "lodash@4.17.21"], "a Yarn alias is checked as the package it installs")
+            let twoLodash = "lodash@^3.10.0:\n  version \"3.10.1\"\n\nlodash@^4.17.21:\n  version \"4.17.21\"\n"
+            expect(Lockfiles.yarnRooted(twoLodash, requests: ["lodash@^4.17.21"]) == ["lodash@4.17.21"], "only the copy package.json asks for is the project's own")
+            let importers = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      lodash:\n        specifier: ^4.17.21\n        version: 4.17.21\n      '@scope/ui':\n        specifier: ^2.0.0\n        version: 2.1.0(react@18.3.1)\n\npackages:\n\n  lodash@3.10.1:\n    resolution: {}\n"
+            expect(Lockfiles.pnpmRooted(importers) == ["lodash@4.17.21", "@scope/ui@2.1.0"], "pnpm's importers say which version the project asked for")
+            let nestedBun = "{\n  \"packages\": {\n    \"lodash\": [\"lodash@4.17.21\", \"\", {}, \"sha512-x\"],\n    \"old-tool/lodash\": [\"lodash@3.10.1\", \"\", {}, \"sha512-y\"],\n  }\n}"
+            expect(Lockfiles.bunRooted(nestedBun) == ["lodash@4.17.21"], "in bun.lock the project's own copy is keyed by the bare name")
+            let rolesRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-roles-\(UUID().uuidString)").path
+            try FileManager.default.createDirectory(atPath: rolesRoot, withIntermediateDirectories: true)
+            try Data(#"{"dependencies":{"lodash":"^4.17.21"},"devDependencies":{"jest":"^29.0.0"}}"#.utf8).write(to: URL(fileURLWithPath: rolesRoot + "/package.json"))
+            let yarnRoles = Lockfiles.parse(rolesRoot + "/yarn.lock", data: Data(twoLodash.utf8))?.packages.map { "\($0.version):\($0.dependency ?? "none")" }
+            expect(yarnRoles == ["3.10.1:transitive", "4.17.21:direct"], "a second version of a direct dependency came along with another package")
+            let npmV1 = #"{"lockfileVersion":1,"dependencies":{"lodash":{"version":"4.17.21"},"jest":{"version":"29.0.0","dev":true},"ansi-regex":{"version":"5.0.1","dev":true}}}"#
+            let v1Roles = Lockfiles.parse(rolesRoot + "/package-lock.json", data: Data(npmV1.utf8))?.packages.map { "\($0.name):\($0.dependency ?? "none")" }
+            expect(v1Roles == ["ansi-regex:transitive", "jest:dev", "lodash:direct"], "a version 1 lockfile's dev flag doesn't make a package one the project asked for")
+            try FileManager.default.removeItem(atPath: rolesRoot)
+            let goBlocks = "module x\n\nrequire (\n\tgithub.com/a/b v1.0.0\n\tgithub.com/c/d v2.0.0\n\tgithub.com/e/f v3.0.0\n)\n\nexclude (\n\tgithub.com/bad/one v1.2.3\n)\n\nreplace (\n\tgithub.com/a/b v1.0.0 => github.com/a/b v1.0.1\n\tgithub.com/c/d => ../d\n)\n\nreplace github.com/e/f => github.com/fork/f v3.0.5\n\nretract v0.9.0\n"
+            expect(Lockfiles.goModules(goBlocks).map { $0.name + "@" + $0.version } == ["github.com/a/b@1.0.1", "github.com/fork/f@3.0.5"], "go.mod: excluded versions aren't dependencies, a replacement is checked in place of what it replaces, and a module replaced by a folder isn't checked")
+            let deepRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-deep-\(UUID().uuidString)").path
+            let sixDown = deepRoot + "/a/b/c/d/e/f", tenDown = sixDown + "/g/h/i/j"
+            try FileManager.default.createDirectory(atPath: tenDown, withIntermediateDirectories: true)
+            for folder in [sixDown, tenDown] { try Data("{}".utf8).write(to: URL(fileURLWithPath: folder + "/package-lock.json")) }
+            let deepSearch = Lockfiles.search(in: deepRoot)
+            expect(deepSearch.files == [sixDown + "/package-lock.json"] && deepSearch.deeper == 1 && !deepSearch.full, "a lockfile six folders down is read, and folders past eight levels are counted instead of dropped silently")
+            try FileManager.default.removeItem(atPath: deepRoot)
+            // One settings file can set a server of the same name for two projects.
+            let mcpRoot = FileManager.default.temporaryDirectory.appendingPathComponent("shipshape-mcp-\(UUID().uuidString)").path
+            try FileManager.default.createDirectory(atPath: mcpRoot, withIntermediateDirectories: true)
+            let scoped = #"{"projects":{"/p/a":{"mcpServers":{"gh":{"command":"npx","args":["-y","some-server@1.0.0"]}}},"/p/b":{"mcpServers":{"gh":{"command":"npx","args":["-y","some-server@2.0.0"]}}},"/p/c":{"mcpServers":{"gh":{"command":"npx","args":["-y","some-server@1.0.0"]}}}}}"#
+            try Data(scoped.utf8).write(to: URL(fileURLWithPath: mcpRoot + "/.mcp.json"))
+            let scopedServers = Inventory.mcpServers(projectFiles: [mcpRoot + "/.mcp.json"]).0.filter { $0.location == mcpRoot + "/.mcp.json" }
+            expect(scopedServers.map { "\($0.version) \($0.path.dropFirst(mcpRoot.count))" } == ["1.0.0 /.mcp.json#gh", "2.0.0 /.mcp.json#gh#/p/b"], "same-named servers for different projects are both listed, in a fixed order, and identical ones once")
+            try FileManager.default.removeItem(atPath: mcpRoot)
+            let twoSyn = Installation(product: "crates:syn", name: "syn", version: "1.0.109", path: "/c/Cargo.lock#syn@1.0.109", domain: "projects", ecosystem: "crates.io", packageName: "syn", manager: "cargo", location: "/c")
+            expect(Commands.commands(for: Finding(source: "osv", installation: twoSyn, kind: .security, fixed: "1.0.110", reason: "", action: "", links: [])).first?.text == "cd /c && cargo update -p syn@1.0.109 --precise 1.0.110", "cargo is told which version of the crate to update")
+
+            // OSV: pages, commit hashes and action names.
+            var paged: [String: [String]] = ["npm|a|1": ["GHSA-1"]]
+            let tokens = OSV.merge([["vulns": [["id": "GHSA-1"], ["id": "GHSA-2"]], "next_page_token": "t1"], [:]], keys: ["npm|a|1", "npm|b|1"], into: &paged)
+            expect(paged == ["npm|a|1": ["GHSA-1", "GHSA-2"]] && tokens == ["npm|a|1": "t1"], "a result with a page token has more to fetch, and a repeated advisory is kept once")
+            let gitRange: [String: Any] = ["affected": [["package": ["ecosystem": "PyPI", "name": "Some_Pkg"], "ranges": [["type": "GIT", "events": [["introduced": "0"], ["fixed": "74ea7cf7a1b2c3d4e5f60718293a4b5c6d7e8f90"]]], ["type": "ECOSYSTEM", "events": [["introduced": "0"], ["fixed": "4.0.2"]]]]]]]
+            expect(OSV.vuln("PYSEC-1", from: gitRange).fixed == ["PyPI|some-pkg": ["4.0.2"]], "a commit hash from a GIT range is not a fixed version")
+            expect(GitHubActions.spellings(["SonarSource/scan-action", "actions/checkout"]) == ["SonarSource/scan-action", "actions/checkout", "sonarsource/scan-action"], "an action is asked for as written and in lowercase, since OSV matches the name exactly")
+            let lastOnly = GitHubActions.Range(introduced: "0", fixed: nil, lastAffected: "4.2.0")
+            expect(GitHubActions.affected("4.999999.999999", lastOnly, moving: true), "@v4 may still point at a last affected 4.x release")
+            expect(!GitHubActions.affected("5.999999.999999", lastOnly, moving: true) && !GitHubActions.affected("4.3.0", lastOnly), "a later major, or a pinned later release, is past the last affected one")
+            expect(GitHubActions.affected("4.999999.999999", GitHubActions.Range(introduced: "0", fixed: nil, lastAffected: "5.1.0"), moving: true), "every 4.x is at or below a last affected 5.1.0")
+            // NVD entries for another platform's build of a product.
+            expect(NVD.evaluate(cve(#"{"vulnerable":true,"criteria":"cpe:2.3:a:haxx:curl:*:*:*:*:*:windows:*:*","versionEndExcluding":"9"}"#), cpe: "haxx:curl", version: Version("8.5.0")!) == nil, "an entry for the Windows build doesn't match the Mac copy")
+            expect(NVD.evaluate(cve(#"{"vulnerable":true,"criteria":"cpe:2.3:a:haxx:curl:*:*:*:*:*:macos:*:*","versionEndExcluding":"9"}"#), cpe: "haxx:curl", version: Version("8.5.0")!) != nil, "an entry for the macOS build does")
+            expect(NVD.evaluate(cve(#"{"vulnerable":true,"criteria":"cpe:2.3:a:haxx:curl:*:*:*:*:*:node.js:*:*","versionEndExcluding":"9"}"#), cpe: "haxx:curl", version: Version("8.5.0")!) != nil, "a target that isn't an operating system still matches")
+            // A zip64 record whose numbers don't fit, or point outside the download, is refused instead of computed with.
+            func zipTail(offset: UInt64, length: UInt64, size: Int) -> Data {
+                func le(_ value: UInt64, _ bytes: Int) -> [UInt8] { (0..<bytes).map { UInt8((value >> (8 * UInt64($0))) & 0xFF) } }
+                var record: [UInt8] = le(0x06064b50, 4) + le(44, 8) + le(45, 2) + le(45, 2) + le(0, 4) + le(0, 4) + le(1, 8) + le(1, 8)
+                record += le(length, 8) + le(offset, 8)
+                let recordPlace = UInt64(size - 56 - 20 - 22)
+                let locator: [UInt8] = le(0x07064b50, 4) + le(0, 4) + le(recordPlace, 8) + le(1, 4)
+                let end: [UInt8] = le(0x06054b50, 4) + le(0, 2) + le(0, 2) + le(0xFFFF, 2) + le(0xFFFF, 2) + le(0xFFFF_FFFF, 4) + le(0xFFFF_FFFF, 4) + le(0, 2)
+                return Data(record + locator + end)
+            }
+            expect(ReleasePeek.directory(zipTail(offset: 1_000, length: 500, size: 10_000), size: 10_000).map { [$0.offset, $0.length] } == [1_000, 500], "a zip64 directory inside the download is read")
+            expect(ReleasePeek.directory(zipTail(offset: UInt64.max, length: 500, size: 10_000), size: 10_000) == nil, "a zip64 offset too large to hold is refused")
+            expect(ReleasePeek.directory(zipTail(offset: 0x7FFF_FFFF_FFFF_FFFF, length: 500, size: 10_000), size: 10_000) == nil, "a zip64 directory outside the download is refused")
+            // A feed's delta patches are enclosures too; the release's download is the one outside sparkle:deltas.
+            let deltaFeed = "<rss xmlns:sparkle=\"http://www.andymatuschak.org/xml-namespaces/sparkle\"><channel><item><enclosure url=\"https://example.com/App-2.1.zip\" sparkle:version=\"210\" sparkle:shortVersionString=\"2.1\"/><sparkle:deltas><enclosure url=\"https://example.com/200-210.delta\" sparkle:version=\"210\" sparkle:deltaFrom=\"200\"/></sparkle:deltas></item></channel></rss>"
+            expect(SparkleFeeds.releases(Data(deltaFeed.utf8)).map(\.url) == ["https://example.com/App-2.1.zip"], "a delta patch doesn't replace the release's download")
+            // The daily check: a day counts once a check reached its sources, and a failed one is tried again later.
+            let nine = Schedule.calendar.date(from: DateComponents(year: 2026, month: 11, day: 9, hour: 9, minute: 30))!
+            expect(!Schedule.isDue(now: nine, lastDay: nil, lastAttempt: nine.addingTimeInterval(-600)) && Schedule.isDue(now: nine, lastDay: nil, lastAttempt: nine.addingTimeInterval(-1800)), "a check that didn't count is tried again after half an hour, not every minute")
+            expect(!Schedule.reached([SourceCheck(id: "osv", name: "OSV", status: "failed", detail: "offline")]) && Schedule.reached([SourceCheck(id: "osv", name: "OSV", status: "checked", detail: "ok"), SourceCheck(id: "node", name: "Node", status: "failed", detail: "x")]), "a check that couldn't reach OSV hasn't done the day's check")
+            expect(Schedule.counts(nine.addingTimeInterval(-3600)) && !Schedule.counts(nine.addingTimeInterval(-3 * 3600)), "a check finished just before 9 counts for the day; one at 6:30 doesn't")
+            let devSupport = URL(fileURLWithPath: "/tmp/shipshape-support")
+            expect(StateFolder.folder(in: devSupport, bundleID: "sh.todd.security-monitor.dev").lastPathComponent == "Shipshape Dev", "the development copy keeps its data apart from the installed app's")
+        }
         print("Passed \(count) rule, failure-retention, notification-fingerprint and scheduling checks")
     }
 }

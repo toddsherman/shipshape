@@ -27,10 +27,18 @@ enum Lockfiles {
         return ["/opt/homebrew", "/usr", "/System", "/Library", "/private", "/bin", "/sbin", "/cores", "/dev", "/Applications",
                 home + "/Library", home + "/Applications", home + "/go/pkg"]
     }
-    static func find(in root: String, depth limit: Int = 5, skipping roots: Set<String> = skippedRoots) -> [String] {
-        var found: [String] = []
+    static let fileLimit = 2000
+    static func find(in root: String, depth limit: Int = 8, skipping roots: Set<String> = skippedRoots) -> [String] {
+        search(in: root, depth: limit, skipping: roots).files
+    }
+    // The walk stops at a depth and at a number of files, so one huge folder can't hold up a check. `deeper` counts the
+    // folders below the depth limit that weren't read, and `full` says the file limit was reached: Coverage reports both.
+    static func search(in root: String, depth limit: Int = 8, skipping roots: Set<String> = skippedRoots) -> (files: [String], deeper: Int, full: Bool) {
+        var found: [String] = [], deeper = 0, full = false
         func walk(_ dir: String, _ depth: Int) {
-            guard depth <= limit, found.count < 2000, let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return }
+            if depth > limit { deeper += 1; return }
+            if found.count >= fileLimit { full = true; return }
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return }
             for name in names.sorted() {
                 let path = dir == "/" ? "/" + name : dir + "/" + name
                 // lstat doesn't follow links: linked folders and files are skipped, so a scan stays inside the chosen folder.
@@ -44,7 +52,7 @@ enum Lockfiles {
             }
         }
         walk(root, 0)
-        return found
+        return (found, deeper, full)
     }
 
     static let sizeLimit = 64_000_000
@@ -58,7 +66,7 @@ enum Lockfiles {
         case "pnpm": packages = pnpm(text)
         case "yarn": if text.contains("__metadata:") { manager = "yarn-berry" }; packages = yarn(text)
         case "bun-lock": packages = bun(text)
-        case "uv": packages = toml(text, ecosystem: "PyPI") { !$0.contains("editable") && !$0.contains("virtual") && !$0.contains("directory") && !$0.contains("path =") }
+        case "uv": packages = toml(text, ecosystem: "PyPI") { !localSource($0) }
         case "poetry": packages = toml(text, ecosystem: "PyPI") { _ in true }
         case "cargo": packages = toml(text, ecosystem: "crates.io") { $0.contains("registry+") }
         case "pip-req": packages = requirements(text)
@@ -73,12 +81,25 @@ enum Lockfiles {
         default: packages = goModules(text)
         }
         let directory = (path as NSString).deletingLastPathComponent
-        let roles = manager.hasPrefix("yarn") || manager == "pnpm" || manager == "bun-lock" ? jsRoles(directory) : manager == "composer" ? composerRoles(directory) : [:]
+        let javascript = manager.hasPrefix("yarn") || ["npm", "pnpm", "bun-lock"].contains(manager)
+        var manifest: (roles: [String: String], requests: Set<String>) = ([:], [])
+        if javascript { manifest = jsManifest(directory) }
+        var roles = manifest.roles
+        if manager == "composer" { roles = composerRoles(directory) }
+        // A lockfile can hold several versions of one name, and package.json asks for only one of them: the others
+        // came along with other packages. Where the lockfile says which copy the project asked for, only that copy
+        // gets the direct or dev role, so the others aren't offered a command that would leave them in place.
+        var rooted: Set<String> = []
+        if manager == "pnpm" { rooted = pnpmRooted(text) } else if manager == "bun-lock" { rooted = bunRooted(text) } else if manager.hasPrefix("yarn") { rooted = yarnRooted(text, requests: manifest.requests) }
         // One entry per name and version, preferring the most direct role.
         var unique: [String: LockPackage] = [:]
         for var package in packages {
-            if package.dependency == nil, let role = roles[package.name] { package.dependency = role }
             let key = package.name + "@" + package.version
+            if package.dependency == nil, let role = roles[package.name] {
+                package.dependency = rooted.isEmpty || rooted.contains(key) ? role : "transitive"
+            } else if package.dependency == nil, manager == "npm", !roles.isEmpty {
+                package.dependency = "transitive"  // a version 1 lockfile's top level also holds packages the project never asked for
+            }
             if let old = unique[key], rank(old.dependency) >= rank(package.dependency) { continue }
             unique[key] = package
         }
@@ -97,13 +118,19 @@ enum Lockfiles {
     static func rank(_ role: String?) -> Int { role == "direct" ? 3 : role == "dev" ? 2 : role == "transitive" ? 1 : 0 }
 
     // Direct and dev dependency names from the package.json beside a JavaScript lockfile.
-    static func jsRoles(_ directory: String) -> [String: String] {
+    static func jsRoles(_ directory: String) -> [String: String] { jsManifest(directory).roles }
+    // The roles, and each request as "name@range" the way yarn.lock writes it (without "npm:").
+    static func jsManifest(_ directory: String) -> (roles: [String: String], requests: Set<String>) {
         guard let data = Inventory.read(directory + "/package.json", limit: 8_000_000),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
-        var roles: [String: String] = [:]
-        for name in ((obj["devDependencies"] as? [String: Any]) ?? [:]).keys { roles[name] = "dev" }
-        for key in ["dependencies", "optionalDependencies", "peerDependencies"] { for name in ((obj[key] as? [String: Any]) ?? [:]).keys { roles[name] = "direct" } }
-        return roles
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return ([:], []) }
+        var roles: [String: String] = [:], requests: Set<String> = []
+        for key in ["devDependencies", "dependencies", "optionalDependencies", "peerDependencies"] {
+            for (name, range) in (obj[key] as? [String: Any]) ?? [:] {
+                roles[name] = key == "devDependencies" ? "dev" : "direct"
+                if let range = range as? String { requests.insert(name + "@" + (range.hasPrefix("npm:") ? String(range.dropFirst(4)) : range)) }
+            }
+        }
+        return (roles, requests)
     }
 
     static func npm(_ data: Data) -> [LockPackage] {
@@ -125,7 +152,7 @@ enum Lockfiles {
             func walk(_ dependencies: [String: Any], top: Bool) {
                 for (name, value) in dependencies {
                     guard let value = value as? [String: Any], let version = value["version"] as? String else { continue }
-                    result.append(LockPackage(name: name, version: version, ecosystem: "npm", dependency: top && value["dev"] as? Bool == true ? "dev" : top ? nil : "transitive"))
+                    result.append(LockPackage(name: name, version: version, ecosystem: "npm", dependency: top ? nil : "transitive"))
                     if let nested = value["dependencies"] as? [String: Any] { walk(nested, top: false) }
                 }
             }
@@ -156,24 +183,60 @@ enum Lockfiles {
         return result
     }
 
-    static func yarn(_ text: String) -> [LockPackage] {
-        var result: [LockPackage] = [], name: String? = nil
+    static func yarn(_ text: String) -> [LockPackage] { yarnEntries(text).map(\.package) }
+    // Each entry with the requests it answers, as "name@range" without Berry's "npm:" ("lodash@^4.17.21").
+    static func yarnEntries(_ text: String) -> [(package: LockPackage, specs: [String])] {
+        var result: [(package: LockPackage, specs: [String])] = [], name: String? = nil, specs: [String] = []
         for line in text.split(separator: "\n") {
             if !line.hasPrefix(" ") && !line.hasPrefix("#") && line.hasSuffix(":") {
-                let first = line.dropLast().split(separator: ",").first.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\" ")) } ?? ""
-                name = splitSpec(first.replacingOccurrences(of: "@npm:", with: "@")).map(\.0).flatMap { $0.contains(":") ? nil : $0 }
+                let raw = line.dropLast().split(separator: ",").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\" ")) }
+                specs = raw.map { $0.replacingOccurrences(of: "@npm:", with: "@") }
+                name = raw.first.flatMap(yarnName)
             } else if let current = name, let m = captures("^\\s+version:?\\s+\"?([^\"\\s]+)\"?$", String(line)).first {
-                if m[1].first?.isNumber == true && !m[1].contains("use.local") { result.append(LockPackage(name: current, version: m[1], ecosystem: "npm")) }
+                if m[1].first?.isNumber == true && !m[1].contains("use.local") { result.append((LockPackage(name: current, version: m[1], ecosystem: "npm"), specs)) }
                 name = nil
             }
         }
         return result
+    }
+    // The package an entry installs. An alias ("string-width-cjs@npm:string-width@^4.2.0") installs the package named
+    // after "npm:", so that is the one to check; workspace and patch entries have no registry package.
+    static func yarnName(_ spec: String) -> String? {
+        if let marker = spec.range(of: "@npm:"), let real = splitSpec(String(spec[marker.upperBound...]))?.0, !real.isEmpty { return real }
+        guard let name = splitSpec(spec.replacingOccurrences(of: "@npm:", with: "@"))?.0 else { return nil }
+        return name.contains(":") ? nil : name
+    }
+    // Which name@version entries the project's own package.json asks for: those answering one of its "name@range" requests.
+    static func yarnRooted(_ text: String, requests: Set<String>) -> Set<String> {
+        var rooted: Set<String> = []
+        for entry in yarnEntries(text) where entry.specs.contains(where: { requests.contains($0) }) { rooted.insert(entry.package.name + "@" + entry.package.version) }
+        return rooted
+    }
+    // pnpm lists what each project asks for, with the version it resolved to, under importers (or at the top of a
+    // single project's lockfile): "lodash:", "specifier: ^4.17.21", "version: 4.17.21".
+    static func pnpmRooted(_ text: String) -> Set<String> {
+        let pattern = "(?m)^( {2}| {6})'?((?:@[^/\\s']+/)?[^@\\s':]+)'?:\\n\\1  specifier: [^\\n]*\\n\\1  version: '?([0-9][^\\s(_']*)"
+        return Set(captures(pattern, text).map { $0[2] + "@" + $0[3] })
+    }
+    // In bun.lock the copy a project's own package.json gets is the one keyed by the bare name; copies nested under
+    // another package are keyed "parent/name".
+    static func bunRooted(_ text: String) -> Set<String> {
+        guard let start = text.range(of: "\"packages\"") else { return [] }
+        let entries = captures("\"([^\"]+)\":\\s*\\[\\s*\"((?:@[^@\"/]+/)?[^@\"]+)@([0-9][^\"]*)\"", String(text[start.lowerBound...]))
+        return Set(entries.filter { $0[1] == $0[2] }.map { $0[2] + "@" + $0[3] })
     }
 
     static func bun(_ text: String) -> [LockPackage] {
         guard let start = text.range(of: "\"packages\"") else { return [] }
         return captures("\"[^\"]+\":\\s*\\[\\s*\"((?:@[^@\"/]+/)?[^@\"]+)@([0-9][^\"]*)\"", String(text[start.lowerBound...]))
             .map { LockPackage(name: $0[1], version: $0[2], ecosystem: "npm") }
+    }
+
+    // A uv.lock source that is the project itself or a folder on disk: { editable = "." }, { virtual = "." },
+    // { directory = "../x" } or { path = "x.whl" }. Only the key counts, so a registry whose address contains one of
+    // those words, such as Artifactory's "pypi-virtual", is still a registry.
+    static func localSource(_ source: String) -> Bool {
+        source.range(of: "[{,]\\s*(editable|virtual|directory|path)\\s*=", options: .regularExpression) != nil
     }
 
     // [[package]] tables with name, version and an optional source filter (uv, Poetry, Cargo).
@@ -196,9 +259,11 @@ enum Lockfiles {
     }
 
     static func gemfile(_ text: String) -> [LockPackage] {
-        guard let gem = text.range(of: "GEM\n") else { return [] }
-        let section = text[gem.upperBound...].components(separatedBy: "\n\n").first ?? ""
-        return captures("(?m)^    ([A-Za-z0-9_.-]+) \\(([0-9][^)-]*)", section).map { LockPackage(name: $0[1], version: $0[2], ecosystem: "RubyGems") }
+        // Bundler writes one GEM section per gem source, so a private source and rubygems.org each get their own.
+        let sections = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n\n").filter { $0.hasPrefix("GEM\n") }
+        return sections.flatMap { section in
+            captures("(?m)^    ([A-Za-z0-9_.-]+) \\(([0-9][^)-]*)", section).map { LockPackage(name: $0[1], version: $0[2], ecosystem: "RubyGems") }
+        }
     }
 
     // Swift Package Manager: Package.resolved v1 (object.pins, repositoryURL) and v2–v3 (pins, location). OSV
@@ -314,8 +379,27 @@ enum Lockfiles {
         }
     }
 
+    // go.mod's require lines, alone or in a require ( ) block. Lines in exclude and retract blocks aren't built, so
+    // they aren't read. A replace line swaps a module for another one, which is what gets built: the replacement is
+    // checked in its place, and a module replaced by a folder on disk isn't checked.
     static func goModules(_ text: String) -> [LockPackage] {
-        captures("(?m)^(?:require\\s+|\\t)([A-Za-z0-9][A-Za-z0-9.\\-_~/]*)\\s+v([0-9][^\\s]*)(\\s*// indirect)?", text)
-            .map { LockPackage(name: $0[1], version: $0[2], ecosystem: "Go", dependency: $0[3].isEmpty ? "direct" : "transitive") }
+        var result: [LockPackage] = [], block = ""
+        var replaces: [(old: String, oldVersion: String, new: String, newVersion: String)] = []
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line == ")" { block = ""; continue }
+            if let open = captures("^(require|exclude|replace|retract)\\s*\\($", line).first { block = open[1].lowercased(); continue }
+            var kind = block, body = line
+            if block.isEmpty, let single = captures("^(require|exclude|replace|retract)\\s+([^\\n]+)$", line).first { kind = single[1].lowercased(); body = single[2] }
+            if kind == "require", let m = captures("^([A-Za-z0-9][A-Za-z0-9.\\-_~/]*)\\s+v([0-9][^\\s]*)(\\s*// indirect)?", body).first {
+                result.append(LockPackage(name: m[1], version: m[2], ecosystem: "Go", dependency: m[3].isEmpty ? "direct" : "transitive"))
+            } else if kind == "replace", let m = captures("^(\\S+)(?:\\s+v(\\S+))?\\s*=>\\s*(\\S+)(?:\\s+v([0-9]\\S*))?", body).first {
+                replaces.append((m[1], m[2], m[3], m[4]))
+            }
+        }
+        return result.compactMap { package in
+            guard let swap = replaces.first(where: { $0.old == package.name && ($0.oldVersion.isEmpty || $0.oldVersion == package.version) }) else { return package }
+            return swap.newVersion.isEmpty ? nil : LockPackage(name: swap.new, version: swap.newVersion, ecosystem: "Go", dependency: package.dependency)
+        }
     }
 }

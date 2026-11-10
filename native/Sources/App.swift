@@ -22,6 +22,10 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     private var launchCheckStarted = false
     private var task: Task<Void, Never>?
     private var needsStateRecovery = false
+    private var checkAgain = false   // project folders changed during a check, so its result is already out of date
+    private var online = false       // whether the network is up, kept current by pathMonitor
+    private var stickyMessage = false  // a message a check mustn't clear, such as the one about unreadable saved data
+    var openDashboard: (() -> Void)?   // set by the views, which can open the window; used when an alert is clicked
     private let folder: URL
     private var stateURL: URL { folder.appendingPathComponent("state.json") }
     var report: ScanReport? { state.report }
@@ -74,15 +78,29 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     }
     override init() {
         // SHIPSHAPE_STATE_DIR keeps a development build's state apart from the installed app's.
+        // The Shipshape Dev copy (native/scenario.sh) has its own bundle ID. Opened without its environment, from Finder
+        // or when macOS reopens it after a restart, it keeps to a folder of its own instead of the installed app's.
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         folder = ProcessInfo.processInfo.environment["SHIPSHAPE_STATE_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? StateFolder.resolve(in: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!)
+            ?? StateFolder.folder(in: support, bundleID: Bundle.main.bundleIdentifier)
         super.init()
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             if FileManager.default.fileExists(atPath: stateURL.path) {
                 state = try JSONDecoder().decode(SavedState.self, from: Data(contentsOf: stateURL))
             }
-        } catch { needsStateRecovery = true; message = "Saved state could not be read: \(error.localizedDescription). The original file will be preserved for recovery." }
+        } catch {
+            // The unreadable file is set aside now, under a name the message gives, and the message stays until dismissed:
+            // history, hidden findings and project folders start empty, and nothing else would say why.
+            let kept = "state-unreadable-\(Int(Date().timeIntervalSince1970)).json"
+            if (try? FileManager.default.moveItem(at: stateURL, to: folder.appendingPathComponent(kept))) != nil {
+                message = "\(appName)'s saved data couldn't be read, so history, hidden findings and project folders start empty. The unreadable file was kept as \(kept) in the data folder (Settings → Open local data)."
+            } else {
+                needsStateRecovery = true
+                message = "\(appName)'s saved data couldn't be read, so history, hidden findings and project folders start empty: \(error.localizedDescription). The original file is copied aside before it's replaced."
+            }
+            stickyMessage = true
+        }
         // History starts from the last saved result, dated when that check ran.
         if state.history == nil, let report = state.report {
             var history: [HistoryEntry] = []
@@ -97,7 +115,14 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(woke), name: NSWorkspace.didWakeNotification, object: nil)
         checkAtLaunch()
     }
+    // The network is rarely back the moment a Mac wakes; when it returns, the path monitor checks the schedule again.
     @objc private func woke() { checkSchedule() }
+    func dismissMessage() { message = nil; stickyMessage = false }
+    func showDashboard() {
+        NSApp.setActivationPolicy(.regular)
+        openDashboard?()
+        NSApp.activate(ignoringOtherApps: true)
+    }
     func refreshSettings() {
         loginEnabled = SMAppService.mainApp.status == .enabled
         Task {
@@ -110,6 +135,8 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         }
     }
     func enableNotifications() {
+        // Once declined, macOS never asks again: only its Notifications settings can turn alerts on.
+        if notificationStatus == "Disabled in System Settings" { openTrusted("x-apple.systempreferences:com.apple.Notifications-Settings.extension"); return }
         Task {
             do { _ = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]); refreshSettings(); if await notifyChanges() { save() } }
             catch { message = "Notifications: \(error.localizedDescription)" }
@@ -125,11 +152,17 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     func addProjectFolders() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = true; panel.prompt = "Add"
-        panel.message = "Choose folders that contain your projects. Lockfiles up to five levels deep are checked; nothing in them is run."
+        panel.message = "Choose folders that contain your projects. Lockfiles up to eight levels deep are checked; nothing in them is run."
         guard panel.runModal() == .OK else { return }
         addProjectFolders(panel.urls.map(\.path))
     }
-    func removeProjectFolder(_ path: String) { state.projectFolders = projectFolders.filter { $0 != path }; save(); loadSuggestions() }
+    func removeProjectFolder(_ path: String) { state.projectFolders = projectFolders.filter { $0 != path }; save(); loadSuggestions(); checkAfterFolderChange() }
+    // The folders decide what a check reads, so changing them starts one, or repeats the one that's running. Before the
+    // first check there's nothing to bring up to date: that one starts when it's asked for.
+    private func checkAfterFolderChange() {
+        guard state.report != nil || scanning else { return }
+        if scanning { checkAgain = true } else { check() }
+    }
     // Folders Claude Code and Codex have worked in (ProjectSuggestions). A scenario preview shows none, since they'd be this
     // Mac's own folders.
     func loadSuggestions() {
@@ -143,18 +176,25 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
         state.projectFolders = Array(Set(projectFolders + paths)).sorted()
         save()
         let warnings = paths.compactMap { Ownership.folderWarning($0, access: .live) }
-        if !warnings.isEmpty { message = warnings.joined(separator: " ") }
         loadSuggestions()
+        checkAfterFolderChange()
+        if !warnings.isEmpty { message = warnings.joined(separator: " ") }
     }
     func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
     // Every launch, including at login, starts a fresh check once the network is up. After 30 seconds it
-    // checks anyway; sources that can't be reached are reported as usual and earlier findings are kept.
+    // checks anyway; sources that can't be reached are reported as usual and earlier findings are kept. The very first
+    // check waits for Run first check, so project folders can be added before it and what it sends is read first.
+    // The path monitor keeps running: when the network comes back, a daily check that is still due runs then.
     private func checkAtLaunch() {
         guard !Monitor.checksOff else { return }
         let path = NWPathMonitor()
         path.pathUpdateHandler = { [weak self] update in
-            guard update.status == .satisfied else { return }
-            Task { @MainActor in self?.startLaunchCheck() }
+            let satisfied = update.status == .satisfied
+            Task { @MainActor in
+                guard let self else { return }
+                self.online = satisfied
+                if satisfied { self.startLaunchCheck(); self.checkSchedule() }
+            }
         }
         path.start(queue: .main)
         pathMonitor = path
@@ -163,9 +203,7 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     private func startLaunchCheck() {
         guard !launchCheckStarted else { return }
         launchCheckStarted = true
-        pathMonitor?.cancel()
-        pathMonitor = nil
-        check()
+        if state.report != nil { check() }
     }
     // Links open only for https pages and System Settings panes; apps and files only when they still exist.
     func perform(_ option: UpdateCommand) {
@@ -196,15 +234,18 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateURL.path)
         } catch { message = "The latest result could not be saved: \(error.localizedDescription)" }
     }
+    // The daily check runs once the network is up, and a day counts as done only when a check reached its sources
+    // (see Schedule), so one that ran offline is tried again: when the network returns, or half an hour later.
     func checkSchedule() {
-        if !Monitor.checksOff, state.report != nil && Schedule.isDue(now: Date(), lastDay: state.lastScheduledDay) { check() }
+        guard !Monitor.checksOff, state.report != nil, online, launchCheckStarted else { return }
+        if Schedule.isDue(now: Date(), lastDay: state.lastScheduledDay, lastAttempt: state.lastAttempt) { check() }
     }
     func check() {
         guard !Monitor.checksOff else { message = "Checks are off in this scenario preview, so its made-up findings stay as they are."; return }
         guard !scanning else { return }
-        message = nil
+        if !stickyMessage { message = nil }
+        launchCheckStarted = true  // a check asked for before the launch check stands in for it
         state.lastAttempt = Date()
-        if Schedule.calendar.component(.hour, from: Date()) >= 9 { state.lastScheduledDay = Schedule.day(Date()) }
         save()
         scanning = true
         progress = CheckProgress()
@@ -219,10 +260,12 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
             var history = state.history ?? []
             History.update(&history, with: result, projectFolders: folders, at: result.date)
             state.history = history
+            if Schedule.reached(result.checks), Schedule.counts(Date()) { state.lastScheduledDay = Schedule.day(Date()) }
             scanning = false
             progress = nil
             await notifyChanges(wasAwaiting: wasAwaiting)
             save()
+            if checkAgain { checkAgain = false; check() }
         }
     }
     // Hides findings until something changes (see Hiding), or shows them again.
@@ -274,10 +317,7 @@ final class Monitor: NSObject, ObservableObject, UNUserNotificationCenterDelegat
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions { [.banner, .sound] }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        await MainActor.run {
-            NotificationCenter.default.post(name: .init("ShowDashboard"), object: nil)
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        await MainActor.run { showDashboard() }
     }
     func export() {
         guard let report else { return }
@@ -328,7 +368,7 @@ struct ShipshapeApp: App {
         MenuBarExtra {
             MenuPanel().environmentObject(monitor)
         } label: {
-            if monitor.scanning { Image(systemName: "arrow.triangle.2.circlepath") } else { Image(nsImage: ShipLogo.menuBar).accessibilityLabel(displayName) }
+            if monitor.scanning { Image(systemName: "arrow.triangle.2.circlepath").accessibilityLabel("\(displayName), checking") } else { Image(nsImage: ShipLogo.menuBar).accessibilityLabel(displayName) }
             if !monitor.attention.isEmpty { Text("\(monitor.attention.count)") }
         }.menuBarExtraStyle(.window)
     }
@@ -392,7 +432,7 @@ struct MenuPanel: View {
             Text("Checks at launch, daily at 9 a.m. Pacific and when you click \(Image(systemName: "arrow.clockwise.circle"))").font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(18).frame(width: 310)
         .background(WindowReader { panel = $0 })
-        .onReceive(NotificationCenter.default.publisher(for: .init("ShowDashboard"))) { _ in openWindow(id: "dashboard") }
+        .onAppear { monitor.openDashboard = { openWindow(id: "dashboard") } }
     }
     // Opens the dashboard and dismisses this panel, which would otherwise stay open in front of it. The panel is
     // dismissed the way Escape does it: closing its window instead leaves the menu bar icon needing two clicks.
@@ -475,7 +515,7 @@ struct Dashboard: View {
                         HStack { Image(systemName: symbol).frame(width: 20); Text(title); Spacer(); if title == "Security" && !monitor.attention.isEmpty { Text("\(monitor.attention.count)").font(.caption.weight(.semibold)) } }
                             .padding(.horizontal, 12).padding(.vertical, 10).contentShape(Rectangle())
                             .background(monitor.section == title ? Color.accentColor.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 8))
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(.plain).accessibilityAddTraits(monitor.section == title ? .isSelected : [])
                 }
                 Spacer()
                 Text("ON THIS MAC").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
@@ -500,7 +540,12 @@ struct Dashboard: View {
                     CheckSteps(progress: progress).padding(.horizontal, 28).padding(.bottom, 16)
                         .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
                 }
-                ForEach([monitor.message].compactMap { $0 }, id: \.self) { Text($0).font(.callout).foregroundStyle(.orange).padding(.horizontal, 28).padding(.bottom, 16).textSelection(.enabled) }
+                ForEach([monitor.message].compactMap { $0 }, id: \.self) { text in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(text).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                        Button("Dismiss") { monitor.dismissMessage() }.buttonStyle(.link).font(.callout)
+                    }.padding(.horizontal, 28).padding(.bottom, 16)
+                }
                 if monitor.section != "Settings", monitor.report == nil { welcome }
                 else { content }
                 Divider()
@@ -512,8 +557,7 @@ struct Dashboard: View {
             }.frame(maxWidth: .infinity).animation(.easeInOut(duration: 0.35), value: monitor.progress == nil)
         }.frame(minWidth: 900, minHeight: 640)
         .sheet(isPresented: $monitor.feedbackOpen) { FeedbackSheet().environmentObject(monitor) }
-        .onAppear { NSApp.setActivationPolicy(.regular) }
-        .onReceive(NotificationCenter.default.publisher(for: .init("ShowDashboard"))) { _ in openWindow(id: "dashboard") }
+        .onAppear { NSApp.setActivationPolicy(.regular); monitor.openDashboard = { openWindow(id: "dashboard") } }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in monitor.refreshSettings() }
     }
     var subtitle: String {
@@ -534,7 +578,8 @@ struct Dashboard: View {
             HStack {
                 Button("Add project folders…") { monitor.addProjectFolders() }
                 Button("Run first check") { monitor.check() }.buttonStyle(.borderedProminent).disabled(monitor.scanning)
-                Button("Enable notifications") { monitor.enableNotifications() }.disabled(monitor.notificationStatus == "Enabled")
+                Button(monitor.notificationStatus == "Disabled in System Settings" ? "Notification settings…" : "Enable notifications") { monitor.enableNotifications() }
+                    .disabled(monitor.notificationStatus == "Enabled")
             }
             if !monitor.projectFolders.isEmpty { Text("Projects: " + monitor.projectFolders.map { Inventory.display($0) }.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
             SuggestedFolders()
@@ -650,7 +695,7 @@ struct Dashboard: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Checks").font(.headline)
-                    Text("A full check runs when the app opens, daily at 9 a.m. America/Los_Angeles (including daylight saving changes) and when you click Check now. A missed daily check runs after wake or the next app launch after 9 a.m. The app must be running to check and alert.").foregroundStyle(.secondary)
+                    Text("A full check runs when the app opens, daily at 9 a.m. America/Los_Angeles (including daylight saving changes) and when you click Check now. A missed daily check, or one that ran with no network, runs once the Mac is awake and online after 9 a.m. Adding or removing a project folder starts a check too. The app must be running to check and alert.").foregroundStyle(.secondary)
                     Toggle("Start \(appName) when I log in", isOn: Binding(get: { monitor.loginEnabled }, set: { monitor.setLogin($0) }))
                 }
                 Divider()
@@ -941,6 +986,7 @@ struct CategoryTile: View {
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : Color.primary.opacity(0.07), lineWidth: selected ? 2.5 : 1))
             .contentShape(RoundedRectangle(cornerRadius: 10))
         }.buttonStyle(.plain).frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 // A brick red, darker than system red, so white text on it stays readable.

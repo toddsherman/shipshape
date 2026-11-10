@@ -31,15 +31,37 @@ enum OSV {
                 let part = key.components(separatedBy: "|")
                 return ["package": ["ecosystem": part[0], "name": part[1]], "version": part[2]]
             }
-            let body = try JSONSerialization.data(withJSONObject: ["queries": queries])
-            guard let obj = try await Fetch.json("https://api.osv.dev/v1/querybatch", limit: 60_000_000, body: body) as? [String: Any],
-                  let results = obj["results"] as? [[String: Any]], results.count == batch.count else { throw MonitorError(message: "OSV returned an unexpected response") }
-            for (key, result) in zip(batch, results) {
-                let ids = ((result["vulns"] as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String }
-                if !ids.isEmpty { matches[key] = ids }
+            // OSV answers a large batch in pages: a result with a next_page_token has more advisories to fetch. Each
+            // is asked again with its token until none is left, so a cut-short answer is never taken for a whole one.
+            var pending = zip(batch, queries).map { (key: $0, query: $1) }, rounds = 0
+            while !pending.isEmpty {
+                rounds += 1
+                guard rounds <= 50 else { throw MonitorError(message: "OSV kept sending more pages than expected") }
+                let body = try JSONSerialization.data(withJSONObject: ["queries": pending.map(\.query)])
+                guard let obj = try await Fetch.json("https://api.osv.dev/v1/querybatch", limit: 60_000_000, body: body) as? [String: Any],
+                      let results = obj["results"] as? [[String: Any]], results.count == pending.count else { throw MonitorError(message: "OSV returned an unexpected response") }
+                let tokens = merge(results, keys: pending.map(\.key), into: &matches)
+                pending = pending.compactMap { entry in
+                    guard let token = tokens[entry.key] else { return nil }
+                    var query = entry.query
+                    query["page_token"] = token
+                    return (entry.key, query)
+                }
             }
         }
         return matches
+    }
+    // Adds one page of batch results to the matches, and returns the page token of each key that has more to fetch.
+    static func merge(_ results: [[String: Any]], keys: [String], into matches: inout [String: [String]]) -> [String: String] {
+        var tokens: [String: String] = [:]
+        for (key, result) in zip(keys, results) {
+            let ids = ((result["vulns"] as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String }
+            let known = matches[key] ?? []
+            let fresh = ids.filter { !known.contains($0) }
+            if !fresh.isEmpty { matches[key] = known + fresh }
+            if let token = result["next_page_token"] as? String, !token.isEmpty { tokens[key] = token }
+        }
+        return tokens
     }
 
     static func details(_ ids: Set<String>) async throws -> [String: Vuln] {
@@ -57,11 +79,15 @@ enum OSV {
     static func vuln(_ id: String) async throws -> Vuln {
         guard id.range(of: "^[A-Za-z0-9._:-]+$", options: .regularExpression) != nil,
               let obj = try await Fetch.json("https://api.osv.dev/v1/vulns/" + id) as? [String: Any] else { throw MonitorError(message: "OSV advisory \(id) could not be read") }
+        return vuln(id, from: obj)
+    }
+    static func vuln(_ id: String, from obj: [String: Any]) -> Vuln {
         var fixed: [String: [String]] = [:], informational = false
         for affected in (obj["affected"] as? [[String: Any]]) ?? [] {
             if let note = (affected["database_specific"] as? [String: Any])?["informational"] as? String, ["unmaintained", "notice"].contains(note) { informational = true }
             guard let package = affected["package"] as? [String: Any], let ecosystem = package["ecosystem"] as? String, let name = package["name"] as? String else { continue }
-            for range in (affected["ranges"] as? [[String: Any]]) ?? [] {
+            // A GIT range's "fixed" is a commit hash, which is no version to install or compare.
+            for range in (affected["ranges"] as? [[String: Any]]) ?? [] where range["type"] as? String != "GIT" {
                 for event in (range["events"] as? [[String: Any]]) ?? [] {
                     if let version = event["fixed"] as? String { fixed[ecosystem + "|" + normalized(name, ecosystem), default: []].append(version) }
                 }
@@ -159,12 +185,22 @@ enum GitHubActions {
         if let x = Version(a), let y = Version(b) { return x < y }
         return looseLess(a, b)
     }
-    static func affected(_ version: String, _ range: Range) -> Bool {
+    // A moving tag such as v4 compares as 4.999999.999999, the newest 4.x there could be. When an advisory names only
+    // a last affected release, and it is a 4.x, the tag may still point at it: which release is newest isn't known
+    // here, so the tag counts as affected instead of being passed as safe.
+    static func affected(_ version: String, _ range: Range, moving: Bool = false) -> Bool {
         if let introduced = range.introduced, introduced != "0", before(version, introduced) { return false }
         if let fixed = range.fixed { return before(version, fixed) }
-        if let last = range.lastAffected { return !before(last, version) }
+        if let last = range.lastAffected {
+            if !before(last, version) { return true }
+            guard moving else { return false }
+            let tag = version.split(separator: ".").filter { $0 != "999999" }.map(String.init)
+            let named = (last.hasPrefix("v") ? String(last.dropFirst()) : last).split(separator: ".").map(String.init)
+            return Array(named.prefix(tag.count)) == tag
+        }
         return true
     }
+    static func spellings(_ names: [String]) -> [String] { Set(names + names.map { $0.lowercased() }).sorted() }
     static func advisories(_ obj: [String: Any], name: String) -> [Advisory] {
         ((obj["vulns"] as? [[String: Any]]) ?? []).compactMap { vuln in
             guard let id = vuln["id"] as? String else { return nil }
@@ -189,13 +225,18 @@ enum GitHubActions {
     }
     static func finding(_ item: Installation, advisories: [Advisory]) -> Finding? {
         guard let (version, moving) = comparable(item.version) else { return nil }
-        let hits = advisories.filter { advisory in advisory.ranges.contains { affected(version, $0) } }
+        let hits = advisories.filter { advisory in advisory.ranges.contains { affected(version, $0, moving: moving) } }
         guard !hits.isEmpty else { return nil }
         let fixes = hits.compactMap { advisory in advisory.ranges.compactMap(\.fixed).filter { before(version, $0) }.min(by: before) }
         let fixed = fixes.max(by: before)
         let count = hits.count == 1 ? "1 published advisory" : "\(hits.count) published advisories"
         var reason = count + ": " + hits.prefix(3).map(\.summary).joined(separator: "; ") + (hits.count > 3 ? "; …" : "")
         if moving, let fixed { reason += " @\(item.version) is a moving tag, and no release in that major version fixes this, so the fix means moving to \(fixed) or later." }
+        // Flagged only because the tag may point at the last affected release (see affected).
+        let lasts = hits.flatMap { $0.ranges.filter { $0.fixed == nil && $0.lastAffected != nil && !before(version, $0.lastAffected!) }.compactMap(\.lastAffected) }
+        if moving, fixed == nil, let last = lasts.max(by: before) {
+            reason += " @\(item.version) is a moving tag, and the advisory names \(last) as the last affected release. \(appName) can't see which release the tag points at now, so check that it's newer than \(last)."
+        }
         var finding = Finding(source: "osv-actions", installation: item, kind: .security, fixed: fixed ?? "No fixed version published", reason: reason,
                               action: Commands.action(for: item, malicious: false, fixed: fixed), links: hits.prefix(4).map { "https://osv.dev/vulnerability/" + $0.id },
                               advisories: Array(Set(hits.flatMap { [$0.id] + $0.aliases.filter { $0.hasPrefix("CVE-") } })).sorted(), severity: hits.compactMap(\.severity).reduce(nil, worse))
@@ -204,11 +245,22 @@ enum GitHubActions {
     }
     static func findings(_ items: [Installation]) async throws -> (findings: [Finding], checked: Int, unknown: Int) {
         let actions = items.filter { $0.ecosystem == "GitHub Actions" }
+        // OSV matches an action's name exactly as its owner writes it ("SonarSource/sonarqube-scan-action"), while
+        // GitHub runs any spelling. Each spelling found in a workflow is asked for, and the lowercase one as well.
         var byName: [String: [Advisory]] = [:]
-        for name in Set(actions.compactMap { $0.packageName?.lowercased() }).sorted() {
-            let body = try JSONSerialization.data(withJSONObject: ["package": ["ecosystem": "GitHub Actions", "name": name]])
-            guard let obj = try await Fetch.json("https://api.osv.dev/v1/query", body: body) as? [String: Any] else { throw MonitorError(message: "OSV returned an unexpected response") }
-            byName[name] = advisories(obj, name: name)
+        for name in spellings(actions.compactMap(\.packageName)) {
+            var token: String? = nil, pages = 0
+            repeat {
+                pages += 1
+                guard pages <= 50 else { throw MonitorError(message: "OSV kept sending more pages than expected") }
+                var query: [String: Any] = ["package": ["ecosystem": "GitHub Actions", "name": name]]
+                if let token { query["page_token"] = token }
+                let body = try JSONSerialization.data(withJSONObject: query)
+                guard let obj = try await Fetch.json("https://api.osv.dev/v1/query", body: body) as? [String: Any] else { throw MonitorError(message: "OSV returned an unexpected response") }
+                let known = Set((byName[name.lowercased()] ?? []).map(\.id))
+                byName[name.lowercased(), default: []] += advisories(obj, name: name).filter { !known.contains($0.id) }
+                token = (obj["next_page_token"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            } while token != nil
         }
         let checkable = actions.filter { comparable($0.version) != nil }
         let findings = checkable.compactMap { item in finding(item, advisories: byName[item.packageName?.lowercased() ?? ""] ?? []) }
@@ -591,11 +643,17 @@ enum ReleasePeek {
         guard bytes.count >= 22 else { return nil }
         guard let end = stride(from: bytes.count - 22, through: 0, by: -1).first(where: { u32(bytes, $0) == 0x06054b50 }) else { return nil }
         let length = Int(u32(bytes, end + 12)), offset = Int(u32(bytes, end + 16))
-        guard length == 0xFFFF_FFFF || offset == 0xFFFF_FFFF else { return (offset, length) }
-        guard end >= 20, u32(bytes, end - 20) == 0x07064b50 else { return nil }
-        let record = Int(u64(bytes, end - 12)) - (size - bytes.count)
-        guard record >= 0, record + 56 <= bytes.count, u32(bytes, record) == 0x06064b50 else { return nil }
-        return (Int(u64(bytes, record + 48)), Int(u64(bytes, record + 40)))
+        guard length == 0xFFFF_FFFF || offset == 0xFFFF_FFFF else { return inside(offset, length, size) }
+        // A zip64 record holds 64-bit numbers, which come from the server: any that doesn't fit, or that points outside
+        // the download, means this isn't a zip to read, not a number to compute with.
+        guard end >= 20, u32(bytes, end - 20) == 0x07064b50, let place = Int(exactly: u64(bytes, end - 12)), place >= size - bytes.count else { return nil }
+        let record = place - (size - bytes.count)
+        guard record + 56 <= bytes.count, u32(bytes, record) == 0x06064b50,
+              let offset64 = Int(exactly: u64(bytes, record + 48)), let length64 = Int(exactly: u64(bytes, record + 40)) else { return nil }
+        return inside(offset64, length64, size)
+    }
+    private static func inside(_ offset: Int, _ length: Int, _ size: Int) -> (offset: Int, length: Int)? {
+        offset >= 0 && length > 0 && offset <= size && length <= size - offset ? (offset, length) : nil
     }
     // The framework's Info.plist in the app at the zip's top level, or in one folder: Versions/A or a flattened framework.
     static func entry(_ framework: String, in listing: Data) -> Entry? {
@@ -721,13 +779,15 @@ enum SparkleFeeds {
     }
     final class Reader: NSObject, XMLParserDelegate {
         var releases: [Release] = []
-        private var inItem = false, current = Release(build: ""), element = "", text = "", skip = false
+        private var inItem = false, current = Release(build: ""), element = "", text = "", skip = false, inDeltas = false
         private static func local(_ name: String) -> String { name.split(separator: ":").last.map(String.init) ?? name }
         func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
-            if name == "item" { inItem = true; current = Release(build: ""); skip = false }
+            if name == "item" { inItem = true; current = Release(build: ""); skip = false; inDeltas = false }
             guard inItem else { return }
             element = name; text = ""
-            if name == "enclosure" {
+            // sparkle:deltas lists patches from older builds, each an enclosure of its own; the release's download is the one outside it.
+            if Self.local(name) == "deltas" { inDeltas = true }
+            if name == "enclosure", !inDeltas {
                 current.url = attributes["url"]
                 for (key, value) in attributes where key.contains(":") {
                     switch Self.local(key) {
@@ -743,6 +803,7 @@ enum SparkleFeeds {
         func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
             guard inItem else { return }
             let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if Self.local(name) == "deltas" { inDeltas = false }
             if name.contains(":") {
                 switch Self.local(name) {
                 case "version": if !value.isEmpty { current.build = value }
@@ -894,10 +955,13 @@ enum NVD {
         }
         return nil
     }
+    static let otherPlatforms: Set<String> = ["windows", "linux", "linux_kernel", "android", "iphone_os", "ios", "ipados", "chrome_os"]
     static func affects(_ match: [String: Any], criteria: String, version: Version) -> (hit: Bool, fixed: String?)? {
         let fields = criteria.components(separatedBy: ":")
         let exact = fields.count > 5 ? fields[5] : "*", update = fields.count > 6 ? fields[6] : "*"
         guard update == "*" || update == "-" else { return nil }  // pre-release CPEs such as 3.15.0:alpha1
+        // The eleventh field says what the product runs on, when the entry is for one platform's build only.
+        if fields.count > 10, otherPlatforms.contains(fields[10].lowercased()) { return nil }
         if exact != "*" && exact != "-" { return Version(exact).map { ($0 == version, nil) } }
         let endExcluding = match["versionEndExcluding"] as? String
         let bounds = ["versionStartIncluding", "versionStartExcluding", "versionEndExcluding", "versionEndIncluding"].compactMap { key in (match[key] as? String).map { (key, $0) } }

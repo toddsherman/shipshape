@@ -478,7 +478,9 @@ enum Scanner {
             freshApps = fresh
             feedNewest = newest
             record("sparkle-feeds", "Sparkle update feeds", "\(read) self-updating apps' own update feeds checked for newer releases."
-                   + (unreadable > 0 ? " \(unreadable) feed\(unreadable == 1 ? "" : "s") couldn't be read; those apps still check for updates themselves." : ""), url: "https://sparkle-project.org/documentation/publishing/")
+                   + (unreadable > 0 ? " \(unreadable) feed\(unreadable == 1 ? "" : "s") couldn't be read; those apps still check for updates themselves." : ""), url: "https://sparkle-project.org/documentation/publishing/",
+                   // A feed that can't be read leaves its app unchecked, so the check isn't complete; with none read it failed.
+                   status: unreadable == 0 ? "checked" : read == 0 ? "failed" : "partial")
             end(CheckProgress.count(read, "feed") + " read" + (unreadable > 0 ? ", \(unreadable) unreadable" : ""))
         } else { live.skip("sparkle") }
         let extensions = report.installations.filter { $0.manager == "extension" }
@@ -612,7 +614,7 @@ enum Scanner {
         // zip, so its card can say when a release has the fix. The app's own channel comes first: its electron-builder feed,
         // then its Sparkle feed, then Homebrew. Only these apps' downloads are read, a few hundred kilobytes each, and each
         // release once.
-        var parentFixes: [String: ParentFix] = [:], peeks: [String: ReleasePeek.Result] = [:], looked: [String] = [], unread: [String] = []
+        var parentFixes: [String: ParentFix] = [:], peeks: [String: ReleasePeek.Result] = [:], looked: [String] = [], unread: [String] = [], unanswered: [String] = []
         let bundledFindings = report.findings.filter { $0.installation.bundledApp != nil && $0.kind != .update && $0.malicious != true }
         for path in Set(bundledFindings.compactMap(\.installation.location)).sorted() {
             guard let app = report.installations.first(where: { $0.path == path && ($0.manager == "app" || $0.manager == "cask") }), !Catalog.ownChannels.contains(app.product) else { continue }
@@ -630,13 +632,16 @@ enum Scanner {
                 guard let framework = finding.installation.bundledFramework else { continue }
                 var bundles = finding.installation.version, date = source.date
                 if source.newer {
-                    let key = framework + "|" + source.url
+                    // The release is part of the key: some developers publish every release at the same address.
+                    let key = framework + "|" + source.version + "|" + source.url
                     if peeks[key] == nil, let saved = previous?.peeks?[key] { peeks[key] = saved }
                     if peeks[key] == nil {
                         show("Looking inside \(app.name) \(source.version)", why: "A few hundred kilobytes of its update download show which \(framework) it bundles.")
                         peeks[key] = try? await ReleasePeek.bundled(framework == "Electron" ? "Electron Framework" : "Sparkle", in: source.url)
                     }
-                    guard let peek = peeks[key], let found = peek.bundles else { unread.append(app.name); continue }
+                    // No answer (a timeout, a refused range request) is tried again next check; a zip without the framework isn't.
+                    guard let peek = peeks[key] else { unanswered.append(app.name); continue }
+                    guard let found = peek.bundles else { unread.append(app.name); continue }
                     bundles = found
                     date = date ?? peek.modified
                     looked.append("\(app.name) \(source.version) (\(framework) \(found))")
@@ -647,10 +652,11 @@ enum Scanner {
             }
         }
         report.peeks = peeks.isEmpty ? nil : peeks.filter { $0.value.bundles != nil }
-        if !looked.isEmpty || !unread.isEmpty {
+        if !looked.isEmpty || !unread.isEmpty || !unanswered.isEmpty {
             record("app-releases", "Inside apps' newest releases", (looked.isEmpty ? "" : "Read which framework the newest release of these apps bundles, from a few hundred kilobytes of each update zip: \(Alerts.list(Array(Set(looked)).sorted())). ")
-                   + (unread.isEmpty ? "" : "\(Alerts.list(Array(Set(unread)).sorted())) \(Set(unread).count == 1 ? "has" : "have") a newer release whose download can't be read in parts, such as a disk image, so whether it has the fix is known only once it's installed."),
-                   status: "checked")
+                   + (unread.isEmpty ? "" : "\(Alerts.list(Array(Set(unread)).sorted())) \(Set(unread).count == 1 ? "has" : "have") a newer release whose download can't be read in parts, such as a disk image, so whether it has the fix is known only once it's installed. ")
+                   + (unanswered.isEmpty ? "" : "The newest release of \(Alerts.list(Array(Set(unanswered)).sorted())) couldn't be read this time, so whether it has the fix isn't known yet; the next check tries again."),
+                   status: unanswered.isEmpty ? "checked" : "partial")
         }
 
         markAwaiting(&report.findings, newest: newestFormulae, waiting: waiting)
