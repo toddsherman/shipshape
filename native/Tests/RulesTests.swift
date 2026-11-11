@@ -263,7 +263,19 @@ import Compression
         expect(unfixed[0].awaitingFix == true && unfixed[0].fixed == "No fix released yet", "no fix version anywhere")
         var listedFix = [NVD.finding(media, product: Catalog.byID["ffmpeg"]!, hits: [NVDHit(id: "CVE-2026-9", fixed: "9.0.3", severity: "HIGH")])!]
         Scanner.markAwaiting(&listedFix, newest: ["ffmpeg": "9.0.2"])
-        expect(listedFix[0].awaitingFix == nil, "a listed fixed version is left as an ordinary finding")
+        expect(listedFix[0].awaitingFix == true && listedFix[0].fixed == "9.0.3, not in Homebrew yet" && Commands.commands(for: listedFix[0]).isEmpty, "a fix Homebrew hasn't shipped waits, with no command that would only say it's already installed")
+        var listedShipped = [NVD.finding(media, product: Catalog.byID["ffmpeg"]!, hits: [NVDHit(id: "CVE-2026-9", fixed: "9.0.3", severity: "HIGH")])!]
+        Scanner.markAwaiting(&listedShipped, newest: ["ffmpeg": "9.0.3"])
+        expect(listedShipped[0].awaitingFix == nil && Commands.commands(for: listedShipped[0]).first?.text == "brew upgrade ffmpeg", "once Homebrew ships the fixed release, the command is back")
+        // OpenSSL's own page names 3.5.10 as the fix while Homebrew's newest openssl@3 is still 3.5.9.
+        let openssl3 = Installation(product: "openssl", name: "openssl@3", version: "3.5.9", path: "/opt/homebrew/Cellar/openssl@3/3.5.9", domain: "brew", package: "openssl@3", manager: "brew")
+        var vendorFix = [Finding(source: "openssl", installation: openssl3, kind: .security, fixed: "3.5.10", reason: "5 published fixes match this OpenSSL version.", action: "Upgrade", links: [])]
+        Scanner.markAwaiting(&vendorFix, newest: ["openssl@3": "3.5.9"])
+        expect(vendorFix[0].awaitingFix == true && vendorFix[0].fixed == "3.5.10, not in Homebrew yet" && vendorFix[0].action.contains("Homebrew hasn't shipped") && Commands.commands(for: vendorFix[0]).isEmpty, "a vendor's fix that Homebrew hasn't shipped waits too, whatever the finding's source")
+        expect(ScanReport(findings: vendorFix).security.isEmpty && ScanReport(findings: vendorFix).awaiting.count == 1, "and it doesn't count as needing attention")
+        var vendorOlder = [Finding(source: "openssl", installation: openssl3, kind: .security, fixed: "3.5.10", reason: "", action: "Upgrade", links: [])]
+        Scanner.markAwaiting(&vendorOlder, newest: ["openssl@3": "3.5.10"])
+        expect(vendorOlder[0].awaitingFix == nil && vendorOlder[0].fixed == "3.5.10", "with the fixed release in Homebrew it stays an ordinary finding")
         let vscodeCopy = Installation(product: "vscode", name: "Visual Studio Code", version: "1.90", path: "/Applications/Visual Studio Code.app", domain: "apps", package: "visual-studio-code", manager: "app")
         var appFinding = [NVD.finding(vscodeCopy, product: Catalog.byID["vscode"]!, hits: [NVDHit(id: "CVE-2026-8", fixed: nil, severity: "LOW")])!]
         Scanner.markAwaiting(&appFinding, newest: ["visual-studio-code": "1.90"])

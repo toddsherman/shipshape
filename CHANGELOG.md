@@ -2,6 +2,10 @@
 
 Every release is a universal (Apple silicon and Intel) build for macOS 13 or later, signed with Developer ID and notarized by Apple.
 
+## 0.3.35 — November 10, 2026
+
+- **A fix Homebrew hasn't shipped yet waits.** When a project had released a fix but Homebrew's newest formula was still the affected version, such as OpenSSL 3.5.10 with Homebrew on 3.5.9, the card offered `brew upgrade openssl@3`, which only answered "already installed". Those findings now wait as **3.5.10, not in Homebrew yet**, with no command, and you're alerted when Homebrew has the release.
+
 ## 0.3.34 — November 10, 2026
 
 Fixes from a review of the whole app. Most are vulnerabilities Shipshape could miss while reporting the check as complete.

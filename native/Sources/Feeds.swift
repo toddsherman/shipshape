@@ -815,26 +815,36 @@ enum Scanner {
                                     : "You have the newest \(name), \(fix.version), and it still bundles \(framework) \(fix.bundles).")
             + " Only its developer can update \(framework), so let them know. Shipshape looks inside each new release of \(name) and alerts you when one has the fix."
     }
-    // An NVD finding with no fixed release, on a copy that is already Homebrew's newest: nothing to install yet.
-    // It becomes an ordinary finding again, with its command, once Homebrew ships a newer release.
-    // Without Homebrew's data nothing shows a newer release, so one that was waiting keeps waiting.
+    // A finding on a Homebrew copy that is already Homebrew's newest release has nothing to install yet, whichever
+    // source it came from: "brew upgrade" would only say it's already installed. That is so when no release fixes it
+    // (NVD lists none), and when the project has released the fix but Homebrew hasn't shipped that release (OpenSSL
+    // 3.5.10 out, Homebrew still on 3.5.9). It becomes an ordinary finding again, with its command, once Homebrew
+    // ships a newer release. Without Homebrew's data nothing shows a newer release, so one that was waiting keeps waiting.
     static func markAwaiting(_ findings: inout [Finding], newest: [String: String], waiting: [String: Finding] = [:]) {
         for index in findings.indices {
             let finding = findings[index], item = finding.installation
-            guard finding.source.hasPrefix("nvd:"), finding.kind == .security, item.manager == "brew", let package = item.package else { continue }
+            guard finding.kind == .security, finding.malicious != true, item.manager == "brew", let package = item.package else { continue }
             guard let latest = newest[package] else {
                 if let old = waiting[finding.id], old.installation.version == item.version {
                     findings[index].awaitingFix = true; findings[index].fixed = old.fixed; findings[index].action = old.action
                 }
                 continue
             }
+            guard !looseLess(item.version, latest) else { continue }  // Homebrew has a newer release to install
+            let nvd = finding.source.hasPrefix("nvd:")
             // A fix only in a newer branch is out of reach of this formula: python@3.12 stays on Python 3.12.
-            let branch = NVD.branch(item.version), onlyNewer = Catalog.byID[item.product]?.branches == true && finding.fixed != NVD.noFixListed && NVD.branch(finding.fixed) != branch
-            guard !looseLess(item.version, latest), finding.fixed == NVD.noFixListed || finding.expectedFix != nil || onlyNewer else { continue }
-            findings[index].awaitingFix = true
-            findings[index].fixed = onlyNewer ? "No \(branch) fix yet" : finding.expectedFix.map { "\($0), not released yet" } ?? "No fix released yet"
-            findings[index].action = "You have Homebrew's newest \(item.name) (\(latest)), and \(onlyNewer ? "no \(branch) release fixes these yet; newer branches do" : "no release fixes these yet")."
-                + (finding.expectedFix.map { " The advisory names \($0) as the fix." } ?? "") + " \(appName) alerts you when a fixed release is available."
+            let branch = NVD.branch(item.version), onlyNewer = nvd && Catalog.byID[item.product]?.branches == true && finding.fixed != NVD.noFixListed && NVD.branch(finding.fixed) != branch
+            if nvd, finding.fixed == NVD.noFixListed || finding.expectedFix != nil || onlyNewer {
+                findings[index].awaitingFix = true
+                findings[index].fixed = onlyNewer ? "No \(branch) fix yet" : finding.expectedFix.map { "\($0), not released yet" } ?? "No fix released yet"
+                findings[index].action = "You have Homebrew's newest \(item.name) (\(latest)), and \(onlyNewer ? "no \(branch) release fixes these yet; newer branches do" : "no release fixes these yet")."
+                    + (finding.expectedFix.map { " The advisory names \($0) as the fix." } ?? "") + " \(appName) alerts you when a fixed release is available."
+            } else if finding.fixed.first?.isNumber == true, looseLess(latest, finding.fixed) {
+                // The fix is released, in a version Homebrew doesn't have yet.
+                findings[index].awaitingFix = true
+                findings[index].action = "You have Homebrew's newest \(item.name) (\(latest)). The fix is in \(finding.fixed), which Homebrew hasn't shipped yet, so there's nothing to install. \(appName) alerts you when Homebrew has it."
+                findings[index].fixed = "\(finding.fixed), not in Homebrew yet"
+            }
         }
     }
 }
